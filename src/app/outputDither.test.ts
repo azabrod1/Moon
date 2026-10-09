@@ -22,13 +22,16 @@ describe('the output dither', () => {
     const bins = new Array(40).fill(0);
     let sum = 0, min = Infinity, max = -Infinity;
     for (const v of t) {
-      expect(v).toBeGreaterThan(-1);
-      expect(v).toBeLessThan(1);
       bins[Math.min(39, Math.floor((v + 1) * 20))]++;
       sum += v;
       min = Math.min(min, v);
       max = Math.max(max, v);
     }
+    // Every value inside (-1, 1), held on the extremes once (a NaN anywhere
+    // makes min NaN, which fails too): an expect per value was half a million
+    // calls, past vitest's 5 s on a CI runner.
+    expect(min).toBeGreaterThan(-1);
+    expect(max).toBeLessThan(1);
     const cdf = (u: number): number => (u < 0 ? (u + 1) ** 2 / 2 : 1 - (1 - u) ** 2 / 2);
     for (let i = 0; i < 40; i++) {
       const lo = -1 + i / 20;

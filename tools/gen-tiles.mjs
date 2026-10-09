@@ -15,10 +15,18 @@
 //
 // Every body's boot map, 4K step and tiles come from ONE source in ONE pass,
 // so each step up the ladder is a pure sharpen (the same-product rule in
-// PlanetFactory's TEXTURE_UPGRADE_TIERS comment). Sources are cached under
-// .moon-data-cache/ (gitignored); Mars's levels are rendered by CDS's
-// hips2fits service out of the Tianwen-1 HiPS, in blocks of each level's own
-// pixel grid (see hipsBlock), so no source file is ever held whole.
+// PlanetFactory's TEXTURE_UPGRADE_TIERS comment), and every step DOWN it is
+// an average taken in linear light (resizeLinear), because that is the mean
+// the GPU gives the finer rung's own mips: a rung averaged on the encoded
+// values is darker than the tiles that land over it, and the ground
+// brightened by a step at every landing (measured on Mars's shipped ladder:
+// 1.2 % from the boot map to the 4K rung, 0.7 % to the 16K tiles, 0.5 % per
+// level after that). Sources are cached under .moon-data-cache/ (gitignored);
+// Mars's finest level is rendered by CDS's hips2fits service out of the
+// Tianwen-1 HiPS, in blocks of the level's own pixel grid (see hipsBlock), so
+// no source file is ever held whole, and its coarser levels are derived from
+// that render one octave at a time (pyramidLevelRaw), since the HiPS's own
+// orders are averaged on encoded values too.
 //
 // A tile's gutter is always its NEIGHBOUR's pixels — wrapping across the ±180°
 // seam, clamped at the poles — never a repeat of its own edge: that is what
@@ -197,6 +205,22 @@ async function fullRaw(srcPath, width, height, matchRef) {
 }
 
 const rawOf = (buf, width, height) => sharp(buf, { raw: { width, height, channels: 3 }, limitInputPixels: false });
+
+/**
+ * A resize in linear light: libvips converts the sRGB input to scRGB (float,
+ * linear) at the head of its pipeline, resizes there and encodes back to
+ * 8-bit sRGB at the end — a round trip that is exact, texel for texel, with
+ * no resize between. Every shipped rung and the gates that compare one
+ * against another go through this: averaging the encoded values instead
+ * puts a coarser rung 0.4–1.2 % darker than the finer one (the mean of a
+ * convex curve's inputs falls under the curve), and a reader watching a
+ * sector land saw the ground step brighter. The resamples of a SOURCE into
+ * a level (fullRaw, buildMosaicLevelRaw) and a flat rung are left on the
+ * encoded values: the sets cut that way are published, and moving them is a
+ * re-cut under a new rawToken, not a change to make under them.
+ */
+const resizeLinear = (pipeline, width, height, options) =>
+  pipeline.pipelineColourspace('scrgb').resize(width, height, options).toColourspace('srgb');
 
 /**
  * Ocean grade for the plain Blue Marble NG, and the water mask its gloss
@@ -710,7 +734,7 @@ async function deriveEarthRoughness(water, srcWidth, srcHeight) {
 
 async function writeDownsamples(raw, width, height, outs) {
   for (const { w, h, out } of outs) {
-    await writeWebp(rawOf(raw, width, height).resize(w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
+    await writeWebp(resizeLinear(rawOf(raw, width, height), w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
   }
 }
 
@@ -988,9 +1012,9 @@ async function verify(key, tier, grid, content, refPath) {
     for (let c = 0; c < grid.cols; c++) {
       const tile = path.join(dir, `${c}_${r}.webp`);
       composites.push({
-        input: await sharp(tile)
-          .extract({ left: GUTTER, top: GUTTER, width: content, height: content })
-          .resize(q, q, { kernel: 'lanczos3' }).raw().toBuffer(),
+        input: await resizeLinear(sharp(tile)
+          .extract({ left: GUTTER, top: GUTTER, width: content, height: content }), q, q, { kernel: 'lanczos3' })
+          .raw().toBuffer(),
         raw: { width: q, height: q, channels: 3 },
         left: c * q,
         top: r * q,
@@ -1001,8 +1025,8 @@ async function verify(key, tier, grid, content, refPath) {
   // reads every pixel off by one channel and the gate fails by ~40 units.
   const mosaic = await sharp({ create: { width: W, height: H, channels: 3, background: '#000' }, limitInputPixels: false })
     .composite(composites).removeAlpha().raw().toBuffer();
-  const ref = await sharp(refPath, { limitInputPixels: false })
-    .removeAlpha().resize(W, H, { fit: 'fill', kernel: 'lanczos3' }).raw().toBuffer();
+  const ref = await resizeLinear(sharp(refPath, { limitInputPixels: false }).removeAlpha(), W, H, { fit: 'fill', kernel: 'lanczos3' })
+    .raw().toBuffer();
   const d = rasterDiff(mosaic, ref, W * H);
   console.log(`  verify ${key}/${tier}: mean delta [${d.mean.map((m) => m.toFixed(2))}] RMS ${d.rms.toFixed(2)} -> ${d.ok ? 'PASS' : 'FAIL'}`);
   if (!d.ok) {
@@ -1090,9 +1114,9 @@ async function childGroupGate(key, parentTier, parentGrid, parentContent, childT
       for (let dr = 0; dr < 2; dr++) {
         for (let dc = 0; dc < 2; dc++) {
           composites.push({
-            input: await sharp(path.join(childDir, `${2 * c + dc}_${2 * r + dr}.webp`))
-              .extract({ left: GUTTER, top: GUTTER, width: childContent, height: childContent })
-              .resize(half, half, { kernel: 'lanczos3' }).raw().toBuffer(),
+            input: await resizeLinear(sharp(path.join(childDir, `${2 * c + dc}_${2 * r + dr}.webp`))
+              .extract({ left: GUTTER, top: GUTTER, width: childContent, height: childContent }), half, half, { kernel: 'lanczos3' })
+              .raw().toBuffer(),
             raw: { width: half, height: half, channels: 3 },
             left: dc * half,
             top: dr * half,
@@ -1297,6 +1321,96 @@ const gradeGains = (gains) => (raw) => {
     }
   }
 };
+
+/**
+ * A level derived from the one above it, one octave down, in linear light.
+ * The finer level's cached equirect is read in row bands; each band is
+ * resized inside a halo of its true neighbours — wrapped in longitude, the
+ * edge row repeated past a pole — so it lands on the sample grid a resize of
+ * the whole map would have used and the bands join pixel for pixel; and the
+ * result is a raw file of its own in the cache, read like a rendered one.
+ *
+ * Why not render the coarser levels too: the HiPS the finest is rendered from
+ * is a pyramid of averages taken on the sRGB-encoded values, so each order
+ * is darker than the one below it (0.46 % per octave in linear light on the
+ * shipped sets), and a sector brightened as each finer level landed. The GPU
+ * averages a tile's texels in linear light when it builds the tile's mips,
+ * which is the mean a coarser level has to carry: derived this way every
+ * level is the same ground at the same brightness, one resample coarser,
+ * and the boot map and the rungs, averaged down from the coarsest of them,
+ * are too.
+ */
+/** The recipe below, named in the derived file: a change to it is a new
+ *  name, never a reuse of the old bytes. */
+const PYRAMID_TOKEN = 'pyramid.v1';
+/** Target rows a band resamples at once: 1024 rows of the 64K level are
+ *  200 MB, which the float pipeline streams in strips. */
+const PYRAMID_BAND = 512;
+/** The halo each side of a band in TARGET px — lanczos3 at this shrink
+ *  reaches 3 — so the band's own edge pixels are the whole map's. */
+const PYRAMID_HALO = 16;
+
+async function pyramidLevelRaw(job, level, fromIndex) {
+  const from = job.levels[fromIndex];
+  if (!from) throw new Error(`${job.key}/${level.tier}: no level ${fromIndex} to derive from`);
+  const { width, height } = gridSize(level.grid, CONTENT);
+  const source = gridSize(from.grid, CONTENT);
+  const factor = 2;
+  if (source.width !== width * factor || source.height !== height * factor) {
+    throw new Error(`${job.key}/${level.tier}: ${source.width}x${source.height} (${from.tier}) is not one octave above ${width}x${height}`);
+  }
+  const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken, `of-${from.tier}`, PYRAMID_TOKEN].filter(Boolean).join('.');
+  const out = cache('levels', `${stem}.rgb`);
+  await mkdir(path.dirname(out), { recursive: true });
+  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+    console.log(`  derived equirect already in the cache: ${path.relative(process.cwd(), out)}`);
+    return out;
+  }
+  const src = await fileRowSource(await levelRawFile(job, fromIndex), source.width, source.height);
+  const haloSrc = PYRAMID_HALO * factor;
+  const paddedWidth = source.width + 2 * haloSrc;
+  const file = await open(`${out}.part`, 'w');
+  const t0 = Date.now();
+  try {
+    for (let y0 = 0; y0 < height; y0 += PYRAMID_BAND) {
+      const bandRows = Math.min(PYRAMID_BAND, height - y0);
+      const srcRows = bandRows * factor + 2 * haloSrc;
+      // The row source repeats the edge row past a pole; longitude wraps here.
+      const band = await src.read(y0 * factor - haloSrc, srcRows);
+      const padded = Buffer.allocUnsafe(paddedWidth * srcRows * 3);
+      for (let y = 0; y < srcRows; y++) {
+        const row = y * source.width * 3;
+        const dst = y * paddedWidth * 3;
+        band.copy(padded, dst, row + (source.width - haloSrc) * 3, row + source.width * 3);
+        band.copy(padded, dst + haloSrc * 3, row, row + source.width * 3);
+        band.copy(padded, dst + (haloSrc + source.width) * 3, row, row + haloSrc * 3);
+      }
+      const piece = await resizeLinear(
+        sharp(padded, { raw: { width: paddedWidth, height: srcRows, channels: 3 }, limitInputPixels: false }),
+        width + 2 * PYRAMID_HALO, bandRows + 2 * PYRAMID_HALO, { fit: 'fill', kernel: 'lanczos3' },
+      ).extract({ left: PYRAMID_HALO, top: PYRAMID_HALO, width, height: bandRows }).raw().toBuffer();
+      await file.write(piece, 0, piece.length, y0 * width * 3);
+      process.stdout.write(`  derive ${level.tier} from ${from.tier}: rows ${y0 + bandRows}/${height} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
+    }
+  } finally {
+    await file.close();
+    await src.close();
+  }
+  console.log('');
+  await rename(`${out}.part`, out);
+  console.log(`  derived -> ${path.relative(process.cwd(), out)} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  return out;
+}
+
+/** The cached raw equirect of a file-backed level — rendered from a HiPS, or
+ *  derived from the level above it — built if the cache lacks it. */
+async function levelRawFile(job, index) {
+  const level = job.levels[index];
+  const src = level.source;
+  if (src.kind === 'hips') return hipsLevelRaw(job, level);
+  if (src.kind === 'pyramid') return pyramidLevelRaw(job, level, src.of);
+  throw new Error(`${job.key}/${level.tier}: a ${src.kind} source has no raw file of its own`);
+}
 
 // ---------------------------------------------------------------------------
 // Mosaic sources: a level resampled from source tiles, on disk
@@ -2024,9 +2138,12 @@ export const JOBS = {
     key: 'mars.v3',
     grade: gradeGains([152 / 142, 108 / 114, 92 / 95]),
     rawToken: 'warm-grade.v1',
+    // One render, the finest: the 32K and 16K levels are averaged down from
+    // it in linear light (pyramidLevelRaw), and the 4K rung and the boot map
+    // from the 16K, so no level is darker than the one that lands over it.
     levels: [
-      { tier: '16k', grid: GRID_16K, source: { kind: 'hips', id: TIANWEN_HIPS, across: 2, down: 2 } },
-      { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'hips', id: TIANWEN_HIPS, across: 4, down: 4 } },
+      { tier: '16k', grid: GRID_16K, source: { kind: 'pyramid', of: 1 } },
+      { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'pyramid', of: 2 } },
       { tier: '64k', grid: doubled(GRID_16K, 2), source: { kind: 'hips', id: TIANWEN_HIPS, across: 8, down: 8 } },
     ],
     downsamples: [
@@ -2129,10 +2246,11 @@ export async function levelRowSource(job, level) {
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  if (src.kind === 'hips') {
-    // Rendered to a raw file in the cache whatever its size: level 0 would
-    // fit in memory, but one path for every level is one path to get right.
-    return { rows: await fileRowSource(await hipsLevelRaw(job, level), width, height) };
+  if (src.kind === 'hips' || src.kind === 'pyramid') {
+    // Rendered, or derived, to a raw file in the cache whatever its size:
+    // level 0 would fit in memory, but one path for every level is one path
+    // to get right.
+    return { rows: await fileRowSource(await levelRawFile(job, job.levels.indexOf(level)), width, height) };
   }
   // The cached resample's NAME states every transform baked into it, so
   // changing one cannot be silently skipped by a machine that already holds

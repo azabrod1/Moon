@@ -15,6 +15,12 @@
  * the renderer the smaller of this and the Sun's own coverage meter, so the
  * same view is never darkened twice.
  *
+ * The beam as drawn and as predicted is the foam-free sea's (the whitecaps,
+ * world/seaWind, grey the diffuse colour and leave the mirror term whole), up
+ * to about 5.9 % brighter than a foam-covered one at the map's windiest
+ * annual mean (13.38 m/s), on the safe side for a meter that only lowers the
+ * exposure.
+ *
  * It costs about a tenth of a millisecond on the main thread (60–120 µs a
  * frame on an M5 Max over the shipped maps, the search beside the principal
  * line included) and nothing on the GPU,
@@ -34,9 +40,9 @@ import * as THREE from 'three';
 import type { RGB } from './world/atmosphereModel';
 import { atmosphereParams, bodySolarIrradianceScale } from './world/atmosphereModel';
 import {
-  HIGHLIGHT_KNOBS, advanceExposureStops, buildColumnDepthTable, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
-  placeBeamInFrame,
-  highlightTarget, scanBeam,
+  HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildColumnDepthTable, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
+  placeBeamInFrame, prepareAxisLobeBound,
+  highlightTarget, scanBeam, shoulder,
   type BeamPeak, type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type GlintScratch,
   type HighlightKnobs, type SurfaceSampler, type TransmittanceTable,
 } from './world/glintMeter';
@@ -106,10 +112,12 @@ export interface HighlightContext {
   moonShadowCount: number;
   sunTan: number;
   termWidth: number;
-  /** The chain the surfaces compile: the beam, the Sun's path, the wind map. */
+  /** The chain the surfaces compile: the beam, the Sun's path, the wind map,
+   *  and the lobe along the wind's axis, which the twin then draws too. */
   seaBeamOn: boolean;
   sunPathOn: boolean;
   windMapOn: boolean;
+  seaAxisOn: boolean;
 }
 
 export interface HighlightTelemetry {
@@ -127,9 +135,12 @@ export interface HighlightTelemetry {
   acrossAngleDeg: number;
   halfWidthAlongDeg: number;
   halfWidthAcrossDeg: number;
-  /** The surface under the predicted peak: water, wind, and the cloud's
-   *  keeps on the Sun's side (before the shoulder) and the camera's (after). */
-  peakSample: { water: number; windMs: number; cloudKeep: number; deckKeep: number };
+  /** The surface under the predicted peak: water, wind, the cloud's keeps on
+   *  the Sun's side (before the shoulder) and the camera's (after), and the
+   *  wind's axis in doubled angle. */
+  peakSample: { water: number; windMs: number; cloudKeep: number; deckKeep: number; axisX: number; axisY: number };
+  /** Whether the twin drew the lobe along the wind (the SEA_AXIS define). */
+  axis: boolean;
   coverage: number;
   /** Where the peak lands in the frame: degrees from its centre, right and
    *  up, and whether it is in front of the camera at all. */
@@ -165,8 +176,8 @@ export class HighlightMeter {
   private readonly light: { intensity: number; linear: RGB; irradianceScale: number } = {
     intensity: 0, linear: [1, 1, 1], irradianceScale: bodySolarIrradianceScale('Earth'),
   };
-  private readonly sea: { waterF0: number; knee: number; cap: number; hazeClearView: number; airBlend: number } = {
-    waterF0: SEA_WATER_F0, knee: 0, cap: 0, hazeClearView: 0.35, airBlend: 1,
+  private readonly sea: { waterF0: number; knee: number; cap: number; hazeClearView: number; airBlend: number; axis: boolean } = {
+    waterF0: SEA_WATER_F0, knee: 0, cap: 0, hazeClearView: 0.35, airBlend: 1, axis: true,
   };
   private cloudSpin = 0;
   private cloudDrawn = true;
@@ -219,6 +230,9 @@ export class HighlightMeter {
     if (!this.table.column && ctx.camera.length() < this.table.topRadius) {
       this.table = { ...this.table, column: buildColumnDepthTable(atmosphereParams('Earth')) };
     }
+    // The bound the scan reads beside the line by with the lobe along the
+    // wind on: built here, not on the first step a coast or a cloud cuts.
+    if (ctx.seaAxisOn) prepareAxisLobeBound();
     // Timed from here: the tables above are built once a session, and in the
     // average they would read as the scan's own cost for a hundred frames after.
     const t0 = now();
@@ -232,6 +246,7 @@ export class HighlightMeter {
     this.sea.knee = sh.knee; this.sea.cap = sh.cap;
     this.sea.hazeClearView = ctx.hazeClearView;
     this.sea.airBlend = ctx.airBlend;
+    this.sea.axis = ctx.seaAxisOn;
     this.cloudSpin = ctx.cloudSpin;
     this.cloudDrawn = ctx.cloudDrawn;
     this.cloudShadows = ctx.cloudShadows;
@@ -290,12 +305,54 @@ export class HighlightMeter {
       acrossAngleDeg: p.acrossAngleDeg,
       halfWidthAlongDeg: p.halfWidthAlongDeg,
       halfWidthAcrossDeg: p.halfWidthAcrossDeg,
-      peakSample: { water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep, deckKeep: p.sample.deckKeep },
+      peakSample: {
+        water: p.sample.water, windMs: p.sample.windMs, cloudKeep: p.sample.cloudKeep, deckKeep: p.sample.deckKeep,
+        axisX: p.sample.axisX, axisY: p.sample.axisY,
+      },
+      axis: this.sea.axis,
       coverage: this.coverage,
       peakFrame: { xDeg: this.place.xDeg, yDeg: this.place.yDeg, inFront: this.place.inFront },
       maps: this.maps.state(),
       costUs: this.costUs,
       knobs: { ...this.knobs },
+    };
+  }
+
+  /**
+   * DEV: the twin's drawn value — the beam as carried, held by the shoulder,
+   * times the deck's share — at each ground point of `normals` (unit, in
+   * Earth's own frame, three numbers apiece) under the last metered frame's
+   * pose, light, sea and maps, through the very functions the scan reads, so
+   * a probe can take the predicted beam's shape the way it takes the drawn
+   * one's without a copy of the equations. `axis` overrides whether the twin
+   * draws the lobe along the wind (the sea's own define by default); `mirror`
+   * reads the axis mirrored (its doubled sine negated), the handedness
+   * check's deliberate fault. Also the peak the scan found, in the same
+   * frame. Null until the meter has metered a frame.
+   */
+  devDrawnAt(normals: ArrayLike<number>, opts?: { axis?: boolean; mirror?: boolean }): {
+    drawn: number[]; peakN: [number, number, number]; camera: [number, number, number]; sun: [number, number, number];
+  } | null {
+    const table = this.table;
+    if (!table || this.hold !== 'metering') return null;
+    const sea: GlintMeterSea = { ...this.sea, axis: opts?.axis ?? this.sea.axis };
+    const base = this.sampler;
+    const sampler: SurfaceSampler = opts?.mirror
+      ? (nx, ny, nz, out, lx, ly, lz, vx, vy, vz) => { base(nx, ny, nz, out, lx, ly, lz, vx, vy, vz); out.axisY = -out.axisY; }
+      : base;
+    const scratch = createGlintScratch();
+    const rad: [number, number, number] = [0, 0, 0];
+    const drawn: number[] = [];
+    for (let i = 0; i + 2 < normals.length; i += 3) {
+      beamRadianceAt(normals[i], normals[i + 1], normals[i + 2], this.pose as GlintMeterPose, this.light as GlintMeterLight, sea, sampler, table, scratch, rad);
+      const most = Math.max(shoulder(rad[0], sea.knee, sea.cap), shoulder(rad[1], sea.knee, sea.cap), shoulder(rad[2], sea.knee, sea.cap));
+      drawn.push(most * scratch.sample.deckKeep);
+    }
+    return {
+      drawn,
+      peakN: [this.peak.n[0], this.peak.n[1], this.peak.n[2]],
+      camera: [this.pose.camera[0], this.pose.camera[1], this.pose.camera[2]],
+      sun: [this.pose.sun[0], this.pose.sun[1], this.pose.sun[2]],
     };
   }
 }

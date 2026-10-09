@@ -439,7 +439,7 @@ describe('the ?mieexact=0 control set', () => {
     // and its red, which both arms read from the same texel, is not.
     const sum = (g: Golden, c: number): number =>
       [...g.samples, ...g.limbScan].reduce((a, rgb) => a + rgb[c], 0);
-    let red = 0, green = 0, blue = 0, differing = 0;
+    let red = 0, green = 0, blue = 0, differing = 0, redStep = 0;
     for (const name of CONTROL) {
       const control = readControl(name);
       const shipped = read(name);
@@ -447,10 +447,20 @@ describe('the ?mieexact=0 control set', () => {
       green += sum(control, 1) - sum(shipped, 1);
       blue += sum(control, 2) - sum(shipped, 2);
       if (JSON.stringify([control.samples, control.limbScan]) !== JSON.stringify([shipped.samples, shipped.limbScan])) differing++;
+      [...control.samples, ...control.limbScan].forEach((rgb, i) => {
+        const other = [...shipped.samples, ...shipped.limbScan][i];
+        redStep = Math.max(redStep, Math.abs(rgb[0] - other[0]));
+      });
     }
     expect(differing).toBeGreaterThanOrEqual(5);
     expect(green).toBeGreaterThan(0);
     expect(blue).toBeGreaterThan(0);
-    expect(Math.abs(red)).toBeLessThanOrEqual(2);
+    // The two sets are two browser sessions, and a sampled point that sits on
+    // a rounding edge flips by one step between them (the re-record of
+    // 2026-10-09 flipped five of 671 red values by one, three of them in the
+    // near band's beam). So red is held to single steps and a sum of a few,
+    // well under the green and blue the control adds.
+    expect(redStep).toBeLessThanOrEqual(1);
+    expect(Math.abs(red)).toBeLessThanOrEqual(5);
   });
 });

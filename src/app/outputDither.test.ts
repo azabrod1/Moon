@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  OUTPUT_DITHER_ADD, OUTPUT_DITHER_GLSL, OUTPUT_DITHER_R2, ditherOutputText, interleavedGradientNoise,
-  outputDitherIsWired, outputDitherLsb, outputDitherUniform, parseDitherParam, r2PixelNoise, setOutputDither,
+  OUTPUT_DITHER_ADD, OUTPUT_DITHER_GLSL, OUTPUT_DITHER_R2, OUTPUT_OPAQUE_WRITE, ditherOutputText, interleavedGradientNoise, outputDitherIsWired, outputDitherLsb, outputDitherUniform, outputWriteIsOpaque, parseDitherParam, r2PixelNoise, setOutputDither,
 } from './outputDither';
 
 /** The dither at every pixel centre of a 512 × 512 frame, as gl_FragCoord
@@ -22,13 +21,16 @@ describe('the output dither', () => {
     const bins = new Array(40).fill(0);
     let sum = 0, min = Infinity, max = -Infinity;
     for (const v of t) {
-      expect(v).toBeGreaterThan(-1);
-      expect(v).toBeLessThan(1);
       bins[Math.min(39, Math.floor((v + 1) * 20))]++;
       sum += v;
       min = Math.min(min, v);
       max = Math.max(max, v);
     }
+    // Every value inside (-1, 1), held on the extremes once (a NaN anywhere
+    // makes min NaN, which fails too): an expect per value was half a million
+    // calls, past vitest's 5 s on a CI runner.
+    expect(min).toBeGreaterThan(-1);
+    expect(max).toBeLessThan(1);
     const cdf = (u: number): number => (u < 0 ? (u + 1) ** 2 / 2 : 1 - (1 - u) ** 2 / 2);
     for (let i = 0; i < 40; i++) {
       const lo = -1 + i / 20;
@@ -92,6 +94,15 @@ describe('the output dither', () => {
     expect(outputDitherIsWired(patched)).toBe(true);
     expect(outputDitherIsWired(text)).toBe(false);
     expect(patched.indexOf(OUTPUT_DITHER_ADD)).toBeGreaterThan(patched.indexOf('sRGBTransferOETF'));
+    // The last word on the pixel: opaque, after the dither, with no later
+    // assignment to gl_FragColor (the scene's alpha is the sea's flag, not a
+    // coverage, and Safari composites the canvas with it).
+    expect(outputWriteIsOpaque(patched)).toBe(true);
+    expect(outputWriteIsOpaque(text)).toBe(false);
+    expect(patched.indexOf(OUTPUT_OPAQUE_WRITE)).toBeGreaterThan(patched.indexOf(OUTPUT_DITHER_ADD));
+    expect(outputWriteIsOpaque(`${patched}\n gl_FragColor = vec4(0.0);`)).toBe(false);
+    expect(outputWriteIsOpaque('void main() { fragColor = vec4(sum + outputDither(gl_FragCoord.xy), 1.0); }')).toBe(true);
+    expect(outputWriteIsOpaque('void main() { fragColor = vec4(sum, texel.a); }')).toBe(false);
     expect(patched.indexOf('uniform float uDither;')).toBeGreaterThan(patched.indexOf('varying vec2 vUv;'));
     expect(() => ditherOutputText('void main() {}')).toThrow(/no longer carries/);
   });

@@ -506,5 +506,8 @@ varying vec2 vUv;
 ${lensSourceUvGlsl}
 void main() {
   gl_FragColor = texture2D(tDiffuse, lensSourceUv(vUv));
+  // Opaque, whatever the scene texel's alpha carries (app/outputDither.ts
+  // OUTPUT_OPAQUE_WRITE says why): this is a canvas write on the no-composer route.
+  gl_FragColor.a = 1.0;
 }
 `;

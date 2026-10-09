@@ -14,13 +14,16 @@ import { CLOUD_TOP_KM } from './world/cloudDeck';
 const EARTH_KM = 6371;
 const DEG = Math.PI / 180;
 
-/** Maps of an open 7 m/s sea, no cloud, decoded at once. */
-function openSeaMaps(): EarthSurfaceMaps {
+/** Maps of an open 7 m/s sea, no cloud, decoded at once: with no axis
+ *  unless the axis's two bytes are given. */
+function openSeaMaps(axisBytes: [number, number] = [128, 128]): EarthSurfaceMaps {
   const decode = async (url: string, width: number, height: number) => {
     const rgba = new Uint8ClampedArray(width * height * 4);
     for (let i = 0; i < width * height; i++) {
       const r = url.includes('rough') ? ROUGHNESS_MAP_WATER * 255 : url.includes('wind') ? (7 / SEA_WIND_MAX_MS) * 255 : 0;
       rgba[i * 4] = r; rgba[i * 4 + 3] = 255;
+      // The wind's axis bytes at 128, none: the shipped map's encoding.
+      if (url.includes('wind')) { rgba[i * 4 + 1] = axisBytes[0]; rgba[i * 4 + 2] = axisBytes[1]; }
     }
     return { rgba, width, height };
   };
@@ -46,7 +49,7 @@ function probeContext(altitudeKm = 400, sunElevDeg = 10, aimGroundAngleDeg = 10)
     moonShadows: [], moonShadowCount: 0, sunTan: 0, termWidth: NIGHT_FILL.earth.termWidth,
     view, viewUp,
     fovXDeg: 40, fovYDeg: 27,
-    seaBeamOn: true, sunPathOn: true, windMapOn: true,
+    seaBeamOn: true, sunPathOn: true, windMapOn: true, seaAxisOn: true,
   };
 }
 
@@ -135,6 +138,37 @@ describe('the highlight meter', () => {
     // A deck hidden: the cloud's cut is lifted, so a cloud over the beam does not hold it.
     const t = meter.telemetry();
     expect(t.maps.ready).toEqual(['water', 'wind', 'cloud']);
+  });
+
+  it('follows the lobe along the wind with the sea, and with its define off meters exactly the round lobe', async () => {
+    // An oblique axis, the shipped map's NE-trades bytes.
+    const oblique = new HighlightMeter(openSeaMaps([224, 202]), () => ({ knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP }));
+    const round = new HighlightMeter(openSeaMaps(), () => ({ knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP }));
+    expect(oblique.devDrawnAt([0, 0, 1])).toBeNull();
+    for (const m of [oblique, round]) m.update(0.016, probeContext());
+    await settle();
+    const off = { ...probeContext(), seaAxisOn: false };
+    oblique.update(0.1, off);
+    round.update(0.1, off);
+    const a = oblique.telemetry(), b = round.telemetry();
+    expect(a.axis).toBe(false);
+    expect(a.peakSample.axisX).toBeGreaterThan(0.7);
+    expect({ ...a, peakSample: null, costUs: 0 }).toEqual({ ...b, peakSample: null, costUs: 0 });
+    // On, the oblique sea's beam is another beam, and the twin reads it.
+    oblique.update(0.1, probeContext());
+    const on = oblique.telemetry();
+    expect(on.axis).toBe(true);
+    expect(on.drawnMax).not.toBe(b.drawnMax);
+    const twin = oblique.devDrawnAt([Math.sin(0.2), 0, Math.cos(0.2)]);
+    expect(twin?.drawn).toHaveLength(1);
+    expect(twin!.drawn[0]).toBeGreaterThan(0);
+    // Off the line an oblique axis draws the two sides differently, and the
+    // mirrored decode swaps them: the line is this pose's plane of symmetry.
+    const left = oblique.devDrawnAt([Math.sin(0.2) * Math.cos(0.02), Math.sin(0.02), Math.cos(0.2) * Math.cos(0.02)])!.drawn[0];
+    const leftMirrored = oblique.devDrawnAt([Math.sin(0.2) * Math.cos(0.02), Math.sin(0.02), Math.cos(0.2) * Math.cos(0.02)], { mirror: true })!.drawn[0];
+    const right = oblique.devDrawnAt([Math.sin(0.2) * Math.cos(0.02), -Math.sin(0.02), Math.cos(0.2) * Math.cos(0.02)])!.drawn[0];
+    expect(left).not.toBeCloseTo(right, 6);
+    expect(leftMirrored).toBeCloseTo(right, 9);
   });
 });
 

@@ -51,11 +51,17 @@ import {
   surfaceCloudShadowCompiled,
   seaBeamOn,
   setSeaBeamEnabled,
+  foamAlbedoInForce, parseFoamParam, parseWhitecapsParam, setFoamAlbedo, setWhitecapsEnabled, whitecapsOn,
+  parseSeaAxisParam,
+  seaAxisOn,
+  setSeaAxisEnabled,
 } from './surfaceShading';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, installSeaWindMap,
-  seaWindTextureFrom,
+  COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_UPWIND_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO,
+  seaWindTextureFrom, WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT, whitecapCoverage,
 } from './seaWind';
+import { axisAlong2, axisAlpha, axisLobe, windFrameAt } from './glintMeter';
 import { createSectorMaterial } from './sectorMaterial';
 import { setCloudFieldOn } from './cloudFieldSlots';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
@@ -994,6 +1000,112 @@ describe('the sea', () => {
     expect(text).toContain('float waterGain = uWaterGloss;');
   });
 
+  it('greys its albedo by the foam the same wind raises, the law world/seaWind.ts holds, under WHITECAPS', () => {
+    const text = resolveDefine(seaFragment(), 'WHITECAPS', true);
+    // The wind is copied out of the one read, never read again or moved: the
+    // copy is declared before the map's branch and filled right after the
+    // read, inside it. The read has two arms (SEA_AXIS reads the axis beside
+    // the speed) and the copy sits after both, so whichever lobe is compiled
+    // the sea has its foam: in each arm one read, then the copy, then the
+    // roughness that uses the same wind.
+    const declared = text.indexOf('float seaFoamWind = 0.0;');
+    const branch = text.indexOf('if (uSeaWindOn > 0.5) {');
+    expect(declared).toBeGreaterThan(0);
+    expect(branch).toBeGreaterThan(declared);
+    for (const axis of [true, false]) {
+      const arm = resolveDefine(text, 'SEA_AXIS', axis);
+      expect(arm.match(/textureGrad\(uSeaWindMap/g)).toHaveLength(1);
+      expect(arm.match(/float seaFoamWind/g)).toHaveLength(1);
+      expect(arm.match(/seaFoamWind = seaWindMs;/g)).toHaveLength(1);
+      const armBranch = arm.indexOf('if (uSeaWindOn > 0.5) {');
+      const read = arm.indexOf('float seaWindMs = ', armBranch);
+      const copy = arm.indexOf('      seaFoamWind = seaWindMs;\n', armBranch);
+      const roughness = arm.indexOf('float seaRoughness = sqrt(sqrt(', armBranch);
+      expect(armBranch).toBeGreaterThan(0);
+      expect(read).toBeGreaterThan(armBranch);
+      expect(copy).toBeGreaterThan(read);
+      expect(roughness).toBeGreaterThan(copy);
+    }
+    // The foam goes on after the water colour, so a painted texel is matched
+    // first and a shelf painted its own colour takes foam too; no map, or a
+    // map of zeros, is no foam.
+    const paint = text.indexOf('seaWater * seaPaint * uSeaMix);');
+    const foam = text.indexOf('diffuseColor.rgb = mix(diffuseColor.rgb, vec3(FOAM_ALBEDO), seaFoam * seaWater);');
+    expect(paint).toBeGreaterThan(0);
+    expect(foam).toBeGreaterThan(paint);
+    expect(text).toContain('if (seaFoamWind > 0.0) {');
+    // The coefficient is an exponent literal, never a fixed-point string that
+    // would round it to 0.000004.
+    expect(text).toContain(`${WHITECAP_COVER_COEFFICIENT.toExponential()}`);
+    expect(WHITECAP_COVER_COEFFICIENT.toExponential()).toBe('3.84e-6');
+    // The law the shader writes is the law world/seaWind.ts holds: its
+    // three numbers read back out of the text and evaluated in TypeScript.
+    const law = /float seaFoam = clamp\(([\d.e+-]+) \* ([\d.e+-]+)\n\s*\* pow\(seaFoamWind, ([\d.e+-]+)\), 0\.0, 1\.0\);/.exec(text);
+    expect(law).not.toBeNull();
+    const [factor, coefficient, exponent] = law!.slice(1).map(Number);
+    for (const wind of [0.5, 3, 7, 10, 12, 13.38, SEA_WIND_MAX_MS]) {
+      const glsl = Math.min(Math.max(factor * coefficient * Math.pow(wind, exponent), 0), 1);
+      expect(glsl).toBeCloseTo(whitecapCoverage(wind), 12);
+    }
+    // With the define off none of it is there.
+    const off = resolveDefine(seaFragment(), 'WHITECAPS', false);
+    expect(off).not.toMatch(/seaFoam|FOAM_ALBEDO|WHITECAPS/);
+  });
+
+  it('carries the whitecaps as a define on by default with the foam\'s reflectance beside it, the switch and the knob relinking them', () => {
+    expect(parseWhitecapsParam('')).toBe(true);
+    expect(parseWhitecapsParam('?whitecaps=1')).toBe(true);
+    expect(parseWhitecapsParam('?whitecaps=0')).toBe(false);
+    expect(parseFoamParam('')).toBeNull();
+    expect(parseFoamParam('?foam=0.30')).toBe(0.3);
+    expect(parseFoamParam('?foam=')).toBeNull();
+    expect(parseFoamParam('?foam=1.5')).toBeNull();
+    expect(parseFoamParam('?foam=grey')).toBeNull();
+    // A blank, a space or a hex form would read as zero through Number():
+    // a mistyped link leaves the picture alone.
+    expect(parseFoamParam('?foam=+')).toBeNull();
+    expect(parseFoamParam('?foam=%20')).toBeNull();
+    expect(parseFoamParam('?foam=0x0')).toBeNull();
+    expect(parseFoamParam('?foam=.15')).toBe(0.15);
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(whitecapsOn()).toBe(true);
+    expect(foamAlbedoInForce()).toBe(WHITECAP_ALBEDO);
+    expect(mat.defines?.WHITECAPS).toBe('');
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // Off, both leave the material, so it is the program it was, defines and
+    // all; a flip relinks through three's program key.
+    let version = mat.version;
+    setWhitecapsEnabled(false);
+    expect(whitecapsOn()).toBe(false);
+    expect(mat.defines?.WHITECAPS).toBeUndefined();
+    expect(mat.defines?.FOAM_ALBEDO).toBeUndefined();
+    expect(mat.version).toBeGreaterThan(version);
+    setWhitecapsEnabled(true);
+    expect(mat.defines?.WHITECAPS).toBe('');
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // The reflectance is a GLSL float literal, a new value relinks, and a
+    // value that is no reflectance is refused.
+    version = mat.version;
+    expect(setFoamAlbedo(0.3)).toBe(0.3);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.3');
+    expect(mat.version).toBeGreaterThan(version);
+    expect(setFoamAlbedo(1)).toBe(1);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('1.0');
+    expect(setFoamAlbedo(-0.1)).toBe(1);
+    expect(setFoamAlbedo(Number.NaN)).toBe(1);
+    expect(setFoamAlbedo(WHITECAP_ALBEDO)).toBe(WHITECAP_ALBEDO);
+    expect(mat.defines?.FOAM_ALBEDO).toBe('0.22');
+    // A surface augmented while the switch is off is born without either.
+    setWhitecapsEnabled(false);
+    const late = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(late, 'airless');
+    expect(late.defines?.WHITECAPS).toBeUndefined();
+    expect(late.defines?.FOAM_ALBEDO).toBeUndefined();
+    setWhitecapsEnabled(true);
+    expect(late.defines?.FOAM_ALBEDO).toBe('0.22');
+  });
+
   it('draws one Beckmann lobe in place of three\'s GGX, at three\'s own alpha, only with the map on', () => {
     const text = seaFragment();
     // Beckmann with alpha squared as the mean-square slope is the Gaussian
@@ -1041,6 +1153,117 @@ describe('the sea', () => {
     expect(ggx(alpha, threeSigma) / beckmann(alpha, threeSigma)).toBeGreaterThan(50);
     expect(beckmann(alpha, 0)).toBe(0);
     expect(Number.isFinite(beckmann(alpha, 0.001))).toBe(true);
+  });
+
+  it('draws the lobe along the wind\'s axis under SEA_AXIS, with the numbers world/seaWind holds and the formula the meter\'s twin evaluates', () => {
+    const text = seaFragment();
+    // One fetch: the wind and the axis from the same filtered texel, the axis
+    // decoded after the filter; the read the define replaces stands in its #else.
+    expect(text).toContain('#ifdef SEA_AXIS\n      vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);\n'
+      + `      float seaWindMs = seaWindTexel.r * ${SEA_WIND_MAX_MS.toFixed(1)};\n`
+      + '      seaAxisWind = vec3(seaWindMs,\n'
+      + `          (seaWindTexel.gb * 255.0 - ${SEA_WIND_AXIS_ZERO.toFixed(1)}) / ${SEA_WIND_AXIS_SCALE.toFixed(1)});\n`
+      + '#else\n'
+      + `      float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};\n`
+      + '#endif\n');
+    const on = resolveDefine(text, 'SEA_AXIS', true);
+    expect(on.match(/textureGrad\(uSeaWindMap/g)).toHaveLength(1);
+    // Hoisted with a sentinel: a fragment that never read the map keeps
+    // three's own alpha, round.
+    expect(on).toContain('vec3 seaAxisWind = vec3(-1.0, 0.0, 0.0);\nfloat seaWater = 0.0;');
+    expect(on).toContain('float seaAlphaU = seaAlpha;\n        float seaAlphaC = seaAlpha;\n        if (seaAxisWind.x >= 0.0) {');
+    // Only where there is water: with none the mix is exactly one.
+    expect(on).toContain('if (seaWater > 0.0) {\n        vec3 seaEast = cross(normalMatrix[1], normal);');
+    // The two slopes: the whole law plus and minus d(U) k, d from the bake's
+    // three variances, k clamped to one, both floored at the calm sea; each
+    // axis's roughness formed as three forms its own, floor and geometry
+    // roughness included.
+    expect(on).toContain(`float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;`);
+    expect(on).toContain(`float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x\n`
+      + `              - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x))\n`
+      + '              * min(seaAxisLength, 1.0);');
+    for (const sign of ['+', '-']) {
+      expect(on).toContain(`max(sqrt(sqrt(max(seaMss ${sign} seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)\n`
+        + '              + geometryRoughness, 1.0));');
+    }
+    // The frame: the body's pole in view space, east and north as the relief
+    // frame builds them, and the axis's direction in doubled angle.
+    expect(on).toContain('uniform mat3 normalMatrix;');
+    expect(on).toContain('vec3 seaEast = cross(normalMatrix[1], normal);\n'
+      + '        seaEast *= inversesqrt(max(dot(seaEast, seaEast), 1e-30));\n'
+      + '        vec3 seaNorth = cross(normal, seaEast);');
+    expect(on).toContain('vec2 seaAxisDir = seaAxisWind.yz / max(seaAxisLength, 1e-6);');
+    // Beckmann's Smith on the projected alpha under the beam chain, three's
+    // on the old; the division by three's own GGX at its own alpha either way.
+    expect(on).toContain('#ifdef SEA_BEAM\n        vec3 seaSunDir = normalize(vSunViewDir);\n        float seaBeamVis = seaBeckmannAxisVis(');
+    expect(on).toContain('seaAxisAlong2(seaAxisDir, vec2(dot(seaHalfDir, seaEast), dot(seaHalfDir, seaNorth))), seaDotNH)\n'
+      + '                / (seaVis * D_GGX(seaAlpha, seaDotNH)),');
+    // The functions as the GPU runs them, transcribed, are the meter's twin
+    // (world/glintMeter axisAlong2, axisLobe, axisAlpha, windFrameAt), whose
+    // alphas squared are the slopes.
+    expect(on).toContain('float seaAxisAlong2(vec2 a, vec2 w) {\n'
+      + '  return 0.5 + 0.5 * (a.x * (w.x * w.x - w.y * w.y) + a.y * 2.0 * w.x * w.y) / max(dot(w, w), 1e-12);\n}');
+    expect(on).toContain('float seaBeckmannAxis(float alphaU, float alphaC, float along2, float dotNH) {\n'
+      + '  float cos2 = max(dotNH * dotNH, 1e-6);\n'
+      + '  float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;\n'
+      + '  return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);\n}');
+    expect(on).toContain('float seaAxisAlpha(float alphaU, float alphaC, float along2) {\n'
+      + '  return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);\n}');
+    const gpuAlong2 = (ax: number, ay: number, we: number, wn: number): number =>
+      0.5 + (0.5 * (ax * (we * we - wn * wn) + ay * 2 * we * wn)) / Math.max(we * we + wn * wn, 1e-12);
+    const gpuLobe = (alphaU: number, alphaC: number, along2: number, dotNH: number): number => {
+      const cos2 = Math.max(dotNH * dotNH, 1e-6);
+      const invAlpha2 = 1 / (alphaC * alphaC) + (1 / (alphaU * alphaU) - 1 / (alphaC * alphaC)) * along2;
+      return Math.exp(((cos2 - 1) * invAlpha2) / cos2) / (Math.PI * alphaU * alphaC * cos2 * cos2);
+    };
+    const gpuAlpha = (alphaU: number, alphaC: number, along2: number): number =>
+      Math.sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);
+    for (const [along, across] of [[0.05, 0.03], [0.003, 0.006], [0.1018, 0.0681]]) {
+      for (let deg = 0; deg <= 40; deg += 5) {
+        for (let az = 0; az < 180; az += 20) {
+          const c = Math.cos(deg * Math.PI / 180), we = Math.cos(az * Math.PI / 180), wn = Math.sin(az * Math.PI / 180);
+          for (const [ax, ay] of [[1, 0], [0.6, 0.8], [-0.28, -0.96]]) {
+            const a2 = axisAlong2(ax, ay, we, wn);
+            expect(gpuAlong2(ax, ay, we, wn)).toBe(a2);
+            const twin = axisLobe(c, along, across, a2);
+            expect(Math.abs(gpuLobe(Math.sqrt(along), Math.sqrt(across), a2, c) - twin)).toBeLessThanOrEqual(1e-12 * twin);
+            expect(gpuAlpha(Math.sqrt(along), Math.sqrt(across), a2)).toBeCloseTo(axisAlpha(along, across, a2), 14);
+          }
+        }
+      }
+    }
+    // The frame, the shader's cross products about a pole of any length
+    // (normalMatrix carries the body's scale) against the twin's.
+    const cross = (p: number[], q: number[]) => [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    for (const n of [[1, 0, 0], [0.3, 0.5, -0.81], [-0.6, -0.7, 0.387]]) {
+      const len = Math.hypot(n[0], n[1], n[2]);
+      const unit = n.map((v) => v / len);
+      const e = cross([0, 23470, 0], unit);
+      const scale = 1 / Math.sqrt(Math.max(e[0] * e[0] + e[1] * e[1] + e[2] * e[2], 1e-30));
+      const east = e.map((v) => v * scale), north = cross(unit, east);
+      const twin = new Float64Array(6);
+      windFrameAt(unit[0], unit[1], unit[2], twin);
+      for (let k = 0; k < 3; k++) {
+        expect(east[k]).toBeCloseTo(twin[k], 12);
+        expect(north[k]).toBeCloseTo(twin[3 + k], 12);
+      }
+    }
+  });
+
+  it('is a define on by default, its switch relinking every surface', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
+    expect(mat.defines?.SEA_AXIS).toBe('');
+    expect(seaAxisOn()).toBe(true);
+    const version = mat.version;
+    setSeaAxisEnabled(false);
+    expect(mat.defines?.SEA_AXIS).toBeUndefined();
+    expect(mat.version).toBeGreaterThan(version);
+    expect(seaAxisOn()).toBe(false);
+    setSeaAxisEnabled(true);
+    expect(mat.defines?.SEA_AXIS).toBe('');
+    expect(parseSeaAxisParam('?seaaxis=0')).toBe(false);
+    expect(parseSeaAxisParam('?seaaxis=1')).toBe(true);
   });
 
   it('binds the map on one shared uniform once a sea is confirmed, and the switch and the override hold it off', () => {
@@ -1129,7 +1352,12 @@ describe('the GPU-efficiency switches', () => {
       const declared = [...compiled.matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)]
         .map((match) => match[1]);
       expect(declared.length).toBeGreaterThan(20);
-      const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms));
+      // three's own per-object matrix, which the renderer sets on every
+      // program itself: the lobe along the wind (SEA_AXIS) declares it again
+      // in the fragment stage to read the body's pole, and it links to the
+      // vertex stage's one uniform.
+      const threeSets = new Set(['normalMatrix']);
+      const unbound = [...new Set(declared)].filter((name) => !(name in shader.uniforms) && !threeSets.has(name));
       expect(unbound, `${archetype}: declared but never bound`).toEqual([]);
     }
   });

@@ -72,7 +72,7 @@
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
-import { ditherOutputText, outputDitherIsWired } from './outputDither';
+import { ditherOutputText, outputDitherIsWired, outputWriteIsOpaque } from './outputDither';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { OutputTargetPass } from './UpscalePass';
 import { bloomHighPassMaterial } from './bloomTargets';
@@ -239,7 +239,8 @@ export function fusedFragmentIsWired(variant: FusedVariant, material?: THREE.Sha
     && carries('texture2D( tDiffuse, min( vUv * uUvScale, uUvMax ) )', !variant.lens)
     && carries('uniform sampler2D tBloom;', variant.glow)
     && carries('gl_FragColor.rgb += texture2D( tBloom, vUv ).rgb;', variant.glow)
-    && outputDitherIsWired(text);
+    && outputDitherIsWired(text)
+    && outputWriteIsOpaque(text);
 }
 
 /**

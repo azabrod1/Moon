@@ -141,7 +141,9 @@ import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { SUN_LIGHT_BASELINE } from '../sunLight';
 import { onPerfSwitch, perfSwitchOn, perfSwitchUniform, setPerfSwitch } from '../../app/perfSwitches';
 import {
-  COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_MAX_MS, disposeRetiredSeaWindMaps, seaWindTexture,
+  COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, COX_MUNK_UPWIND_PER_MS,
+  SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO, SEA_WIND_MAX_MS, WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT,
+  WHITECAP_COVER_EXPONENT, WHITECAP_MEAN_FACTOR, disposeRetiredSeaWindMaps, seaWindTexture,
 } from './seaWind';
 import { DEFAULT_ALBEDO_PIVOT, surfaceLookOf } from './surfaceLook';
 import type { NightSides } from '../../app/nightSidesSetting';
@@ -453,7 +455,11 @@ const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
 // width is read per fragment from a map of the wind over the sea
 // (world/seaWind.ts) through Cox-Munk's slope law, and the constant below is
 // the one width the sea falls back to with the map switched off (`?seawind=0`,
-// or a DEV override), kept where it was so the switch is an A/B.
+// or a DEV override), kept where it was so the switch is an A/B. Cox and
+// Munk's slopes are also wider along the wind than across it, and the map
+// carries the wind's axis, so under the SEA_AXIS define (`?seaaxis=0` takes it
+// out) the lobe is two widths, along that axis and across it, and the sheen an
+// ellipse along the wind rather than the sphere's circle.
 //
 // The remap happens where the map is read rather than in the map, so the globe
 // and the streamed sectors cut from the same source move together — a sector
@@ -868,14 +874,31 @@ function applyCloudShadow(mat: THREE.Material, on: boolean): void {
   setCloudFieldCompiled(mat, on);
 }
 
-/** Set or clear one of the cloud switches' defines on a material. */
-function applySwitchDefine(mat: THREE.Material, name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY', on: boolean): void {
+/** Set or clear one of the switches' defines on a material. */
+function applySwitchDefine(
+  mat: THREE.Material,
+  name: 'CLOUD_SHADOW' | 'CLOUD_LIGHT' | 'SUN_PATH' | 'SEA_BEAM' | 'SEA_SKY' | 'WHITECAPS' | 'SEA_AXIS',
+  on: boolean,
+): void {
   const defines = (mat.defines ??= {});
   if ((defines[name] !== undefined) === on) return;
   if (on) defines[name] = '';
   else delete defines[name];
   // The define is part of three's program key: the next draw links (or finds)
   // the program with the other text.
+  mat.needsUpdate = true;
+}
+
+/** Set a define that carries a value (`#define NAME value`) on a material,
+ *  or clear it with null: the sibling of `applySwitchDefine` for a number
+ *  the text reads. three writes the defines into the program's prefix and
+ *  keys the program on each name and value, so the shader text the tests pin
+ *  is the same whatever the value, and a new value relinks like a switch. */
+function applyValuedDefine(mat: THREE.Material, name: 'FOAM_ALBEDO', value: string | null): void {
+  const defines = (mat.defines ??= {});
+  if ((defines[name] ?? null) === value) return;
+  if (value === null) delete defines[name];
+  else defines[name] = value;
   mat.needsUpdate = true;
 }
 
@@ -1144,21 +1167,55 @@ function roughnessChunk(): string {
  * because the UV jumps a whole turn at the date line and an implicit
  * derivative across it would pick the coarsest mip down one column of sea;
  * the gradients are taken in the uniform branch, outside the per-fragment
- * gate that spares pure land the fetch.
+ * gate that spares pure land the fetch. Under SEA_AXIS the same fetch's
+ * green and blue are the wind's axis, decoded (byte - 128) / 127 after the
+ * filter (the map is linear data and the decode affine, so that is the
+ * filtered axis), and carried with the wind in `seaAxisWind` down to the
+ * lobe in the sea block; its x stays negative wherever the map was not read
+ * (land under the gate, or the map off), and the lobe there keeps three's
+ * own width, round.
+ *
+ * Under the WHITECAPS define the same wind greys the sea's diffuse colour by
+ * the foam it raises (WHITECAP_* in world/seaWind), after the water colour,
+ * so a shelf painted its own colour takes foam too and a painted texel is
+ * matched before the foam moves it. Every line it adds is a whole line inside
+ * its own conditional, so with the define off the text is the text it was.
+ * The wind is copied out of the per-fragment read rather than the read moved:
+ * a second declaration outside would be shadowed by the one inside and the
+ * foam would read zero. The copy sits after BOTH arms of the SEA_AXIS read,
+ * so the lobe's define never decides whether the sea has foam. No read (no
+ * map, `?seawind=0`, a DEV `?glint=` roughness) leaves it at zero, which is
+ * no foam.
  */
 const WATER_GLOSS_GLSL = /* glsl */ `
+#ifdef SEA_AXIS
+vec3 seaAxisWind = vec3(-1.0, 0.0, 0.0);
+#endif
 float seaWater = 0.0;
 if (GROUND_ON(uWaterGloss > 0.0)) {
   float waterGain = uWaterGloss;
   seaWater = clamp((${ROUGHNESS_MAP_LAND.toFixed(6)} - roughnessFactor)
       / ${(ROUGHNESS_MAP_LAND - ROUGHNESS_MAP_WATER).toFixed(6)}, 0.0, 1.0);
+#ifdef WHITECAPS
+  float seaFoamWind = 0.0;
+#endif
   if (uSeaWindOn > 0.5) {
     vec3 seaDir = normalize(vObjPos);
     vec2 seaUv = sphereEquirectUv(seaDir);
     vec2 seaDx = sphereEquirectUvGrad(seaDir, dFdx(seaDir));
     vec2 seaDy = sphereEquirectUvGrad(seaDir, dFdy(seaDir));
     if (roughnessFactor < ${(ROUGHNESS_MAP_LAND - 0.005).toFixed(6)}) {
+#ifdef SEA_AXIS
+      vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);
+      float seaWindMs = seaWindTexel.r * ${SEA_WIND_MAX_MS.toFixed(1)};
+      seaAxisWind = vec3(seaWindMs,
+          (seaWindTexel.gb * 255.0 - ${SEA_WIND_AXIS_ZERO.toFixed(1)}) / ${SEA_WIND_AXIS_SCALE.toFixed(1)});
+#else
       float seaWindMs = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy).r * ${SEA_WIND_MAX_MS.toFixed(1)};
+#endif
+#ifdef WHITECAPS
+      seaFoamWind = seaWindMs;
+#endif
       float seaRoughness = sqrt(sqrt(${COX_MUNK_SLOPE_CALM.toFixed(5)}
           + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaWindMs));
       waterGain = (${ROUGHNESS_MAP_LAND.toFixed(6)} - seaRoughness)
@@ -1178,6 +1235,18 @@ if (GROUND_ON(uWaterGloss > 0.0)) {
         distance(diffuseColor.rgb, vec3(${SEA_PAINT_COLOUR.map((v) => v.toFixed(6)).join(', ')})));
     diffuseColor.rgb = mix(diffuseColor.rgb, ${SEA_COLOUR_GLSL}, seaWater * seaPaint * uSeaMix);
   }
+#ifdef WHITECAPS
+  // Whitecaps: the share of the surface that is foam at this annual mean
+  // wind (Monahan and O'Muircheartaigh's law, times the mean over a Weibull
+  // spread of winds), mixed in at the foam's reflectance, one grey. It
+  // multiplies everything the albedo does (the Sun's diffuse, the sky's and
+  // the Moon's light, the night floor) and nothing the mirror term reads.
+  if (seaFoamWind > 0.0) {
+    float seaFoam = clamp(${WHITECAP_MEAN_FACTOR.toFixed(1)} * ${WHITECAP_COVER_COEFFICIENT.toExponential()}
+        * pow(seaFoamWind, ${WHITECAP_COVER_EXPONENT.toFixed(2)}), 0.0, 1.0);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(FOAM_ALBEDO), seaFoam * seaWater);
+  }
+#endif
 }`;
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -2096,7 +2165,11 @@ ${GROUND_FIELD_ARCHETYPE_CLOSE}#define GROUND_ON(x) (x)
  * body swaps it in for three's GGX — whose tail at three sigma of facet tilt
  * is eighty times heavier, and was the haze round the sheen — wherever the
  * wind map is on. The cosine is floored so a facet turned away is a lobe of
- * nothing rather than a division by nothing.
+ * nothing rather than a division by nothing. Under SEA_AXIS the lobe is the
+ * same Gaussian with a different variance along the wind's axis than across
+ * it (world/seaWind `axisSlopes`), and Smith's term takes the alpha projected
+ * on each direction's azimuth; world/glintMeter carries the same two
+ * functions on the CPU.
  */
 const SEA_LOBE_GLSL = /* glsl */ `
 // Unpolarised Fresnel reflectance of water at an incidence cosine, exact for
@@ -2125,6 +2198,37 @@ float seaBeckmannG1(float cosTheta, float alpha) {
 float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
   return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
 }
+#ifdef SEA_AXIS
+// The same lobe along the wind. A tangent direction whose components east and
+// north are w lies at an azimuth from the wind's axis whose cosine squared is
+// one half of (1 + (a.x (e² - n²) + a.y 2 e n) / (e² + n²)), a the axis's
+// direction in doubled angle, (cos 2 theta, sin 2 theta) with theta from east
+// toward north: the half-angle identity, with no angle taken. A direction with
+// no tangent part, or a frame collapsed at a pole, reads one half.
+float seaAxisAlong2(vec2 a, vec2 w) {
+  return 0.5 + 0.5 * (a.x * (w.x * w.x - w.y * w.y) + a.y * 2.0 * w.x * w.y) / max(dot(w, w), 1e-12);
+}
+// Beckmann in the wind's frame: alphaU along the axis and alphaC across it, the
+// half vector at cosine dotNH to the normal and at cos² along2 of its azimuth
+// from the axis. The inverse square alpha along that azimuth is the across one
+// plus the difference times along2, so with alphaU = alphaC it is that alpha's
+// and the lobe is seaBeckmann's.
+float seaBeckmannAxis(float alphaU, float alphaC, float along2, float dotNH) {
+  float cos2 = max(dotNH * dotNH, 1e-6);
+  float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;
+  return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);
+}
+// Smith's term on the projected alpha: a direction at cos² along2 of its
+// azimuth from the axis sees alpha² = alphaU² cos² + alphaC² sin², and
+// Beckmann's own G1 at that alpha.
+float seaAxisAlpha(float alphaU, float alphaC, float along2) {
+  return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);
+}
+float seaBeckmannAxisVis(float alphaU, float alphaC, float alongL, float alongV, float dotNL, float dotNV) {
+  return seaBeckmannG1(dotNL, seaAxisAlpha(alphaU, alphaC, alongL))
+      * seaBeckmannG1(dotNV, seaAxisAlpha(alphaU, alphaC, alongV)) / max(4.0 * dotNL * dotNV, 1e-6);
+}
+#endif
 `;
 
 /**
@@ -2223,6 +2327,15 @@ uniform float uWaterGloss;
 uniform float uSeaMix;
 uniform sampler2D uSeaWindMap;
 uniform float uSeaWindOn;
+#ifdef SEA_AXIS
+// The body's pole in view space, for the lobe along the wind. three declares
+// normalMatrix in the vertex stage, and here only for an object-space normal
+// map; the same name, type and precision links to the one uniform three
+// already sets per object.
+#ifndef USE_NORMALMAP_OBJECTSPACE
+uniform mat3 normalMatrix;
+#endif
+#endif
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
@@ -2432,9 +2545,13 @@ ${CLOUD_CLEAR_RETURN}`;
  * of zero or more and their glow bit for bit. Only the ground: the deck's
  * alpha IS its coverage, and its blend over the sea pulls the flag back
  * toward 1 in proportion, which is the continuous control it should be. The
- * canvas is opaque and every finishing pass writes its own alpha, so the flag
- * reaches the bright pass and nothing else. Off with `?seabeam=0`, where the
- * cap before the air kept the sea under the bloom's threshold anyway.
+ * flag must reach the bright pass and nothing else: every write that lands on
+ * the canvas sets its own alpha to one (app/outputDither.ts
+ * OUTPUT_OPAQUE_WRITE), because Safari composites the canvas with whatever
+ * alpha the last write left, opaque context or not, and the night this flag
+ * shipped without that (2026-10-08) every open-sea pixel showed the page's
+ * black. Off with `?seabeam=0`, where the cap before the air kept the sea
+ * under the bloom's threshold anyway.
  */
 const SEA_BLOOM_FLAG_GLSL = /* glsl */ `
 #ifdef SEA_BEAM
@@ -2778,6 +2895,57 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // dark on this lobe at a grazing Sun and eye, which is where the beam
       // is; the old chain keeps three's, which then cancels. The denominator
       // stays three's whichever chain, since that is what is being divided out.
+#ifdef SEA_AXIS
+      // The lobe along the wind (SEA_AXIS, world/seaWind axisSlopes), only
+      // where there is water: with none the mix below is exactly one, so
+      // land skips the work and draws what it drew. The wind's frame on the
+      // shading normal: east and north from the body's pole in view space
+      // (the body frame's +Y, the pole the equirect maps are laid on), as
+      // world/reliefFrame builds them, the pole's length cancelling in the
+      // normalisation; each direction is read by its east and north parts
+      // against the axis in doubled angle (seaAxisAlong2), so no angle is
+      // taken. At a pole the frame collapses to nothing and every direction
+      // reads halfway between the two alphas; the map's own averaging has
+      // the axis near zero there anyway. Each axis's roughness is formed as
+      // three forms the one it lights with, its floor and this fragment's
+      // geometry roughness included, from the water's own slopes and never
+      // from material.roughness, which at a coast is the blend of water and
+      // land. Where the map was not read the lobe keeps three's alpha, round.
+      // The division stays by three's own isotropic GGX at its own alpha,
+      // which is what three put in.
+      if (seaWater > 0.0) {
+        vec3 seaEast = cross(normalMatrix[1], normal);
+        seaEast *= inversesqrt(max(dot(seaEast, seaEast), 1e-30));
+        vec3 seaNorth = cross(normal, seaEast);
+        float seaAxisLength = length(seaAxisWind.yz);
+        vec2 seaAxisDir = seaAxisWind.yz / max(seaAxisLength, 1e-6);
+        float seaAlphaU = seaAlpha;
+        float seaAlphaC = seaAlpha;
+        if (seaAxisWind.x >= 0.0) {
+          float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;
+          float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x
+              - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x))
+              * min(seaAxisLength, 1.0);
+          seaAlphaU = pow2(min(max(sqrt(sqrt(max(seaMss + seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+              + geometryRoughness, 1.0));
+          seaAlphaC = pow2(min(max(sqrt(sqrt(max(seaMss - seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+              + geometryRoughness, 1.0));
+        }
+#ifdef SEA_BEAM
+        vec3 seaSunDir = normalize(vSunViewDir);
+        float seaBeamVis = seaBeckmannAxisVis(seaAlphaU, seaAlphaC,
+            seaAxisAlong2(seaAxisDir, vec2(dot(seaSunDir, seaEast), dot(seaSunDir, seaNorth))),
+            seaAxisAlong2(seaAxisDir, vec2(dot(seaViewDir, seaEast), dot(seaViewDir, seaNorth))), seaDotNL, seaDotNV);
+#else
+        float seaBeamVis = seaVis;
+#endif
+        seaLobe = mix(1.0,
+            seaBeamVis * seaBeckmannAxis(seaAlphaU, seaAlphaC,
+                seaAxisAlong2(seaAxisDir, vec2(dot(seaHalfDir, seaEast), dot(seaHalfDir, seaNorth))), seaDotNH)
+                / (seaVis * D_GGX(seaAlpha, seaDotNH)),
+            seaWater);
+      }
+#else
 #ifdef SEA_BEAM
       float seaBeamVis = seaBeckmannVis(seaAlpha, seaDotNL, seaDotNV);
 #else
@@ -2786,6 +2954,7 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       seaLobe = mix(1.0,
           seaBeamVis * seaBeckmann(seaAlpha, seaDotNH) / (seaVis * D_GGX(seaAlpha, seaDotNH)),
           seaWater);
+#endif
     }
     vec3 seaGlintFull = glintRaw * (seaFresnel * seaLobe${GLINT_KEEP_GLSL});
     // The old chain caps the term here, before the air and the limb darkening
@@ -3229,6 +3398,26 @@ let sunPathEnabled = true;
 let seaBeamEnabled = true;
 /** `SEA_SKY` (`?seasky=0`): the sky reflected off the sea (SEA_SKY_GRAZING_COS), the same shape of switch. */
 let seaSkyEnabled = true;
+/**
+ * `WHITECAPS` (`?whitecaps=0`): the sea's diffuse colour greyed by the foam
+ * the wind raises (WATER_GLOSS_GLSL; the law and the foam's reflectance are
+ * world/seaWind's WHITECAP_*), the same shape of switch, compiled in by
+ * default and out by the kill switch on any build. While it is on, every
+ * surface also carries the valued define `FOAM_ALBEDO`, the foam's
+ * reflectance: WHITECAP_ALBEDO in production, moved in a development build
+ * by `?foam=<reflectance>` at boot and `__moon.glint({ foam })` live, so a
+ * sheet of candidates comes out of one page load. A define rather than a
+ * uniform, so no pinned text moves and a development build carries no
+ * uniform production lacks. With the switch off both defines leave the
+ * material, which is then the program it was, defines and all.
+ */
+let whitecapsEnabled = true;
+let foamAlbedo = WHITECAP_ALBEDO;
+/** `SEA_AXIS` (`?seaaxis=0`): the sea's lobe as an ellipse along the wind's
+ *  axis (world/seaWind `axisSlopes`), the same shape of switch; off, the
+ *  lobe is round at the wind's whole mean-square slope, the text it was. The
+ *  highlight meter's twin follows it (`seaAxisOn`). */
+let seaAxisEnabled = true;
 /** Every live augmented surface, so a flip can reach the materials already drawn. */
 const beamReceivers = new Set<THREE.Material>();
 function receiveBeamSwitches(mat: THREE.Material): void {
@@ -3239,6 +3428,55 @@ function receiveBeamSwitches(mat: THREE.Material): void {
   applySwitchDefine(mat, 'SUN_PATH', sunPathEnabled);
   applySwitchDefine(mat, 'SEA_BEAM', seaBeamEnabled);
   applySwitchDefine(mat, 'SEA_SKY', seaSkyEnabled);
+  applySwitchDefine(mat, 'SEA_AXIS', seaAxisEnabled);
+  applyWhitecaps(mat);
+}
+/** A number as a GLSL float literal, which needs a point or an exponent. */
+function glslFloatLiteral(value: number): string {
+  const text = String(value);
+  return /[.e]/.test(text) ? text : `${text}.0`;
+}
+function applyWhitecaps(mat: THREE.Material): void {
+  applySwitchDefine(mat, 'WHITECAPS', whitecapsEnabled);
+  applyValuedDefine(mat, 'FOAM_ALBEDO', whitecapsEnabled ? glslFloatLiteral(foamAlbedo) : null);
+}
+export function setWhitecapsEnabled(on: boolean): void {
+  whitecapsEnabled = on;
+  for (const mat of beamReceivers) applyWhitecaps(mat);
+}
+/** Whether every surface compiles the whitecaps right now. */
+export function whitecapsOn(): boolean {
+  return whitecapsEnabled;
+}
+/** `?whitecaps=0`, any build: the sea without foam, the picture as it was. */
+export function parseWhitecapsParam(search: string): boolean {
+  return new URLSearchParams(search).get('whitecaps') !== '0';
+}
+/** The foam's reflectance every surface compiles: WHITECAP_ALBEDO unless a
+ *  development build moved it. */
+export function foamAlbedoInForce(): number {
+  return foamAlbedo;
+}
+/** Set the foam's reflectance on every surface, relinking them; a value
+ *  outside [0, 1] or not a number is refused. Returns the value in force.
+ *  Only the development build's knobs call it. */
+export function setFoamAlbedo(value: number): number {
+  if (!(Number.isFinite(value) && value >= 0 && value <= 1)) return foamAlbedo;
+  foamAlbedo = value;
+  for (const mat of beamReceivers) applyWhitecaps(mat);
+  return foamAlbedo;
+}
+/** DEV `?foam=<reflectance>`: the foam's reflectance for the session, for a
+ *  sheet of candidates, one link apiece. Null when the link has none or a
+ *  bad one, and always in production, which reads WHITECAP_ALBEDO. */
+export function parseFoamParam(search: string): number | null {
+  if (!import.meta.env.DEV) return null;
+  const raw = new URLSearchParams(search).get('foam');
+  // A plain decimal only: Number() reads a blank, a space or a hex form as
+  // zero, and a mistyped link must leave the picture alone, not darken the sea.
+  if (raw === null || !/^\s*\d*\.?\d+(e-?\d+)?\s*$/i.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 export function setSunPathEnabled(on: boolean): void {
   sunPathEnabled = on;
@@ -3259,6 +3497,18 @@ export function seaSkyOn(): boolean {
 /** The `?seasky=0` kill switch, on any build. */
 export function parseSeaSkyParam(search: string): boolean {
   return new URLSearchParams(search).get('seasky') !== '0';
+}
+export function setSeaAxisEnabled(on: boolean): void {
+  seaAxisEnabled = on;
+  for (const mat of beamReceivers) applySwitchDefine(mat, 'SEA_AXIS', on);
+}
+/** Whether every surface compiles the lobe along the wind right now. */
+export function seaAxisOn(): boolean {
+  return seaAxisEnabled;
+}
+/** The `?seaaxis=0` kill switch, on any build. */
+export function parseSeaAxisParam(search: string): boolean {
+  return new URLSearchParams(search).get('seaaxis') !== '0';
 }
 /** The beam's shoulder as the sea draws it this frame: the DEV knobs' values
  *  in a development build, the constants in production. The highlight meter

@@ -322,11 +322,12 @@ try {
   }
 
   // ---- marker-behind-limb integration case (REAL pipeline, strength 1) ------
-  // A REAL planet is framed off-axis; its analytic foreground-occlusion disc
-  // (collectForegroundDiscs, lens-projected) is read live, and a REAL marker
-  // sprite is placed at that disc's predicted limb ± margin and culled by the
-  // REAL analytic path (isScreenPointOccluded) exactly as a planet beacon is —
-  // so the DRAWN marker pixels gate on the analytic-disc sizing, not GPU depth.
+  // A REAL planet is framed off-axis; the limb circle its foreground sphere
+  // draws on the screen (devPlanetOccluderDisc, lens-projected) is read live,
+  // and a REAL marker sprite is placed at that limb ± margin and culled by the
+  // REAL analytic path (isScreenPointOccluded, the sight line against the
+  // sphere) exactly as a planet beacon is — so the DRAWN marker pixels gate on
+  // the sight-line test, not GPU depth.
   // Runs with bloom off so the bright marker can't bloom a halo past the limb.
   {
     const context = await browser.newContext({

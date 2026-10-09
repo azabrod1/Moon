@@ -4,12 +4,15 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   COX_MUNK_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO, SEA_WIND_MAX_MS,
+  COX_MUNK_CROSSWIND_CALM as APP_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS as APP_CROSSWIND_PER_MS,
+  COX_MUNK_UPWIND_PER_MS as APP_UPWIND_PER_MS, axisSlopes, slopeAnisotropy as appSlopeAnisotropy,
   disposeRetiredSeaWindMaps,
   installSeaWindMap, loadSeaWindMap, meanSquareSlope, parseSeaWindMapParam, parseSeaWindParam, seaWindAxisFromByte,
   seaWindBytesFromRgba, seaWindMapDimensions, seaWindMapSource, seaWindRgbaFromSpeed, seaWindTexture, seaWindTextureFrom,
   setSeaWindMips, windRoughness,
+  WHITECAP_ALBEDO, WHITECAP_COVER_COEFFICIENT, WHITECAP_COVER_EXPONENT, WHITECAP_MEAN_FACTOR, whitecapCoverage,
 } from './seaWind';
-import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER } from './surfaceShading';
+import { ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER, SEA_WATER_COLOUR } from './surfaceShading';
 import { PLANET_TEXTURE_FILES } from './textureLadder';
 import {
   COX_MUNK_SLOPE_CALM as GENERATOR_SLOPE_CALM, COX_MUNK_SLOPE_PER_MS as GENERATOR_SLOPE_PER_MS,
@@ -55,6 +58,64 @@ describe('windRoughness', () => {
     expect(GENERATOR_SLOPE_PER_MS).toBe(COX_MUNK_SLOPE_PER_MS);
     expect(GENERATOR_WIND_MAX_MS).toBe(SEA_WIND_MAX_MS);
     expect(generatorMeanSquareSlope(3)).toBeCloseTo(meanSquareSlope(3), 12);
+  });
+});
+
+describe('whitecapCoverage', () => {
+  /** Γ(x) for x > 0.5, Lanczos (g = 7, nine terms): good to about 1e-13. */
+  const gamma = (x: number): number => {
+    const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+      -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+    const z = x - 1;
+    let a = c[0];
+    const t = z + 7.5;
+    for (let i = 1; i < 9; i++) a += c[i] / (z + i);
+    return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * a;
+  };
+  /** E[W(U)] / W(E[U]) over a Weibull spread of winds of shape k. */
+  const weibullFactor = (k: number): number =>
+    gamma(1 + WHITECAP_COVER_EXPONENT / k) / Math.pow(gamma(1 + 1 / k), WHITECAP_COVER_EXPONENT);
+
+  it('is Monahan and O\'Muircheartaigh\'s law, raised to the mean over a spread of winds about the annual mean', () => {
+    expect(WHITECAP_COVER_COEFFICIENT).toBe(3.84e-6);
+    expect(WHITECAP_COVER_EXPONENT).toBe(3.41);
+    expect(gamma(5)).toBeCloseTo(24, 10);
+    expect(gamma(1.5)).toBeCloseTo(Math.sqrt(Math.PI) / 2, 12);
+    // The factor the sea takes sits between the open ocean's shapes, 2.34 at
+    // k = 2 and 1.83 at k = 2.5; the steady trades' is about 1.35.
+    expect(weibullFactor(2)).toBeCloseTo(2.34, 2);
+    expect(weibullFactor(2.5)).toBeCloseTo(1.825, 3);
+    expect(WHITECAP_MEAN_FACTOR).toBeLessThan(weibullFactor(2));
+    expect(WHITECAP_MEAN_FACTOR).toBeGreaterThan(weibullFactor(2.5));
+    expect((weibullFactor(3.5) + weibullFactor(4)) / 2).toBeCloseTo(1.37, 1);
+    // The cover the header states.
+    expect(whitecapCoverage(7)).toBeCloseTo(0.0061, 4);
+    expect(whitecapCoverage(10)).toBeCloseTo(0.0207, 4);
+    expect(whitecapCoverage(12)).toBeCloseTo(0.0386, 4);
+    expect(whitecapCoverage(13.38)).toBeCloseTo(0.0559, 4);
+    expect(whitecapCoverage(6)).toBeCloseTo(0.0036, 4);
+    // No wind is no foam, and the share never passes the whole surface.
+    expect(whitecapCoverage(0)).toBe(0);
+    expect(whitecapCoverage(-4)).toBe(0);
+    expect(whitecapCoverage(Number.NaN)).toBe(0);
+    expect(whitecapCoverage(1000)).toBe(1);
+    let last = 0;
+    for (let wind = 0.25; wind <= SEA_WIND_MAX_MS; wind += 0.25) {
+      expect(whitecapCoverage(wind)).toBeGreaterThan(last);
+      last = whitecapCoverage(wind);
+    }
+  });
+
+  it('greys the water colour rather than whitening it', () => {
+    expect(WHITECAP_ALBEDO).toBe(0.22);
+    const at = (cover: number) => SEA_WATER_COLOUR.map((water) => water * (1 - cover) + WHITECAP_ALBEDO * cover);
+    const [red, green, blue] = at(0.04);
+    expect(red / SEA_WATER_COLOUR[0]).toBeCloseTo(6.83, 2);
+    expect(green / SEA_WATER_COLOUR[1]).toBeCloseTo(1.94, 2);
+    expect(blue / SEA_WATER_COLOUR[2]).toBeCloseTo(1.27, 2);
+    // Still far from white: at the windiest annual mean no channel reaches
+    // 0.04, well under a tenth.
+    expect(Math.max(...at(whitecapCoverage(13.38)))).toBeLessThan(0.04);
   });
 });
 
@@ -364,6 +425,58 @@ describe('the shipped map (tools/gen-seawind.mjs)', () => {
         expect(row.p99).toBeLessThan(0.1);
       }
     }
+  });
+});
+
+describe('the lobe along the wind\'s slopes', () => {
+  it('are the bake\'s own: the three variances and the anisotropy tools/seaWindMap.mjs bakes the axis with', () => {
+    expect(APP_UPWIND_PER_MS).toBe(COX_MUNK_UPWIND_PER_MS);
+    expect(APP_CROSSWIND_CALM).toBe(COX_MUNK_CROSSWIND_CALM);
+    expect(APP_CROSSWIND_PER_MS).toBe(COX_MUNK_CROSSWIND_PER_MS);
+    for (const wind of [0, 1, 2.42, 3, 7, 12, SEA_WIND_MAX_MS]) expect(appSlopeAnisotropy(wind)).toBe(slopeAnisotropy(wind));
+  });
+
+  it('keep the total law, add d k along the axis and take it off across, floored at the calm sea, k clamped to one', () => {
+    const out: [number, number] = [0, 0];
+    // No axis: both are the whole mean-square slope, exactly.
+    for (const wind of [0, 2, 7, SEA_WIND_MAX_MS]) {
+      expect(axisSlopes(wind, 0, 0, out)).toEqual([meanSquareSlope(wind), meanSquareSlope(wind)]);
+    }
+    // At 7 m/s along a full axis: mss +- d, the ellipse's two slopes; their
+    // mean is the total law, which the lobe keeps.
+    const d7 = appSlopeAnisotropy(7);
+    axisSlopes(7, 0.6, 0.8, out);
+    expect(out[0]).toBeCloseTo(meanSquareSlope(7) + d7, 15);
+    expect(out[1]).toBeCloseTo(meanSquareSlope(7) - d7, 15);
+    expect((out[0] + out[1]) / 2).toBeCloseTo(meanSquareSlope(7), 15);
+    // About 16 % longer along the wind at 7 m/s, in alpha.
+    expect(Math.sqrt(out[0] / out[1])).toBeGreaterThan(1.13);
+    expect(Math.sqrt(out[0] / out[1])).toBeLessThan(1.19);
+    // Half the axis, half the anisotropy.
+    axisSlopes(7, 0.3, 0.4, out);
+    expect(out[0] - meanSquareSlope(7)).toBeCloseTo(d7 / 2, 15);
+    // Byte rounding decodes a full axis past one ((218, 218) is 1.0022 long):
+    // clamped, it draws exactly the full axis.
+    const past = seaWindAxisFromByte(218);
+    expect(Math.hypot(past, past)).toBeGreaterThan(1);
+    const full: [number, number] = [0, 0];
+    axisSlopes(7, past, past, out);
+    axisSlopes(7, Math.SQRT1_2, Math.SQRT1_2, full);
+    expect(out[0]).toBeCloseTo(full[0], 15);
+    expect(out[1]).toBeCloseTo(full[1], 15);
+    // Below 2.42 m/s the crosswind slope is the wider: along is the narrow one.
+    axisSlopes(1, 1, 0, out);
+    expect(out[0]).toBeLessThan(out[1]);
+    // A calm, steady wind would draw a needle across its axis; the floor at
+    // the calm sea's slope holds it there.
+    axisSlopes(0, 1, 0, out);
+    expect(out[0]).toBe(COX_MUNK_SLOPE_CALM);
+    axisSlopes(0.2, 1, 0, out);
+    expect(out[0]).toBe(COX_MUNK_SLOPE_CALM);
+    expect(out[1]).toBeGreaterThan(COX_MUNK_SLOPE_CALM);
+    // The floor is far above three's own roughness floor (0.0525, in alpha²
+    // 0.0525⁴), so the shader's per-axis roughness never reaches it.
+    expect(Math.pow(COX_MUNK_SLOPE_CALM, 0.25)).toBeGreaterThan(0.0525);
   });
 });
 

@@ -33,6 +33,12 @@
  * test holds it to). The mask the roughness map carries still says where
  * there is sea at all, so land and a coast's fraction are untouched.
  *
+ * The same read greys the sea where it blows: whitecaps, the share of the
+ * surface that is foam at that wind (`whitecapCoverage`, below), mixed into
+ * the sea's diffuse colour at the foam's reflectance under the WHITECAPS
+ * define (world/surfaceShading; `?whitecaps=0` on any build compiles it
+ * out). The mirror term is not scaled for the foam's share.
+ *
  * The map arrives like Earth's other detail maps (PlanetFactory's
  * loadTexture), as the 'data' kind of world/texturePolicy — linear, every
  * channel kept; a one-channel 'mask' upload would drop the axis — and is
@@ -47,7 +53,9 @@
  * RGBA and no uniform says whether there is an axis.
  *
  * `?seawind=0` (any build) draws the whole sea at OCEAN_ROUGHNESS with three's
- * own lobe — the kill switch, and the A/B against the one-width sea. The DEV
+ * own lobe — the kill switch, and the A/B against the one-width sea. It
+ * takes the whitecaps with it, because the foam reads the wind from the map
+ * and with the map off there is no wind to read. The DEV
  * `?seawindmap=<url>` reads the map from a file instead of the shipped one (a
  * picture whose red is the wind and whose green and blue are the axis, as the
  * bake's `--png` writes one; a grey picture is the wind alone; or a raw byte
@@ -81,6 +89,46 @@ export function meanSquareSlope(windMs: number): number {
  */
 export function windRoughness(windMs: number): number {
   return Math.pow(meanSquareSlope(windMs), 0.25);
+}
+
+/**
+ * Whitecaps: the share of the sea's surface that is foam at a wind, Monahan
+ * and O'Muircheartaigh's law W(U) = 3.84e-6 U^3.41 (U the 10 m wind in m/s).
+ *
+ * The map holds an ANNUAL MEAN speed and the law is near-cubic, so the law
+ * read at the mean understates the mean cover. Over a Weibull distribution
+ * of winds with shape k about that mean, the expected cover is
+ * Γ(1 + 3.41/k) / Γ(1 + 1/k)^3.41 times W(mean): 2.34 at k = 2 and 1.83 at
+ * k = 2.5, the shapes of the open ocean's winds. The sea takes the factor
+ * WHITECAP_MEAN_FACTOR, 2.1, a shape near 2.2. The trades blow steadier
+ * (k near 3.5 to 4, a factor near 1.35), so their cover is overstated by
+ * about half, where it is tiny anyway (0.4 % at 6 m/s). The cover this
+ * gives: 0.6 % at 7 m/s, 2.1 % at 10, 3.9 % at 12, and 5.6 % at the map's
+ * windiest annual mean, 13.38 m/s.
+ *
+ * The surface shader evaluates the same law on the wind it reads
+ * (world/surfaceShading, the WHITECAPS define) with the coefficient written
+ * as an exponent literal; the tests hold its three numbers to these.
+ */
+export const WHITECAP_COVER_COEFFICIENT = 3.84e-6;
+export const WHITECAP_COVER_EXPONENT = 3.41;
+export const WHITECAP_MEAN_FACTOR = 2.1;
+
+/**
+ * The foam's effective reflectance: 0.22 (Koepke 1984), the value ocean-colour
+ * processing removes for whitecaps. One grey, the same in every channel; the
+ * measured value is about 11 % lower at 670 nm, which is ignored. Mixed over
+ * the water colour by the cover, so it greys the sea rather than whitening
+ * it: 4 % foam over (0.0015, 0.009, 0.028) raises red about 6.9 times, green
+ * about 1.9 times and blue by about 27 %.
+ */
+export const WHITECAP_ALBEDO = 0.22;
+
+/** The share of the sea's surface that is foam under this annual mean wind,
+ *  in [0, 1]; no wind is no foam. */
+export function whitecapCoverage(windMs: number): number {
+  if (!(windMs > 0)) return 0;
+  return Math.min(WHITECAP_MEAN_FACTOR * WHITECAP_COVER_COEFFICIENT * Math.pow(windMs, WHITECAP_COVER_EXPONENT), 1);
 }
 
 /** The axis's bytes: 128 + round(127 x) a channel, read back (byte - 128) /

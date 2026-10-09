@@ -15,6 +15,12 @@
  * the renderer the smaller of this and the Sun's own coverage meter, so the
  * same view is never darkened twice.
  *
+ * The beam as drawn and as predicted is the foam-free sea's (the whitecaps,
+ * world/seaWind, grey the diffuse colour and leave the mirror term whole), up
+ * to about 5.6 % brighter than a foam-covered one at the map's windiest
+ * annual mean (13.38 m/s), on the safe side for a meter that only lowers the
+ * exposure.
+ *
  * It costs about a tenth of a millisecond on the main thread (60–120 µs a
  * frame on an M5 Max over the shipped maps, the search beside the principal
  * line included) and nothing on the GPU,

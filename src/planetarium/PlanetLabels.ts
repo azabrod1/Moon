@@ -1,13 +1,17 @@
 /**
  * Planetarium planet labels: a billboard sprite + HTML distance label per body.
  * Sprite hides once the planet subtends enough pixels to see as a mesh.
- * Labels occlusion-cull against closer foreground planets so distant-body tags
- * don't float over the sunlit side of a nearer world.
+ * Labels and markers are hidden by nearer bodies through a sight-line test
+ * against each body's sphere (`sphereHidesPoint`), so a distant body's tag
+ * never floats over a nearer world — the ground and clouds under the horizon
+ * included, when the camera looks along it from low altitude, where no circle
+ * drawn on the screen can stand in for the body.
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
 import {
   projectSphereToScreen,
+  screenPointToWorldRay,
   type SphereScreenProjection,
 } from '../shared/three/projectToScreen';
 import {
@@ -78,14 +82,62 @@ const NOMINAL_LABEL_H = 24;
 const LABEL_FADE_MASK_LO = 0.25;
 const LABEL_FADE_MASK_HI = 0.65;
 
-export interface ForegroundDisc {
-  screenX: number;
-  screenY: number;
-  radiusPx: number;
-  // Distance from camera (not player). Camera-based so the landed case
-  // (player sits at body center) doesn't collapse the depth comparison.
+/**
+ * One body that can hide a label, a marker or a pick this frame: a sphere,
+ * held as its centre relative to the camera (scene axes, AU) and the radius
+ * to clear. Everything that blocks is a sphere — the planets, the Sun, the
+ * rendered moons and the ship's occluder ball — so the test is the sight line
+ * against the sphere itself (`sphereHidesPoint`), never a circle fitted on
+ * the screen: a fitted circle has no honest centre or radius once the body's
+ * rim crosses the camera plane, which is every view along the ground from low
+ * altitude, and from there far planets' names and dots were drawn over the
+ * cloud deck. Nor does the sphere carry a pad: the body hides exactly what
+ * its drawn ground covers, so a label clears the limb as soon as it is in the
+ * sky, never earlier.
+ */
+export interface ForegroundSphere {
+  /** Centre relative to the camera, scene axes, AU. */
+  x: number;
+  y: number;
+  z: number;
+  radiusAU: number;
+  // |(x, y, z)|: distance from the camera (not the player). Camera-based so
+  // the landed case (player sits at body centre) keeps a real depth.
   distFromCamera: number;
   name: string;
+}
+
+/**
+ * Whether the sight line from the camera along the unit direction (dx, dy,
+ * dz) enters `sphere` before travelling `distAlong` — the test for a point at
+ * that distance being hidden by the body. Exact for a sphere under any
+ * projection, so one answer serves a label's anchor pixel (its line back
+ * through the lens from `screenPointToWorldRay`), a marker's centre and a
+ * pick. A sphere behind the camera hides nothing. A camera inside a sphere
+ * sees out through its culled back faces, so producers never add one — here
+ * it would hide everything.
+ */
+export function sphereHidesPoint(
+  sphere: ForegroundSphere,
+  dx: number,
+  dy: number,
+  dz: number,
+  distAlong: number,
+): boolean {
+  // Closest approach of the line to the centre, measured along the ray, and
+  // the miss vector from there — formed directly, not as d² − along², which
+  // cancels to nothing against a planet an AU away.
+  const along = dx * sphere.x + dy * sphere.y + dz * sphere.z;
+  const mx = sphere.x - along * dx;
+  const my = sphere.y - along * dy;
+  const mz = sphere.z - along * dz;
+  const missSq = mx * mx + my * my + mz * mz;
+  const rSq = sphere.radiusAU * sphere.radiusAU;
+  if (missSq >= rSq) return false;
+  // Where the line enters the sphere: behind the camera means the sphere is
+  // behind us; beyond the point means the point sits in front of the body.
+  const entry = along - Math.sqrt(rSq - missSq);
+  return entry > 0 && entry < distAlong;
 }
 
 /**
@@ -102,19 +154,23 @@ export interface PickCandidate {
   /** Pointer catch radius in CSS px (drawn radius, floored so tiny dots stay hittable). */
   pickRadiusPx: number;
   distFromCamera: number;
+  /** Unit direction from the camera to the body's centre, scene axes. */
+  dirX: number;
+  dirY: number;
+  dirZ: number;
 }
 
 /**
  * Choose the body under a screen point, or null. A candidate qualifies only
- * when the pointer sits inside its catch radius AND its centre is not covered
- * by a nearer foreground disc (planets/moons/Sun/ship — the ship blocks but,
+ * when the pointer sits inside its catch radius AND its centre is not hidden
+ * by a nearer foreground sphere (planets/moons/Sun/ship — the ship blocks but,
  * being absent from `candidates`, is never itself returned). Among survivors
  * the nearest pointer-to-centre distance wins; ties break to the nearer body.
  * Pure: all geometry is passed in, so it unit-tests without a scene.
  */
 export function pickBodyAtPointer(
   candidates: PickCandidate[],
-  blockers: ForegroundDisc[],
+  blockers: ForegroundSphere[],
   x: number,
   y: number,
 ): string | null {
@@ -129,14 +185,11 @@ export function pickBodyAtPointer(
 
     let occluded = false;
     for (const b of blockers) {
-      // A moon's disc is named `moon:<name>`; strip it so a moon can't occlude
-      // its own pick, the same way the label loops exclude their own disc.
+      // A moon's sphere is named `moon:<name>`; strip it so a moon can't
+      // occlude its own pick, the same way the label loops exclude their own.
       const bn = b.name.startsWith('moon:') ? b.name.slice(5) : b.name;
       if (bn === c.name) continue;
-      if (b.distFromCamera >= c.distFromCamera) continue;
-      const bdx = c.screenX - b.screenX;
-      const bdy = c.screenY - b.screenY;
-      if (bdx * bdx + bdy * bdy < b.radiusPx * b.radiusPx) {
+      if (sphereHidesPoint(b, c.dirX, c.dirY, c.dirZ, c.distFromCamera)) {
         occluded = true;
         break;
       }
@@ -177,7 +230,12 @@ export function discRadiusPx(
 
 export class PlanetLabels {
   labels: PlanetLabel[] = [];
-  foregroundDiscs: ForegroundDisc[] = [];
+  foregroundSpheres: ForegroundSphere[] = [];
+  // The canvas the spheres were collected against, for turning a screen
+  // point back into its sight line, and the line itself (no per-call alloc).
+  private occluderCanvasWidth = 0;
+  private occluderCanvasHeight = 0;
+  private sightLine = new THREE.Vector3();
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
   private lensUniforms = createLensShaderUniforms();
@@ -353,13 +411,13 @@ export class PlanetLabels {
   }
 
   /**
-   * Populates `foregroundDiscs` with the planets that are rendered as meshes
-   * this frame — seen from outside, at an angular size large enough to occlude
-   * labels. Callers may
-   * then `addForegroundDisc()` additional occluders (moons, ship) before
-   * invoking `renderLabels()` so those external occluders are considered.
+   * Populates `foregroundSpheres` with the planets that are rendered as meshes
+   * this frame — seen from outside, at an angular size large enough to hide a
+   * label. Callers may then `addForegroundSphere()` additional occluders (the
+   * Sun, moons, the ship) before invoking `renderLabels()` so those external
+   * occluders are considered.
    */
-  collectForegroundDiscs(
+  collectForegroundSpheres(
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     renderer: THREE.WebGLRenderer,
     // The ratio the SCENE is drawn at: the lens uniforms size the label
@@ -376,46 +434,35 @@ export class PlanetLabels {
       canvasHeight,
       pixelRatio,
     );
-    this.foregroundDiscs.length = 0;
+    this.occluderCanvasWidth = canvasWidth;
+    this.occluderCanvasHeight = canvasHeight;
+    this.foregroundSpheres.length = 0;
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
     for (const entry of this.labels) {
       const pos = planetPositions.get(entry.planet.name);
       if (!pos) continue;
-      const dx = pos.x - camX;
-      const dy = pos.y - camY;
-      const dz = pos.z - camZ;
-      const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      // A sphere the camera is inside occludes nothing: its back faces cull and
-      // you see out through it. The projection answers 'covering' there — a
-      // conservative classification, not a measured disc — which as a blocker
-      // would blank every label and beacon in the sky.
+      const x = pos.x - camX;
+      const y = pos.y - camY;
+      const z = pos.z - camZ;
+      const distFromCamera = Math.sqrt(x * x + y * y + z * z);
+      // A sphere the camera is inside hides nothing: its back faces cull and
+      // you see out through it, while the sight-line test would hide everything.
       if (distFromCamera <= entry.planet.radiusAU) continue;
+      // Under this angular size the body is a marker, not a disc: nothing to
+      // hide a label behind.
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
-
-      const proj = projectSphereToScreen(
-        pos,
-        entry.planet.radiusAU,
-        this.camera,
-        canvasWidth,
-        canvasHeight,
-        this.sphereProjScratch,
-      );
-      if (proj.ndcZ >= 1) continue;
-      const screenX = proj.footprintX;
-      const screenY = proj.footprintY;
-      // The sampled output-space tangent limb stays correct at frame edges;
-      // pad the measured footprint by 1.1x to cover atmosphere glow.
-      const radiusPx = proj.radiusPx * 1.1;
-      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
+      this.foregroundSpheres.push({
+        x, y, z, radiusAU: entry.planet.radiusAU, distFromCamera, name: entry.planet.name,
+      });
     }
   }
 
-  /** Append an external foreground disc (e.g. a visible moon or the ship). */
-  addForegroundDisc(disc: ForegroundDisc): void {
-    this.foregroundDiscs.push(disc);
+  /** Append an external foreground sphere (the Sun, a visible moon, the ship). */
+  addForegroundSphere(sphere: ForegroundSphere): void {
+    this.foregroundSpheres.push(sphere);
   }
 
   /**
@@ -436,8 +483,8 @@ export class PlanetLabels {
 
   /**
    * Places each planet's marker/label, occlusion-culled against the current
-   * `foregroundDiscs`. Caller must have run `collectForegroundDiscs()` and
-   * any `addForegroundDisc()` calls first.
+   * `foregroundSpheres`. Caller must have run `collectForegroundSpheres()` and
+   * any `addForegroundSphere()` calls first.
    */
   renderLabels(
     planetPositions: Map<string, { x: number; y: number; z: number }>,
@@ -468,12 +515,12 @@ export class PlanetLabels {
        *  reveal's exempt label yields to it too. */
       keepOutRect?: LabelRect | null;
       /** Precise hull test for marker-vs-ship occlusion. The ship's
-       *  foreground disc is a generous circle — right for keeping text off
+       *  foreground sphere is a generous ball — right for keeping text off
        *  the hull, but wrong in both directions for a beacon: culling by the
-       *  whole circle vanishes a planet visibly beside the hull, and
+       *  whole ball vanishes a planet visibly beside the hull, and
        *  ignoring the ship draws the beacon on top of it. While the ship
-       *  disc exists, this callback decides instead: it raycasts the actual
-       *  hull so the marker hides exactly when covered. With no ship disc
+       *  sphere exists, this callback decides instead: it raycasts the actual
+       *  hull so the marker hides exactly when covered. With no ship sphere
        *  (ship under the angular floor, a few px) no test runs — hiding a
        *  whole beacon glow behind a 3px ship would be the worse artifact. */
       markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
@@ -507,7 +554,7 @@ export class PlanetLabels {
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
-    const foregroundDiscs = this.foregroundDiscs;
+    const foregroundSpheres = this.foregroundSpheres;
 
     for (const entry of this.labels) {
       const pos = planetPositions.get(entry.planet.name);
@@ -535,6 +582,11 @@ export class PlanetLabels {
       const cdy = pos.y - camY;
       const cdz = pos.z - camZ;
       const distFromCamera = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
+      // The body's own sight line, for the marker's occlusion test.
+      const sightScale = 1 / Math.max(distFromCamera, 1e-12);
+      const dirX = cdx * sightScale;
+      const dirY = cdy * sightScale;
+      const dirZ = cdz * sightScale;
 
       // Scene position (already offset by floating origin).
       entry.sprite.position.set(pos.x, pos.y, pos.z);
@@ -578,24 +630,24 @@ export class PlanetLabels {
       // mesh keeps its sprite hidden regardless.
       if (!resolvedMesh) {
         // Marker occlusion is analytic (the sprite renders without a depth test —
-        // see the material comment): hidden when its center sits inside a nearer
-        // body's disc, or when the body is behind the camera. Runs even with
-        // labels off — the sprite has no other occlusion.
+        // see the material comment): hidden when a nearer body's sphere sits on
+        // the sight line to its centre, or when the body is behind the camera.
+        // Runs even with labels off — the sprite has no other occlusion.
         let markerOccluded = !proj || proj.ndcZ >= 1;
         if (proj && !markerOccluded) {
-          for (const disc of foregroundDiscs) {
-            if (disc.name === entry.planet.name) continue;
-            // The ship's circle never hides a beacon on its own: a planet dead
-            // ahead sits right above the ship, inside the circle but beside the
+          for (const body of foregroundSpheres) {
+            if (body.name === entry.planet.name) continue;
+            // The ship's ball never hides a beacon on its own: a planet dead
+            // ahead sits right above the ship, inside the ball but beside the
             // hull, and culling it there makes an approaching world vanish.
-            // Inside the circle the precise hull raycast decides instead, so
+            // Inside the ball the precise hull raycast decides instead, so
             // the beacon hides exactly when hull pixels cover it and stays lit
-            // beside them. Labels below still use the plain circle.
-            if (disc.name === 'ship') {
+            // beside them. Labels below still use the plain ball.
+            if (body.name === 'ship') {
               if (!markerShipTest) continue;
-              // No screen gate here: the circle is sized for label culling and
+              // No screen gate here: the ball is sized for label culling and
               // no fixed multiple of it tracks every profile's true reach
-              // (Juno's magnetometer boom tip sits at ~4.9 circle radii). The
+              // (Juno's magnetometer boom tip sits at ~4.9 ball radii). The
               // callback does its own exact sight-line pre-reject against the
               // widest-hull sphere, so calling it per marker stays cheap.
               if (markerShipTest(entry.sprite.position)) {
@@ -604,10 +656,7 @@ export class PlanetLabels {
               }
               continue;
             }
-            if (distFromCamera <= disc.distFromCamera) continue;
-            const mdx = proj.x - disc.screenX;
-            const mdy = proj.y - disc.screenY;
-            if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
+            if (sphereHidesPoint(body, dirX, dirY, dirZ, distFromCamera)) {
               markerOccluded = true;
               break;
             }
@@ -685,17 +734,20 @@ export class PlanetLabels {
       // Occluded by a nearer foreground body? Test the LABEL's position
       // (below the marker), not the marker itself — the user wants the label
       // to hide only when it actually sits over a foreground planet, even if
-      // the sprite above it is in clear sky.
+      // the sprite above it is in clear sky. The pixel's own sight line, back
+      // through the lens, against each body's sphere.
       const labelY = screenY + labelOffsetY + 8;
       let occluded = false;
-      for (const disc of foregroundDiscs) {
-        if (disc.name === entry.planet.name) continue;
-        if (distFromCamera <= disc.distFromCamera) continue;
-        const ddx = screenX - disc.screenX;
-        const ddy = labelY - disc.screenY;
-        if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) {
-          occluded = true;
-          break;
+      if (foregroundSpheres.length > 0) {
+        const line = screenPointToWorldRay(
+          screenX, labelY, this.camera, canvasWidth, canvasHeight, this.sightLine,
+        );
+        for (const body of foregroundSpheres) {
+          if (body.name === entry.planet.name) continue;
+          if (sphereHidesPoint(body, line.x, line.y, line.z, distFromCamera)) {
+            occluded = true;
+            break;
+          }
         }
       }
 
@@ -821,19 +873,20 @@ export class PlanetLabels {
   }
 
   /**
-   * True if a screen-space point sits inside the disc of a closer foreground
-   * body computed during the current frame. `distFromCamera` should be the
-   * camera-space depth of the point (NOT player distance) to match how the
-   * discs themselves were measured. Pass excludeName when the caller knows
-   * its own body should never occlude itself.
+   * True if a displayed screen point, `distFromCamera` along its own sight
+   * line, is hidden by a nearer foreground body collected this frame.
+   * `distFromCamera` is the camera distance of the thing drawn there (NOT the
+   * player's), to match how the spheres were measured. Pass excludeName when
+   * the caller knows its own body should never occlude itself.
    */
   isScreenPointOccluded(screenX: number, screenY: number, distFromCamera: number, excludeName?: string): boolean {
-    for (const disc of this.foregroundDiscs) {
-      if (excludeName && disc.name === excludeName) continue;
-      if (distFromCamera <= disc.distFromCamera) continue;
-      const ddx = screenX - disc.screenX;
-      const ddy = screenY - disc.screenY;
-      if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) return true;
+    if (this.foregroundSpheres.length === 0) return false;
+    const line = screenPointToWorldRay(
+      screenX, screenY, this.camera, this.occluderCanvasWidth, this.occluderCanvasHeight, this.sightLine,
+    );
+    for (const body of this.foregroundSpheres) {
+      if (excludeName && body.name === excludeName) continue;
+      if (sphereHidesPoint(body, line.x, line.y, line.z, distFromCamera)) return true;
     }
     return false;
   }

@@ -264,59 +264,38 @@ void main() {
 }
 `;
 
-/** Camera-facing glare plane. Its radius is `uExtent` photosphere radii.
- *  Unlike the point-like screen primitives (markers, stars, ghosts), this quad
- *  is NOT lens pre-distorted: it is a soft radial wash the size of the whole
- *  frame, and inverse-mapping its corners would push them past the lens's
- *  representable radius (a viewport-scale quad's corners unwarp to source-NDC
- *  radius >4, collapsing the wash off-frame). It is drawn geometrically in the
- *  overscan source and left for the lens pass to warp — a radial glow stays a
- *  radial glow under the stereographic map, centred on the Sun's warped
- *  position, so no corner-exact shape is needed. */
+/** The glare quad. It is a screen-space effect drawn in the scene pass, and
+ *  the lens pass warps the scene — so the quad exists only to COVER pixels:
+ *  the controller hands it the rectilinear-source rectangle that contains
+ *  every output pixel of the glare's support (lensSourceBoundOfOutputRect),
+ *  and the fragment measures nothing in the quad's own plane. A glow authored
+ *  round in the source is not round after the warp: the rectilinear source
+ *  compresses the sky tangentially by cos θ off-axis and the stereographic
+ *  output is conformal, so such a glow reads 1/cos θ taller across the
+ *  radial direction, 16% for a Sun 32° off-axis. The fragment therefore
+ *  measures its image-plane terms in output pixels through the forward warp,
+ *  and its limb-hugging terms in sky angle about the Sun's direction
+ *  (tools/glare-probe.mjs holds both round at every framing). */
 export const sunGlareVertexShader = /* glsl */ `
-uniform float uMinHalfSizePx;
-uniform float uVeilHalfPx;
-uniform float uViewportHeight;
-varying vec2 vUv;
-varying float vExtentScale;
-varying float vHalfSizePx;
+// The source-NDC rectangle to cover: (minX, minY, maxX, maxY).
+uniform vec4 uQuadRect;
 
 void main() {
-  vUv = uv;
-  // Expand the plane in camera-view XY around the transformed Sun centre. It
-  // remains a circular billboard without a per-frame CPU quaternion update.
-  vec4 centreView = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-  float halfSize = max(abs(position.x), abs(position.y));
-  float physicalHalfNdc = projectionMatrix[1][1] * halfSize / max(-centreView.z, 1e-6);
-  // A minimum screen-space footprint preserves an optical glint in the outer
-  // system after the physical photosphere becomes sub-pixel.
-  float baseMinNdc = (uMinHalfSizePx * 2.0) / max(uViewportHeight, 1.0);
-  float baseHalfNdc = max(physicalHalfNdc, baseMinNdc);
-  // The wide screen-space veiling glare (fragment) needs a far larger billboard
-  // to paint its wash into. It only ever grows the quad; the physical/min
-  // footprint above is the floor it can never fall below.
-  float veilMinNdc = (uVeilHalfPx * 2.0) / max(uViewportHeight, 1.0);
-  float drawnHalfNdc = max(baseHalfNdc, veilMinNdc);
-  float sizeBoost = drawnHalfNdc / max(physicalHalfNdc, 1e-7);
-  centreView.xy += position.xy * sizeBoost;
-  // Two channels the fragment needs. vExtentScale is how much the veil grew the
-  // quad past its physical/min size (1.0 when the veil is idle): the fragment
-  // rebases the physical PSF by it so growth can't stretch the core.
-  // vHalfSizePx is the quad's true on-screen half-size in CSS pixels (the
-  // same unit as uViewportHeight), making the veil a pure screen-space
-  // function immune to that same growth.
-  vExtentScale = drawnHalfNdc / max(baseHalfNdc, 1e-7);
-  vHalfSizePx = drawnHalfNdc * uViewportHeight * 0.5;
-  gl_Position = projectionMatrix * centreView;
+  vec2 t = position.xy * 0.5 + 0.5;
+  gl_Position = vec4(mix(uQuadRect.xy, uQuadRect.zw, t), 0.0, 1.0);
 }
 `;
 
 /** The veiling-glare wash profile: a screen-space Moffat with this scale (as a
- *  fraction of viewport height) and outer exponent. Interpolated into the
- *  fragment shader below AND inverted by the controller's support solver
- *  (computeSunVeilSupport) to size the billboard — one definition site, so the
- *  drawn profile and the derived support can never drift apart. */
-export const SUN_VEIL_SCALE_H = 0.022;
+ *  fraction of viewport height, in OUTPUT pixels — the displayed frame's) and
+ *  outer exponent. Interpolated into the fragment shader below AND inverted by
+ *  the controller's support solver (computeSunVeilSupport) to size the
+ *  billboard — one definition site, so the drawn profile and the derived
+ *  support can never drift apart. The value is the 0.022 the wash was tuned
+ *  at, which the quad then drew in source pixels that the lens magnified by
+ *  1.4266 at the centre of a 16:9 frame (and by less at every other shape):
+ *  rebased so that reference look is what every frame shape now draws. */
+export const SUN_VEIL_SCALE_H = 0.0314;
 export const SUN_VEIL_BETA = 1.12;
 
 export const sunGlareFragmentShader = /* glsl */ `
@@ -329,12 +308,30 @@ uniform float uEclipseLike;
 uniform float uOccluderRadii;
 uniform float uOccluderShade;
 uniform vec2 uOccluderOffsetSr;
-// The visible-crescent centroid, in the same solar-radii camera-basis
-// frame as uOccluderOffsetSr. The physical PSF, veil and arms emanate
-// from here instead of the Sun's centre, so a partial eclipse reads as light
-// wrapping past the occluding limb. Signed AWAY from the occluder (the exposed
-// side). Zero when un-occluded or concentric — then pLight === pSun byte-for-byte.
+// The visible-crescent centroid, in the same sky frame as uOccluderOffsetSr
+// (gnomonic solar radii on the Sun's tangent basis). The physical PSF, veil
+// and arms emanate from here instead of the Sun's centre, so a partial
+// eclipse reads as light wrapping past the occluding limb. Signed AWAY from
+// the occluder (the exposed side). Zero when un-occluded or concentric — then
+// pLight === pSky byte-for-byte.
 uniform vec2 uGlareCentroidSr;
+// The sky frame's anchors, in camera space: the Sun's direction, the two
+// tangent-basis vectors its gnomonic coordinates are measured on, and
+// tan(its angular radius) — floored to the glint's angular size once the
+// disc is sub-pixel, so the outer-system point keeps a fixed pixel footprint.
+uniform vec3 uSunDir;
+uniform vec3 uSunTangentU;
+uniform vec3 uSunTangentV;
+uniform float uSunTanRad;
+// The image-plane frame's anchors, in CSS pixels of the displayed frame: the
+// Sun's centre, the light centre (the crescent centroid, or the Sun), the
+// physical quad's half-size and the drawn support's half-size, both about the
+// Sun's centre, and solar radii per output pixel.
+uniform vec2 uSunOutPx;
+uniform vec2 uLightOutPx;
+uniform float uBaseHalfPx;
+uniform float uDrawnHalfPx;
+uniform float uSrPerPx;
 // Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
 // at totality). Drives the compact contact bead and its round dazzle.
 uniform float uDiamondRing;
@@ -372,9 +369,7 @@ uniform float uViewportHeight;
 uniform float uArmDecayPx;
 uniform float uArmDecayYPx;
 uniform float uArmCoeff;
-varying vec2 vUv;
-varying float vExtentScale;
-varying float vHalfSizePx;
+${lensShaderGLSL}
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -411,42 +406,70 @@ vec2 spinDir(vec2 direction, float radians) {
 }
 
 void main() {
-  vec2 p = (vUv - 0.5) * 2.0;
-  float planeRadius = length(p);
-  // The veiling glare below can enlarge this billboard far past the physical
-  // glare quad. Re-express every physical PSF term in the pre-veil ("base")
-  // quad frame so that growth can never stretch the core/aureole:
-  // vExtentScale is 1.0 whenever the veil is idle, so this is a no-op then.
-  vec2 pB = p * vExtentScale;
-  float baseRadius = planeRadius * vExtentScale;
-  // Two coordinate frames. pSun (p / pB above) keeps the corona and the occluder
-  // silhouette carve anchored to the disc. pLight is pSun shifted to the
-  // exposed-crescent centroid; the physical PSF core, veil wash and
-  // diffraction arms are drawn from it, so their light hangs on the lit sliver
-  // instead of the Sun's centre. uGlareCentroidSr is in solar radii (pB * uExtent
-  // units), so divide by uExtent for the base frame and by uExtent * vExtentScale
-  // for the full-quad frame. When it is zero pLight === p and every term below is
-  // byte-identical to an un-occluded frame.
-  vec2 centroidP = uGlareCentroidSr / max(uExtent * vExtentScale, 1e-6);
-  vec2 pLight = p - centroidP;
-  float lightPlaneRadius = length(pLight);
-  float lightBaseRadius = lightPlaneRadius * vExtentScale;
-  float lightSolarRadii = lightBaseRadius * uExtent;
-  float lightOutside = max(lightSolarRadii - 1.0, 0.0);
-  // Solar radii per output pixel, for terms that must stay resolvable on a
-  // tiny on-screen Sun. Taken here because derivatives after the discard
-  // below are undefined.
-  float srPerPx = max(fwidth(pB.x), fwidth(pB.y)) * uExtent;
+  // Where this fragment is in the rectilinear source, from the framebuffer
+  // (the scene's sub-rectangle is anchored at the origin: app/sceneSubRect.ts).
+  vec2 srcNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
+
+  // Two frames, each the natural one for the terms measured in it; nothing
+  // is measured in the quad's own plane, which only covers pixels.
+  //
+  // The SKY frame: the fragment's camera ray in gnomonic coordinates about
+  // the Sun's direction, on the Sun's tangent basis, in solar radii. The
+  // photosphere's limb is a cone of rays, so it sits at radius exactly 1 here
+  // whatever the lens does to the picture, and an eclipsing body's limb is
+  // its own cone about its own direction. Every term that must hug a drawn
+  // limb — the core, the corona, the chromosphere, the occluder carve —
+  // measures here and lands on the limb the rasterizer drew, at any lens
+  // strength. Behind the Sun's tangent plane the radii run away and every
+  // term dies, as the old billboard's plane made them.
+  vec3 ray = normalize(vec3(
+    srcNdc.x * uLensAspect * uLensTanHalfRender,
+    srcNdc.y * uLensTanHalfRender,
+    -1.0
+  ));
+  float along = max(dot(ray, uSunDir), 1e-3);
+  vec2 pSky = vec2(dot(ray, uSunTangentU), dot(ray, uSunTangentV)) / (along * uSunTanRad);
+  float solarRadii = length(pSky);
+  // pB keeps the corona's authored scale: the physical quad frame it was
+  // tuned in, where the glare's full extent is radius 1.
+  vec2 pB = pSky / uExtent;
+  float baseRadius = solarRadii / uExtent;
+
+  // The IMAGE-PLANE frame: the fragment's position in the displayed frame,
+  // in CSS pixels, through the forward lens warp. The veil, the arms, the
+  // glint floor and the bead's floors are camera-side effects, functions of
+  // on-screen distance, and measured here they are round on screen wherever
+  // the Sun sits.
+  vec2 outNdc = lensWarpSourceNdc(srcNdc);
+  vec2 outPx = vec2(
+    (outNdc.x * 0.5 + 0.5) * uLensViewportPx.x,
+    (0.5 - outNdc.y * 0.5) * uLensViewportPx.y
+  );
+  float sunPixelDist = distance(outPx, uSunOutPx);
+  // The drawn support about the Sun's centre: the physical extent, the glint
+  // floor or the veil's reach, whichever is largest, grown by the crescent
+  // shift. The controller sized the quad to cover it.
+  float planeRadius = sunPixelDist / max(uDrawnHalfPx, 1e-3);
   if (planeRadius >= 1.0) discard;
 
-  float solarRadii = baseRadius * uExtent;
+  // The light centre: the exposed crescent's centroid through a partial
+  // eclipse, the Sun's centre otherwise. The physical PSF, veil and arms
+  // emanate from it, so their light hangs on the lit sliver instead of the
+  // bite. uGlareCentroidSr is its sky-frame offset, uLightOutPx its place on
+  // screen; un-occluded, both coincide with the Sun's and every term below is
+  // what an un-occluded frame draws.
+  vec2 pLight = pSky - uGlareCentroidSr;
+  float lightSolarRadii = length(pLight);
+  float lightOutside = max(lightSolarRadii - 1.0, 0.0);
+  // Solar radii per output pixel, for terms that must stay resolvable on a
+  // tiny on-screen Sun.
+  float srPerPx = uSrPerPx;
+
   float outside = max(solarRadii - 1.0, 0.0);
-  // The veil can grow the quad far past the physical glare's disc. Fade the
-  // physical PSF and corona in their own base frame so their edge stays put no
-  // matter how much the veil enlarged the billboard; when the veil is idle
-  // baseRadius === planeRadius and this equals edgeFade byte-for-byte. The wide
-  // veil keeps fading by the drawn-quad edgeFade below as its own safety net.
-  float baseEdgeFade = 1.0 - smoothstep(0.72, 0.94, baseRadius);
+  // The physical PSF and corona fade at the physical quad's own edge, so the
+  // veil's larger support never carries them further; the veil fades at the
+  // drawn support's edge as its own safety net.
+  float baseEdgeFade = 1.0 - smoothstep(0.72, 0.94, sunPixelDist / max(uBaseHalfPx, 1e-3));
   float edgeFade = 1.0 - smoothstep(0.72, 0.94, planeRadius);
 
   // Optical point-spread profile: a tight hot core, medium aureole, and a
@@ -477,9 +500,9 @@ void main() {
   // in a soft glare. (The wide veil below still carries arm terms, which the
   // controller hands a coefficient of zero for the same reason.)
 
-  // The occluder's own disc in the base frame: the bead cut just below and the
+  // The occluder's own disc in the sky frame: the bead cut just below and the
   // silhouette wash carve further down both measure against it.
-  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
+  float occluderDistance = length(pSky - uOccluderOffsetSr);
   float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
 
   // Diamond ring: at second/third contact the exposed sliver is optically a
@@ -499,15 +522,17 @@ void main() {
   // and it carries no visibleEnergy factor — a covered or buried Sun cannot
   // fade it by exposed fraction alone, so the buried-camera path in
   // updateSunShader zeroes uDiamondRing explicitly.
-  // Decay lengths floored in screen pixels: authored purely in solar radii,
+  // Decay lengths floored in output pixels: authored purely in solar radii,
   // the jewel collapses below one pixel on a cruise-scale Sun and shimmers
   // with pixel phase (or misses the bloom threshold entirely). The dazzle must
   // stay compact and sub-saturating along the limb: hue cannot rise through a
   // saturated channel, so a wide bright dazzle whites out the chromosphere
   // arc beside the bead — the reds only read where the dazzle has died off.
+  // The floors are the 2 and 4 source pixels they were tuned at, in the
+  // output pixels the 16:9 centre magnification made of them.
   float beadDist = lightSolarRadii;
-  float coreFold = max(1.0 / 12.0, srPerPx * 2.0);
-  float dazzleFold = max(1.0 / 3.0, srPerPx * 4.0);
+  float coreFold = max(1.0 / 12.0, srPerPx * 2.85);
+  float dazzleFold = max(1.0 / 3.0, srPerPx * 5.7);
   float diamondCore = exp(-beadDist / coreFold) * 2.4;
   float diamondDazzle = exp(-beadDist / dazzleFold) * 0.15;
   // Because it has no visibleEnergy, the generic silhouette floor below still
@@ -519,7 +544,7 @@ void main() {
   // bead — fades over real time instead of un-carving in a frame. The cut
   // measures the latched offset — see uDiamondOccluderSr.
   float beadEdge = 1.0 - smoothstep(uOccluderRadii - 0.12, uOccluderRadii + 0.04,
-    length(pB * uExtent - uDiamondOccluderSr));
+    length(pSky - uDiamondOccluderSr));
   float beadCarve = 1.0 - uBeadCarveDepth * beadEdge;
   glare += uDiamondRing * (diamondCore + diamondDazzle) * beadCarve
     * uGlareStrength * uExposureScale * shipDirectEnergy;
@@ -545,13 +570,14 @@ void main() {
   // --- Wide screen-space veiling glare ---
   // Real space-camera stills show the Sun's light washing across a big fraction
   // of the frame even when the disc is only a few pixels wide. This term is a
-  // pure function of ON-SCREEN pixel distance (never solar radii), so the
-  // vertex min-size boost cannot warp its shape. uVeilAmt already carries the
-  // occlusion energy (0 in totality / behind a body or ring), the Mercury->Pluto
-  // distance falloff, and the huge-disc cutoff, so the billboard the controller
-  // sized and this intensity stay in lockstep. It is a broad wash, not a second
-  // core; edgeFade below carries it smoothly to zero before the quad's disc edge.
-  float pixelDist = lightPlaneRadius * vHalfSizePx;
+  // pure function of ON-SCREEN pixel distance (never solar radii), in the
+  // displayed frame's own pixels, so neither the glint floor nor the lens can
+  // warp its shape. uVeilAmt already carries the occlusion energy (0 in
+  // totality / behind a body or ring), the Mercury->Pluto distance falloff, and
+  // the huge-disc cutoff, so the support the controller sized and this
+  // intensity stay in lockstep. It is a broad wash, not a second core;
+  // edgeFade below carries it smoothly to zero before the support's edge.
+  float pixelDist = distance(outPx, uLightOutPx);
   float dHat = pixelDist / max(uViewportHeight, 1.0);
   // Single power-law, deliberately plateau-free: any flat stretch or visible
   // boundary makes the wash read as a grey fog disc instead of light. Bright
@@ -569,7 +595,7 @@ void main() {
   // zero: the cross is a camera's signature and the Sun here is an eye's. The
   // terms stay so the glare mask's contract (sunGlareMask.ts, which mirrors
   // them) and a look round through the coefficient need no shader change.
-  vec2 pxOff = pLight * vHalfSizePx;
+  vec2 pxOff = outPx - uLightOutPx;
   float armAcross = pxOff.y / 1.7;
   float armAcrossV = pxOff.x / 1.7;
   float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / max(uArmDecayPx, 1.0));

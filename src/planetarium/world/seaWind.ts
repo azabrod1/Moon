@@ -22,10 +22,15 @@
  * The surface shader reads R and draws one Beckmann lobe at Cox-Munk's
  * mean-square slope for that wind — Beckmann with alpha² = mss IS the
  * Gaussian slope law, and three's GGX has a heavy tail that spread the sheen
- * into haze — in place of three's one GGX lobe (world/surfaceShading). The
- * axis is carried for the lobe's ellipse along the wind and is not read by
- * the shader yet; the CPU's coarse copies (world/surfaceMaps) decode it
- * already. The map is mip-chained: averaging winds is biased only where a
+ * into haze — in place of three's one GGX lobe (world/surfaceShading). With
+ * the SEA_AXIS define (the default; `?seaaxis=0` compiles it out) it reads G
+ * and B from the same fetch and draws that lobe as an ellipse along the
+ * wind's axis: the total mean-square slope is kept and the signed
+ * anisotropy d(U) (`slopeAnisotropy`) times the axis's length k is added
+ * along the axis and taken off across it (`axisSlopes`), so a texel with no
+ * axis draws the round lobe. The CPU's coarse copies (world/surfaceMaps)
+ * decode the axis the same way for the highlight meter's twin of that lobe
+ * (world/glintMeter). The map is mip-chained: averaging winds is biased only where a
  * block holds very different winds, and the bake measures that on the map it
  * ships, for the speed and for the anisotropy the shader will build from two
  * channels (tools/goldens/seawind/earth-seawind.v2.stats.json: under half a
@@ -78,6 +83,45 @@ export const SEA_WIND_MAX_MS = 16;
 /** Cox-Munk's mean-square slope at a wind. */
 export function meanSquareSlope(windMs: number): number {
   return COX_MUNK_SLOPE_CALM + COX_MUNK_SLOPE_PER_MS * Math.max(windMs, 0);
+}
+
+/** Cox and Munk's slope variances along the wind and across it, each the
+ *  variance along ONE axis: sigma_u² = COX_MUNK_UPWIND_PER_MS U upwind,
+ *  sigma_c² = COX_MUNK_CROSSWIND_CALM + COX_MUNK_CROSSWIND_PER_MS U across.
+ *  tools/seaWindMap.mjs bakes the map's axis with the same three, and the
+ *  tests hold them to those. Their sum, 0.003 + 0.00508 U, is NOT the total
+ *  law above, which Cox and Munk fitted separately: the lobe keeps the total
+ *  and takes only the difference of these two (`slopeAnisotropy`). */
+export const COX_MUNK_UPWIND_PER_MS = 0.00316;
+export const COX_MUNK_CROSSWIND_CALM = 0.003;
+export const COX_MUNK_CROSSWIND_PER_MS = 0.00192;
+
+/** The signed anisotropy of the slopes at a wind, sigma_u² - sigma_c² =
+ *  0.00124 U - 0.003: negative below 2.42 m/s, where the crosswind slope is
+ *  the wider, so there the lobe is narrower along the axis than across it. */
+export function slopeAnisotropy(windMs: number): number {
+  return COX_MUNK_UPWIND_PER_MS * windMs - (COX_MUNK_CROSSWIND_CALM + COX_MUNK_CROSSWIND_PER_MS * windMs);
+}
+
+/**
+ * The mean-square slopes the lobe along the wind is drawn with, along the
+ * map's axis and across it, into `out` as [along, across]. The alpha tensor
+ * is the total law times the identity plus d(U) times the axis in doubled
+ * angle, whose eigenvalues are mss + d k along the axis and mss - d k across
+ * it, k the axis's length clamped to one (byte rounding decodes a full axis
+ * a little past it). Both are floored at COX_MUNK_SLOPE_CALM, the calmest
+ * sea the law draws, which the shader floors at too and which the highlight
+ * meter's bound on the lobe depends on (world/glintMeter `axisLobeBound`): a
+ * smaller floor would let a light, steady wind draw a needle across its axis.
+ * At k = 0 both are the total law, so a texel with no axis draws the round
+ * lobe exactly.
+ */
+export function axisSlopes(windMs: number, axisX: number, axisY: number, out: [number, number]): [number, number] {
+  const mss = meanSquareSlope(windMs);
+  const skew = slopeAnisotropy(windMs) * Math.min(Math.hypot(axisX, axisY), 1);
+  out[0] = Math.max(mss + skew, COX_MUNK_SLOPE_CALM);
+  out[1] = Math.max(mss - skew, COX_MUNK_SLOPE_CALM);
+  return out;
 }
 
 /**

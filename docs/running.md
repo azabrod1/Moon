@@ -32,7 +32,7 @@ Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)
 - `?seawind=0` gives the whole sea one roughness instead of the wind map (`world/seaWind.ts`). It also takes away the whitecaps, which read their wind from the same map.
 - `?sunpath=0` stops sunlight dimming and reddening on its way through the air.
 - `?mieexact=0` works out the green and blue of the haze around the Sun from the rest of the sky's colour again, instead of reading them from their own table (`world/atmosphereLut.ts`). It shows most in the low orange band of a twilight limb.
-- `?seabeam=0`, `?seacolour=0`, `?seasky=0` and `?whitecaps=0` return the sun's reflection on the sea, the sea's colour and the sky's reflection in it to how they were, and take the whitecaps off a windy sea. DEV `?foam=0.30` draws the whitecaps' foam at that reflectance instead of 0.22.
+- `?seabeam=0`, `?seacolour=0`, `?seasky=0`, `?seaaxis=0` and `?whitecaps=0` return the sun's reflection on the sea, the sea's colour, the sky's reflection in it and the reflection's round shape (instead of stretched along the wind) to how they were, and take the whitecaps off a windy sea. DEV `?foam=0.30` draws the whitecaps' foam at that reflectance instead of 0.22.
 - `?glintmeter=0` stops the camera darkening for the sun's reflection on the sea (`planetarium/highlightMeter.ts`).
 - `?bloomknee=0` returns the glow around bright spots to how it was (`app/bloomConfig.ts`).
 - `?cloudshadows=0`, `?cloudlight=0` and `?cloudtiles=0` turn off cloud shadows, cloud lighting and the sharp cloud tiles (`world/cloudField.ts` for the tiles). DEV `?cloudpoolfail=1` pretends the cloud tiles ran out of memory.
@@ -52,7 +52,7 @@ On the dev server, `window.__moon` drives the app from the console or a test scr
 - Landing and flight: `land`, `openObservatory`, `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`, `probeLanded`, `pilotTo`, `rideState`, `traceStart`, `traceStop`.
 - Hiding things: `setChrome`, `setShipVisible`, `setBeltVisible`, `setRoleHidden`, `atmoTier`.
 - The tools: `compare…` and `interior…`. A screenshot of Look inside waits for `interiorReady()`.
-- Look tuning: `setDither`, `glint`, `glintMeter`, `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
+- Look tuning: `setDither`, `glint`, `glintMeter`, `glintTwin` (the meter's prediction of the beam at given ground points), `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
 - Speed: `quality`, `setQuality`, `setFps`, `upscale`, `pinRatio`, `perfTargets`, `gpuProfile`, `drawLog`, `waitForDraw`. `perfSwitches` and `perfArm` come from `app/perfSwitches.ts`, `perfRun` from `app/devPerfSweep.ts`.
 - State: `viewport`, `sectors`, `renderPath`, `miniState`, `samplerCensus`, `atmoState`.
 - Atmosphere tables: `atmoBake` bakes a set to measure, and `atmoSample` reads table values back. Its kinds are `transmittance`, `scattering`, `mieColour` (the haze's green and blue, beside the red the `scattering` texel keeps), `combined` and `irradiance`.

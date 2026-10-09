@@ -72,6 +72,11 @@ describe('the full list in quadtree order', () => {
       expect(rows).toBe(h / LEAF);
       expect(start[cols * rows]).toBe(index.length);
       expect(triangles(out)).toEqual(triangles(index));
+      // A triangle's corners lie on its leaf's cells or their far edges. The
+      // corners that do not are gathered and held to none once: an expect per
+      // corner was most of a million calls on the fine globe, past vitest's
+      // 5 s on a CI runner.
+      const strayCorners: string[] = [];
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const o = quadtreeOrdinal(x, y, cols, rows);
@@ -80,15 +85,13 @@ describe('the full list in quadtree order', () => {
               const v = out[t + k];
               const ix = v % (w + 1);
               const iy = Math.floor(v / (w + 1));
-              // A triangle's corners lie on its leaf's cells or their far edges.
-              expect(ix).toBeGreaterThanOrEqual(x * LEAF);
-              expect(ix).toBeLessThanOrEqual((x + 1) * LEAF);
-              expect(iy).toBeGreaterThanOrEqual(y * LEAF);
-              expect(iy).toBeLessThanOrEqual((y + 1) * LEAF);
+              const onLeaf = ix >= x * LEAF && ix <= (x + 1) * LEAF && iy >= y * LEAF && iy <= (y + 1) * LEAF;
+              if (!onLeaf && strayCorners.length < 10) strayCorners.push(`leaf (${x}, ${y}) holds vertex (${ix}, ${iy})`);
             }
           }
         }
       }
+      expect(strayCorners).toEqual([]);
     });
   }
 

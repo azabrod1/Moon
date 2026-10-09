@@ -126,6 +126,21 @@ vec3 outputDither(vec2 fragCoord) {
 /** The add itself, for a GLSL ES 1.00 shader that writes gl_FragColor. */
 export const OUTPUT_DITHER_ADD = 'gl_FragColor.rgb += outputDither( gl_FragCoord.xy );';
 
+/**
+ * The canvas write's alpha, set to one by the write itself. three's output
+ * text copies the scene texel whole, alpha included, and the scene's alpha is
+ * not a coverage: Earth's ground writes it as the sea's flag for the bright
+ * pass (world/surfaceShading SEA_BLOOM_FLAG_GLSL), zero or below over open
+ * water. The context asks for an opaque drawing buffer, and Chromium and
+ * Firefox composite it as one whatever alpha the last write left, but Safari
+ * composites the canvas with that alpha, on macOS and iOS alike, and showed
+ * the page's black through every sea pixel the night the flag shipped
+ * (2026-10-08). So the pixel that reaches the canvas says it is opaque, here,
+ * on every route that writes the canvas through this text; the resample
+ * passes write their own 1.0 already.
+ */
+export const OUTPUT_OPAQUE_WRITE = 'gl_FragColor.a = 1.0;';
+
 /** Where three's output shader makes its last edit to the colour before the
  *  write: the sRGB transfer. The dither goes after it, inside the same guard,
  *  because the noise has to be added to the display-encoded value. */
@@ -134,8 +149,10 @@ const THREE_VARYING = 'varying vec2 vUv;';
 
 /**
  * Put the dither into three's output shader text (app/FusedOutputPass.ts):
- * the declarations after the varying, the add after the transfer. A throw
- * rather than a silent no-op if a three release has reformatted the text.
+ * the declarations after the varying, the add after the transfer, and the
+ * opaque alpha (OUTPUT_OPAQUE_WRITE) last, so the text's final word on the
+ * pixel is that it is opaque. A throw rather than a silent no-op if a three
+ * release has reformatted the text.
  */
 export function ditherOutputText(text: string): string {
   if (!text.includes(THREE_VARYING) || !text.includes(THREE_OUTPUT_TRANSFER)) {
@@ -143,7 +160,15 @@ export function ditherOutputText(text: string): string {
   }
   return text
     .replace(THREE_VARYING, `${THREE_VARYING}\n${OUTPUT_DITHER_GLSL}`)
-    .replace(THREE_OUTPUT_TRANSFER, `${THREE_OUTPUT_TRANSFER}\n\t\t\t\t${OUTPUT_DITHER_ADD}`);
+    .replace(THREE_OUTPUT_TRANSFER, `${THREE_OUTPUT_TRANSFER}\n\t\t\t\t${OUTPUT_DITHER_ADD}\n\t\t\t\t${OUTPUT_OPAQUE_WRITE}`);
+}
+
+/** Whether a canvas-writing text's last word on alpha is one: the opaque
+ *  write after the dither, or a vec4 literal whose alpha is 1.0. */
+export function outputWriteIsOpaque(text: string): boolean {
+  const opaque = text.lastIndexOf(OUTPUT_OPAQUE_WRITE);
+  if (opaque >= 0) return opaque > text.lastIndexOf(OUTPUT_DITHER_ADD) && !/gl_FragColor(\.a)?\s*=/.test(text.slice(opaque + OUTPUT_OPAQUE_WRITE.length));
+  return /fragColor = vec4\([^;]*, 1\.0\);/.test(text);
 }
 
 /** Whether a text carries the dither: the uniform, the function and the add. */

@@ -2545,9 +2545,13 @@ ${CLOUD_CLEAR_RETURN}`;
  * of zero or more and their glow bit for bit. Only the ground: the deck's
  * alpha IS its coverage, and its blend over the sea pulls the flag back
  * toward 1 in proportion, which is the continuous control it should be. The
- * canvas is opaque and every finishing pass writes its own alpha, so the flag
- * reaches the bright pass and nothing else. Off with `?seabeam=0`, where the
- * cap before the air kept the sea under the bloom's threshold anyway.
+ * flag must reach the bright pass and nothing else: every write that lands on
+ * the canvas sets its own alpha to one (app/outputDither.ts
+ * OUTPUT_OPAQUE_WRITE), because Safari composites the canvas with whatever
+ * alpha the last write left, opaque context or not, and the night this flag
+ * shipped without that (2026-10-08) every open-sea pixel showed the page's
+ * black. Off with `?seabeam=0`, where the cap before the air kept the sea
+ * under the bloom's threshold anyway.
  */
 const SEA_BLOOM_FLAG_GLSL = /* glsl */ `
 #ifdef SEA_BEAM

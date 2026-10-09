@@ -112,8 +112,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'e901198c84717b7fc87a4ad6b8d18d70e6a1835a1ca3c57601aa4358cb84c083';
-const PROD_FRAGMENT_HASH = 'ec3b1280b9d7941b621a13907557874cd9bb1301143287854b2a0604fae481ec';
+const DEV_FRAGMENT_HASH = 'a01e2e60f8f3859065e7dde9f80789a0007d6834cc0aa91785a38e87c6d235d9';
+const PROD_FRAGMENT_HASH = '36d0a4801b40319a55271636a8afd2a464a0d1b7d924809527b5a0f932922cb8';
 /** The same two texts with the lobe along the wind's define OFF
  *  (`?seaaxis=0`, world/surfaceShading SEA_AXIS), resolved as the
  *  preprocessor resolves it: the hashes the shipped texts carried before the

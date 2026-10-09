@@ -60,7 +60,7 @@ import {
   COX_MUNK_CROSSWIND_CALM, COX_MUNK_CROSSWIND_PER_MS, COX_MUNK_UPWIND_PER_MS, SEA_WIND_AXIS_SCALE, SEA_WIND_AXIS_ZERO,
   seaWindTextureFrom,
 } from './seaWind';
-import { axisAlpha, axisLobe } from './glintMeter';
+import { axisAlong2, axisAlpha, axisLobe, windFrameAt } from './glintMeter';
 import { createSectorMaterial } from './sectorMaterial';
 import { setCloudFieldOn } from './cloudFieldSlots';
 import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
@@ -1064,57 +1064,81 @@ describe('the sea', () => {
     // Hoisted with a sentinel: a fragment that never read the map keeps
     // three's own alpha, round.
     expect(on).toContain('vec3 seaAxisWind = vec3(-1.0, 0.0, 0.0);\nfloat seaWater = 0.0;');
-    expect(on).toContain('float seaAlphaU = seaAlpha;\n      float seaAlphaC = seaAlpha;\n      if (seaAxisWind.x >= 0.0) {');
+    expect(on).toContain('float seaAlphaU = seaAlpha;\n        float seaAlphaC = seaAlpha;\n        if (seaAxisWind.x >= 0.0) {');
+    // Only where there is water: with none the mix is exactly one.
+    expect(on).toContain('if (seaWater > 0.0) {\n        vec3 seaEast = cross(normalMatrix[1], normal);');
     // The two slopes: the whole law plus and minus d(U) k, d from the bake's
-    // three variances, both floored at the calm sea; each axis's roughness
-    // formed as three forms its own, floor and geometry roughness included.
+    // three variances, k clamped to one, both floored at the calm sea; each
+    // axis's roughness formed as three forms its own, floor and geometry
+    // roughness included.
     expect(on).toContain(`float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;`);
     expect(on).toContain(`float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x\n`
-      + `            - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x)) * seaAxisK;`);
+      + `              - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x))\n`
+      + '              * min(seaAxisLength, 1.0);');
     for (const sign of ['+', '-']) {
       expect(on).toContain(`max(sqrt(sqrt(max(seaMss ${sign} seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)\n`
-        + '            + geometryRoughness, 1.0));');
+        + '              + geometryRoughness, 1.0));');
     }
     // The frame: the body's pole in view space, east and north as the relief
-    // frame builds them, the axis's length clamped to one.
+    // frame builds them, and the axis's direction in doubled angle.
     expect(on).toContain('uniform mat3 normalMatrix;');
-    expect(on).toContain('vec3 seaEast = cross(normalize(normalMatrix[1]), normal);\n      seaEast /= max(length(seaEast), 1e-6);\n'
-      + '      vec3 seaNorth = cross(normal, seaEast);');
-    expect(on).toContain('float seaAxisK = min(length(seaAxisWind.yz), 1.0);');
-    expect(on).toContain('+ (seaAxisWind.z < 0.0 ? -1.0 : 1.0) * sqrt(0.5 - 0.5 * seaAxisCos2) * seaNorth;');
+    expect(on).toContain('vec3 seaEast = cross(normalMatrix[1], normal);\n'
+      + '        seaEast *= inversesqrt(max(dot(seaEast, seaEast), 1e-30));\n'
+      + '        vec3 seaNorth = cross(normal, seaEast);');
+    expect(on).toContain('vec2 seaAxisDir = seaAxisWind.yz / max(seaAxisLength, 1e-6);');
     // Beckmann's Smith on the projected alpha under the beam chain, three's
     // on the old; the division by three's own GGX at its own alpha either way.
-    expect(on).toContain('#ifdef SEA_BEAM\n      vec3 seaSunDir = normalize(vSunViewDir);\n      float seaBeamVis = seaBeckmannAxisVis(');
-    expect(on).toContain('seaBeckmannAxis(seaAlphaU, seaAlphaC, dot(seaHalfDir, seaAlong), dot(seaHalfDir, seaAcross), seaDotNH)\n'
-      + '              / (seaVis * D_GGX(seaAlpha, seaDotNH)),');
-    // The lobe and the projected alpha as the GPU runs them, transcribed, are
-    // the meter's twin (world/glintMeter axisLobe, axisAlpha), whose alphas
-    // squared are the slopes.
-    expect(on).toContain('float seaBeckmannAxis(float alphaU, float alphaC, float hu, float hc, float dotNH) {\n'
+    expect(on).toContain('#ifdef SEA_BEAM\n        vec3 seaSunDir = normalize(vSunViewDir);\n        float seaBeamVis = seaBeckmannAxisVis(');
+    expect(on).toContain('seaAxisAlong2(seaAxisDir, vec2(dot(seaHalfDir, seaEast), dot(seaHalfDir, seaNorth))), seaDotNH)\n'
+      + '                / (seaVis * D_GGX(seaAlpha, seaDotNH)),');
+    // The functions as the GPU runs them, transcribed, are the meter's twin
+    // (world/glintMeter axisAlong2, axisLobe, axisAlpha, windFrameAt), whose
+    // alphas squared are the slopes.
+    expect(on).toContain('float seaAxisAlong2(vec2 a, vec2 w) {\n'
+      + '  return 0.5 + 0.5 * (a.x * (w.x * w.x - w.y * w.y) + a.y * 2.0 * w.x * w.y) / max(dot(w, w), 1e-12);\n}');
+    expect(on).toContain('float seaBeckmannAxis(float alphaU, float alphaC, float along2, float dotNH) {\n'
       + '  float cos2 = max(dotNH * dotNH, 1e-6);\n'
-      + '  float along2 = hu * hu / max(hu * hu + hc * hc, 1e-12);\n'
       + '  float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;\n'
       + '  return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);\n}');
-    expect(on).toContain('float seaAxisAlpha(float alphaU, float alphaC, float wu, float wc) {\n'
-      + '  float along2 = wu * wu / max(wu * wu + wc * wc, 1e-12);\n'
+    expect(on).toContain('float seaAxisAlpha(float alphaU, float alphaC, float along2) {\n'
       + '  return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);\n}');
-    const gpuLobe = (alphaU: number, alphaC: number, hu: number, hc: number, dotNH: number): number => {
+    const gpuAlong2 = (ax: number, ay: number, we: number, wn: number): number =>
+      0.5 + (0.5 * (ax * (we * we - wn * wn) + ay * 2 * we * wn)) / Math.max(we * we + wn * wn, 1e-12);
+    const gpuLobe = (alphaU: number, alphaC: number, along2: number, dotNH: number): number => {
       const cos2 = Math.max(dotNH * dotNH, 1e-6);
-      const along2 = (hu * hu) / Math.max(hu * hu + hc * hc, 1e-12);
       const invAlpha2 = 1 / (alphaC * alphaC) + (1 / (alphaU * alphaU) - 1 / (alphaC * alphaC)) * along2;
       return Math.exp(((cos2 - 1) * invAlpha2) / cos2) / (Math.PI * alphaU * alphaC * cos2 * cos2);
     };
-    const gpuAlpha = (alphaU: number, alphaC: number, wu: number, wc: number): number =>
-      Math.sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * ((wu * wu) / Math.max(wu * wu + wc * wc, 1e-12)));
+    const gpuAlpha = (alphaU: number, alphaC: number, along2: number): number =>
+      Math.sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);
     for (const [along, across] of [[0.05, 0.03], [0.003, 0.006], [0.1018, 0.0681]]) {
       for (let deg = 0; deg <= 40; deg += 5) {
         for (let az = 0; az < 180; az += 20) {
-          const s = Math.sin(deg * Math.PI / 180), c = Math.cos(deg * Math.PI / 180);
-          const hu = s * Math.cos(az * Math.PI / 180), hc = s * Math.sin(az * Math.PI / 180);
-          const twin = axisLobe(c, along, across, hu, hc);
-          expect(Math.abs(gpuLobe(Math.sqrt(along), Math.sqrt(across), hu, hc, c) - twin)).toBeLessThanOrEqual(1e-12 * twin);
-          expect(gpuAlpha(Math.sqrt(along), Math.sqrt(across), hu, hc)).toBeCloseTo(axisAlpha(along, across, hu, hc), 14);
+          const c = Math.cos(deg * Math.PI / 180), we = Math.cos(az * Math.PI / 180), wn = Math.sin(az * Math.PI / 180);
+          for (const [ax, ay] of [[1, 0], [0.6, 0.8], [-0.28, -0.96]]) {
+            const a2 = axisAlong2(ax, ay, we, wn);
+            expect(gpuAlong2(ax, ay, we, wn)).toBe(a2);
+            const twin = axisLobe(c, along, across, a2);
+            expect(Math.abs(gpuLobe(Math.sqrt(along), Math.sqrt(across), a2, c) - twin)).toBeLessThanOrEqual(1e-12 * twin);
+            expect(gpuAlpha(Math.sqrt(along), Math.sqrt(across), a2)).toBeCloseTo(axisAlpha(along, across, a2), 14);
+          }
         }
+      }
+    }
+    // The frame, the shader's cross products about a pole of any length
+    // (normalMatrix carries the body's scale) against the twin's.
+    const cross = (p: number[], q: number[]) => [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    for (const n of [[1, 0, 0], [0.3, 0.5, -0.81], [-0.6, -0.7, 0.387]]) {
+      const len = Math.hypot(n[0], n[1], n[2]);
+      const unit = n.map((v) => v / len);
+      const e = cross([0, 23470, 0], unit);
+      const scale = 1 / Math.sqrt(Math.max(e[0] * e[0] + e[1] * e[1] + e[2] * e[2], 1e-30));
+      const east = e.map((v) => v * scale), north = cross(unit, east);
+      const twin = new Float64Array(6);
+      windFrameAt(unit[0], unit[1], unit[2], twin);
+      for (let k = 0; k < 3; k++) {
+        expect(east[k]).toBeCloseTo(twin[k], 12);
+        expect(north[k]).toBeCloseTo(twin[3 + k], 12);
       }
     }
   });

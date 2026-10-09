@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  AXIS_BOUND_TAN2_MAX, axisAlpha, axisLobe, axisLobeBound, windFrameAt,
+  AXIS_BOUND_TAN2_MAX, axisAlong2, axisAlpha, axisLobe, axisLobeBound, windFrameAt,
   HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, beckmannLobe, beckmannLobeBound, buildColumnDepthTable, buildTransmittanceTable, lookupColumnDepth, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
   highlightTarget, lookupTransmittance, meanSquareSlopeOfWind, sunVisibleAt, placeBeamInFrame, scanBeam, shoulder, type BeamPlace,
   type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type SurfaceSampler,
@@ -562,32 +562,48 @@ describe('the lobe along the wind', () => {
   it('is the round lobe where the two slopes are equal, to float precision', () => {
     for (const mss of [0.003, 0.0389, 0.0849]) {
       for (let deg = 0; deg <= 70; deg += 2.5) {
-        const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG);
+        const cosNH = Math.cos(deg * DEG);
         const round = beckmannLobe(cosNH, mss);
         for (let az = 0; az < 360; az += 30) {
-          const hu = sinNH * Math.cos(az * DEG), hc = sinNH * Math.sin(az * DEG);
-          expect(Math.abs(axisLobe(cosNH, mss, mss, hu, hc) - round)).toBeLessThanOrEqual(1e-12 * round);
-          expect(Math.abs(axisAlpha(mss, mss, hu, hc) / Math.sqrt(mss) - 1)).toBeLessThan(1e-12);
+          const along2 = Math.cos(az * DEG) ** 2;
+          expect(Math.abs(axisLobe(cosNH, mss, mss, along2) - round)).toBeLessThanOrEqual(1e-12 * round);
+          expect(Math.abs(axisAlpha(mss, mss, along2) / Math.sqrt(mss) - 1)).toBeLessThan(1e-12);
         }
       }
     }
-    // A collapsed frame reads the across slope, never a flat lobe.
-    expect(axisLobe(Math.cos(0.3), 0.05, 0.03, 0, 0) / beckmannLobe(Math.cos(0.3), 0.03))
-      .toBeCloseTo(Math.sqrt(0.03 / 0.05), 12);
+    // A direction with no tangent part, or a frame collapsed at a pole, reads
+    // halfway between the two slopes, never a flat lobe.
+    expect(axisAlong2(0.6, 0.8, 0, 0)).toBe(0.5);
   });
 
   it('is the shader\'s ellipse: the along slope along the axis and the across slope across it', () => {
     const along = 0.05, across = 0.03, deg = 12;
-    const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG), tan2 = Math.tan(deg * DEG) ** 2;
+    const cosNH = Math.cos(deg * DEG), tan2 = Math.tan(deg * DEG) ** 2;
     const cos4 = cosNH ** 4;
-    expect(axisLobe(cosNH, along, across, sinNH, 0))
+    expect(axisLobe(cosNH, along, across, 1))
       .toBeCloseTo(Math.exp(-tan2 / along) / (Math.PI * Math.sqrt(along * across) * cos4), 10);
-    expect(axisLobe(cosNH, along, across, 0, sinNH))
+    expect(axisLobe(cosNH, along, across, 0))
       .toBeCloseTo(Math.exp(-tan2 / across) / (Math.PI * Math.sqrt(along * across) * cos4), 10);
     // Smith's alpha on a direction's azimuth: along, across, and between.
-    expect(axisAlpha(along, across, 0.4, 0)).toBeCloseTo(Math.sqrt(along), 15);
-    expect(axisAlpha(along, across, 0, -0.4)).toBeCloseTo(Math.sqrt(across), 15);
-    expect(axisAlpha(along, across, 0.3, 0.3)).toBeCloseTo(Math.sqrt((along + across) / 2), 15);
+    expect(axisAlpha(along, across, 1)).toBeCloseTo(Math.sqrt(along), 15);
+    expect(axisAlpha(along, across, 0)).toBeCloseTo(Math.sqrt(across), 15);
+    expect(axisAlpha(along, across, 0.5)).toBeCloseTo(Math.sqrt((along + across) / 2), 15);
+    // The azimuth from the axis without an angle: an axis toward east (doubled
+    // (1, 0)) has east wholly along it and north wholly across; one 45° north
+    // of east (doubled (0, 1)) has north-east along and south-east across; and
+    // a direction's length does not matter.
+    expect(axisAlong2(1, 0, 1, 0)).toBeCloseTo(1, 15);
+    expect(axisAlong2(1, 0, 0, 3)).toBeCloseTo(0, 15);
+    expect(axisAlong2(0, 1, 2, 2)).toBeCloseTo(1, 15);
+    expect(axisAlong2(0, 1, 1, -1)).toBeCloseTo(0, 15);
+    for (let theta = -90; theta < 90; theta += 7.5) {
+      const d2 = 2 * theta * DEG;
+      for (let phi = 0; phi < 360; phi += 11) {
+        const w = 0.37;
+        expect(axisAlong2(Math.cos(d2), Math.sin(d2), w * Math.cos(phi * DEG), w * Math.sin(phi * DEG)))
+          .toBeCloseTo(Math.cos((phi - theta) * DEG) ** 2, 12);
+      }
+    }
   });
 
   it('draws the round beam where the map has no axis, and with the switch off exactly the round one whatever the axis', () => {
@@ -684,11 +700,23 @@ describe('the lobe along the wind', () => {
     // The point from its latitude and its longitude as the map's u.
     const lat = 15 * DEG, u = (-150 + 180) / 360;
     const p = [-Math.cos(lat) * Math.cos(2 * Math.PI * u), Math.sin(lat), Math.cos(lat) * Math.sin(2 * Math.PI * u)];
+    // The twin's own along-wind direction there, u_b: the tangent direction
+    // its lobe reads wholly along the axis (axisAlong2 = 1), found by search
+    // over the twin's east and north rather than from the angle's formula,
+    // on the eastward half (an axis has no sign).
     const nudged = (axisY: number): [number, number] => {
       const f = new Float64Array(6);
-      windFrameAt(p[0], p[1], p[2], x1, axisY, f);
+      windFrameAt(p[0], p[1], p[2], f);
+      const length = Math.hypot(x1, axisY);
+      let bestPhi = 0, best = -1;
+      for (let phi = -90; phi < 90; phi += 0.005) {
+        const a = axisAlong2(x1 / length, axisY / length, Math.cos(phi * DEG), Math.sin(phi * DEG));
+        if (a > best) { best = a; bestPhi = phi * DEG; }
+      }
+      expect(best).toBeCloseTo(1, 8);
+      const ub = [0, 1, 2].map((k) => Math.cos(bestPhi) * f[k] + Math.sin(bestPhi) * f[3 + k]);
       const e = 1e-3;
-      const q = [p[0] + e * f[0], p[1] + e * f[1], p[2] + e * f[2]];
+      const q = [p[0] + e * ub[0], p[1] + e * ub[1], p[2] + e * ub[2]];
       const len = Math.hypot(q[0], q[1], q[2]);
       const [u0, v0] = uv(p);
       const [u1, v1] = uv([q[0] / len, q[1] / len, q[2] / len]);
@@ -711,7 +739,7 @@ describe('the lobe along the wind', () => {
     // the loosest the bound is over the grid's own largest at a tilt.
     let over = 0, loosest = 0;
     for (let deg = 0; deg <= 60; deg += 0.5) {
-      const cosNH = Math.cos(deg * DEG), sinNH = Math.sin(deg * DEG);
+      const cosNH = Math.cos(deg * DEG);
       const bound = axisLobeBound(cosNH);
       let most = 0;
       for (let step = 0; step <= 640; step++) {
@@ -719,7 +747,7 @@ describe('the lobe along the wind', () => {
         for (const k of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
           axisSlopes(wind, k, 0, slopes);
           for (let az = 0; az <= 90; az += 7.5) {
-            most = Math.max(most, axisLobe(cosNH, slopes[0], slopes[1], sinNH * Math.cos(az * DEG), sinNH * Math.sin(az * DEG)));
+            most = Math.max(most, axisLobe(cosNH, slopes[0], slopes[1], Math.cos(az * DEG) ** 2));
           }
         }
       }
@@ -742,12 +770,12 @@ describe('the lobe along the wind', () => {
     // The round bound is not one: a light, steady wind's ellipse beats it.
     const tilt = Math.atan(Math.sqrt(0.006));
     axisSlopes(0, 1, 0, slopes);
-    expect(axisLobe(Math.cos(tilt), slopes[0], slopes[1], 0, Math.sin(tilt))).toBeGreaterThan(1.3 * beckmannLobeBound(Math.cos(tilt)));
+    expect(axisLobe(Math.cos(tilt), slopes[0], slopes[1], 0)).toBeGreaterThan(1.3 * beckmannLobeBound(Math.cos(tilt)));
     // Past the last node the roughest wind's whole axis is the largest, in
     // closed form; at the node itself the table already says so.
     const atLast = Math.cos(Math.atan(Math.sqrt(AXIS_BOUND_TAN2_MAX)));
     axisSlopes(SEA_WIND_MAX_MS, 1, 0, slopes);
-    const roughest = axisLobe(atLast, slopes[0], slopes[1], Math.sin(Math.acos(atLast)), 0);
+    const roughest = axisLobe(atLast, slopes[0], slopes[1], 1);
     expect(axisLobeBound(atLast) / roughest).toBeCloseTo(1.002, 9);
   });
 

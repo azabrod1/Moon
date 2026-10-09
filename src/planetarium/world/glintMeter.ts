@@ -370,56 +370,50 @@ export function beckmannLobeBound(cosNH: number): number {
 
 /**
  * The wind's frame at a ground point with unit normal (nx, ny, nz) in the
- * body frame, for an axis (axisX, axisY) in doubled angle as the map carries
- * it: into `out` the unit vector along the axis, then the one across it (the
- * normal crossed into the first), six numbers; returns the axis's length k,
- * clamped to one. East and north are built about the body's pole, +Y, as
- * world/reliefFrame and the shader build them (east = pole x n, north = n x
- * east), so the map's u grows east and its v north; the axis is turned from
- * east toward north by half its doubled angle, through the half-angle
- * identities, a zero doubled sine taken as plus so an axis along the meridian
- * keeps its length. At a pole east is undefined and the frame collapses
- * toward zero; the map's own averaging has no axis there, and `axisLobe`
- * then reads the across slope.
+ * body frame: into `out` the unit east, then the unit north, six numbers,
+ * built about the body's pole, +Y, as world/reliefFrame and the shader build
+ * them (east = pole x n, north = n x east), so the map's u grows east and its
+ * v north. At a pole east is undefined and the frame collapses to nothing;
+ * `axisAlong2` then reads every direction halfway between the two slopes.
  */
-export function windFrameAt(
-  nx: number, ny: number, nz: number, axisX: number, axisY: number, out: Float64Array | number[],
-): number {
+export function windFrameAt(nx: number, ny: number, nz: number, out: Float64Array | number[]): void {
   let ex = nz, ez = -nx;
-  const eLen = Math.max(Math.hypot(ex, ez), 1e-6);
-  ex /= eLen; ez /= eLen;
-  const northX = ny * ez, northY = nz * ex - nx * ez, northZ = -ny * ex;
-  const k = Math.min(Math.hypot(axisX, axisY), 1);
-  const c2 = Math.min(Math.max(axisX / Math.max(k, 1e-6), -1), 1);
-  const cos = Math.sqrt(0.5 + 0.5 * c2);
-  const sin = (axisY < 0 ? -1 : 1) * Math.sqrt(0.5 - 0.5 * c2);
-  const ux = cos * ex + sin * northX, uy = sin * northY, uz = cos * ez + sin * northZ;
-  out[0] = ux; out[1] = uy; out[2] = uz;
-  out[3] = ny * uz - nz * uy; out[4] = nz * ux - nx * uz; out[5] = nx * uy - ny * ux;
-  return k;
+  const scale = 1 / Math.sqrt(Math.max(ex * ex + ez * ez, 1e-30));
+  ex *= scale; ez *= scale;
+  out[0] = ex; out[1] = 0; out[2] = ez;
+  out[3] = ny * ez; out[4] = nz * ex - nx * ez; out[5] = -ny * ex;
+}
+
+/**
+ * The shader's seaAxisAlong2: how much of a tangent direction lies along the
+ * wind's axis, the cosine squared of its azimuth from it, from its parts east
+ * (we) and north (wn) and the axis's direction in doubled angle (dirX, dirY) =
+ * (cos 2 theta, sin 2 theta), theta from east toward north — one half of
+ * (1 + (dirX (we² - wn²) + dirY 2 we wn) / (we² + wn²)), the half-angle
+ * identity with no angle taken. One half with no tangent part.
+ */
+export function axisAlong2(dirX: number, dirY: number, we: number, wn: number): number {
+  return 0.5 + (0.5 * (dirX * (we * we - wn * wn) + dirY * 2 * we * wn)) / Math.max(we * we + wn * wn, 1e-12);
 }
 
 /**
  * The lobe along the wind, the shader's seaBeckmannAxis: Beckmann with the
  * mean-square slope `along` along the axis and `across` across it, at a half
- * vector whose cosine to the normal is cosNH and whose components along and
- * across the axis are hu and hc. The inverse slope along the half vector's
- * azimuth is the across one plus the difference times that azimuth's cosine
- * squared, so with along = across it is `beckmannLobe` at that slope, and a
- * collapsed frame (hu = hc = 0) reads the across slope.
+ * vector whose cosine to the normal is cosNH and whose azimuth from the axis
+ * has the cosine squared along2 (axisAlong2). The inverse slope along that
+ * azimuth is the across one plus the difference times along2, so with along =
+ * across it is `beckmannLobe` at that slope.
  */
-export function axisLobe(cosNH: number, along: number, across: number, hu: number, hc: number): number {
+export function axisLobe(cosNH: number, along: number, across: number, along2: number): number {
   const cos2 = Math.max(cosNH * cosNH, 1e-6);
-  const along2 = (hu * hu) / Math.max(hu * hu + hc * hc, 1e-12);
   const inverse = 1 / across + (1 / along - 1 / across) * along2;
   return Math.exp(((cos2 - 1) * inverse) / cos2) / (Math.PI * Math.sqrt(along * across) * cos2 * cos2);
 }
 
 /** The alpha Smith's term reads a direction at under the lobe along the wind,
  *  the shader's seaAxisAlpha: the slope projected on the direction's azimuth,
- *  its components along and across the axis wu and wc. */
-export function axisAlpha(along: number, across: number, wu: number, wc: number): number {
-  const along2 = (wu * wu) / Math.max(wu * wu + wc * wc, 1e-12);
+ *  whose cosine squared from the axis is along2. */
+export function axisAlpha(along: number, across: number, along2: number): number {
   return Math.sqrt(across + (along - across) * along2);
 }
 
@@ -617,12 +611,14 @@ export function beamRadianceAt(
     lobe = (sea.axis ? axisLobeBound(nh) : beckmannLobeBound(nh)) / Math.max(4 * nl * nv, 1e-6);
   } else if (sea.axis) {
     const f = scratch.frame;
-    windFrameAt(nx, ny, nz, s.axisX, s.axisY, f);
+    windFrameAt(nx, ny, nz, f);
     axisSlopes(s.windMs, s.axisX, s.axisY, scratch.slopes);
     const along = scratch.slopes[0], across = scratch.slopes[1];
-    lobe = axisLobe(nh, along, across, hx * f[0] + hy * f[1] + hz * f[2], hx * f[3] + hy * f[4] + hz * f[5])
-      * beckmannG1(nl, axisAlpha(along, across, lx * f[0] + ly * f[1] + lz * f[2], lx * f[3] + ly * f[4] + lz * f[5]))
-      * beckmannG1(nv, axisAlpha(along, across, vx * f[0] + vy * f[1] + vz * f[2], vx * f[3] + vy * f[4] + vz * f[5]))
+    const toDir = 1 / Math.max(Math.hypot(s.axisX, s.axisY), 1e-6);
+    const dx = s.axisX * toDir, dy = s.axisY * toDir;
+    lobe = axisLobe(nh, along, across, axisAlong2(dx, dy, hx * f[0] + hy * f[1] + hz * f[2], hx * f[3] + hy * f[4] + hz * f[5]))
+      * beckmannG1(nl, axisAlpha(along, across, axisAlong2(dx, dy, lx * f[0] + ly * f[1] + lz * f[2], lx * f[3] + ly * f[4] + lz * f[5])))
+      * beckmannG1(nv, axisAlpha(along, across, axisAlong2(dx, dy, vx * f[0] + vy * f[1] + vz * f[2], vx * f[3] + vy * f[4] + vz * f[5])))
       / Math.max(4 * nl * nv, 1e-6);
   } else {
     const mss = meanSquareSlopeOfWind(s.windMs);

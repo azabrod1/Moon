@@ -2151,29 +2151,34 @@ float seaBeckmannVis(float alpha, float dotNL, float dotNV) {
   return seaBeckmannG1(dotNL, alpha) * seaBeckmannG1(dotNV, alpha) / max(4.0 * dotNL * dotNV, 1e-6);
 }
 #ifdef SEA_AXIS
-// The same lobe along the wind: Beckmann in the wind's own frame, alphaU along
-// the map's axis and alphaC across it, hu and hc the half vector's components
-// along and across, dotNH its cosine to the normal. The inverse square alpha
-// along the half vector's azimuth is the across one plus the difference times
-// that azimuth's cosine squared, so with alphaU = alphaC it is that alpha's
-// and the lobe is seaBeckmann's, and where the frame has collapsed (hu = hc =
-// 0, at a pole) it reads the across alpha rather than no lobe at all.
-float seaBeckmannAxis(float alphaU, float alphaC, float hu, float hc, float dotNH) {
+// The same lobe along the wind. A tangent direction whose components east and
+// north are w lies at an azimuth from the wind's axis whose cosine squared is
+// one half of (1 + (a.x (e² - n²) + a.y 2 e n) / (e² + n²)), a the axis's
+// direction in doubled angle, (cos 2 theta, sin 2 theta) with theta from east
+// toward north: the half-angle identity, with no angle taken. A direction with
+// no tangent part, or a frame collapsed at a pole, reads one half.
+float seaAxisAlong2(vec2 a, vec2 w) {
+  return 0.5 + 0.5 * (a.x * (w.x * w.x - w.y * w.y) + a.y * 2.0 * w.x * w.y) / max(dot(w, w), 1e-12);
+}
+// Beckmann in the wind's frame: alphaU along the axis and alphaC across it, the
+// half vector at cosine dotNH to the normal and at cos² along2 of its azimuth
+// from the axis. The inverse square alpha along that azimuth is the across one
+// plus the difference times along2, so with alphaU = alphaC it is that alpha's
+// and the lobe is seaBeckmann's.
+float seaBeckmannAxis(float alphaU, float alphaC, float along2, float dotNH) {
   float cos2 = max(dotNH * dotNH, 1e-6);
-  float along2 = hu * hu / max(hu * hu + hc * hc, 1e-12);
   float invAlpha2 = 1.0 / (alphaC * alphaC) + (1.0 / (alphaU * alphaU) - 1.0 / (alphaC * alphaC)) * along2;
   return exp((cos2 - 1.0) * invAlpha2 / cos2) / (PI * alphaU * alphaC * cos2 * cos2);
 }
-// Smith's term on the projected alpha: a direction whose components along and
-// across the axis are wu and wc sees alpha² = alphaU² cos² + alphaC² sin² of
-// its azimuth, and Beckmann's own G1 at that alpha.
-float seaAxisAlpha(float alphaU, float alphaC, float wu, float wc) {
-  float along2 = wu * wu / max(wu * wu + wc * wc, 1e-12);
+// Smith's term on the projected alpha: a direction at cos² along2 of its
+// azimuth from the axis sees alpha² = alphaU² cos² + alphaC² sin², and
+// Beckmann's own G1 at that alpha.
+float seaAxisAlpha(float alphaU, float alphaC, float along2) {
   return sqrt(alphaC * alphaC + (alphaU * alphaU - alphaC * alphaC) * along2);
 }
-float seaBeckmannAxisVis(float alphaU, float alphaC, vec2 l, vec2 v, float dotNL, float dotNV) {
-  return seaBeckmannG1(dotNL, seaAxisAlpha(alphaU, alphaC, l.x, l.y))
-      * seaBeckmannG1(dotNV, seaAxisAlpha(alphaU, alphaC, v.x, v.y)) / max(4.0 * dotNL * dotNV, 1e-6);
+float seaBeckmannAxisVis(float alphaU, float alphaC, float alongL, float alongV, float dotNL, float dotNV) {
+  return seaBeckmannG1(dotNL, seaAxisAlpha(alphaU, alphaC, alongL))
+      * seaBeckmannG1(dotNV, seaAxisAlpha(alphaU, alphaC, alongV)) / max(4.0 * dotNL * dotNV, 1e-6);
 }
 #endif
 `;
@@ -2839,52 +2844,55 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       // is; the old chain keeps three's, which then cancels. The denominator
       // stays three's whichever chain, since that is what is being divided out.
 #ifdef SEA_AXIS
-      // The lobe along the wind (SEA_AXIS, world/seaWind axisSlopes). The
-      // wind's frame on the shading normal: east and north from the body's
-      // pole in view space (the body frame's +Y, the pole the equirect maps
-      // are laid on), as world/reliefFrame builds them, and the axis turned
-      // from east toward north by half its doubled angle, by the half-angle
-      // identities (the sign of the doubled sine picks the side; its zero is
-      // taken as plus, or an axis along the meridian would vanish). At a pole
-      // the frame collapses; the map's own averaging has the axis near zero
-      // there, and the lobe falls back to its across alpha. Each axis's
-      // roughness is formed as three forms the one it lights with, its floor
-      // and this fragment's geometry roughness included, from the water's own
-      // slopes and never from material.roughness, which at a coast is the
-      // blend of water and land. Where the map was not read the lobe keeps
-      // three's alpha, round. The division stays by three's own isotropic
-      // GGX at its own alpha, which is what three put in.
-      vec3 seaEast = cross(normalize(normalMatrix[1]), normal);
-      seaEast /= max(length(seaEast), 1e-6);
-      vec3 seaNorth = cross(normal, seaEast);
-      float seaAxisK = min(length(seaAxisWind.yz), 1.0);
-      float seaAxisCos2 = clamp(seaAxisWind.y / max(seaAxisK, 1e-6), -1.0, 1.0);
-      vec3 seaAlong = sqrt(0.5 + 0.5 * seaAxisCos2) * seaEast
-          + (seaAxisWind.z < 0.0 ? -1.0 : 1.0) * sqrt(0.5 - 0.5 * seaAxisCos2) * seaNorth;
-      vec3 seaAcross = cross(normal, seaAlong);
-      float seaAlphaU = seaAlpha;
-      float seaAlphaC = seaAlpha;
-      if (seaAxisWind.x >= 0.0) {
-        float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;
-        float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x
-            - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x)) * seaAxisK;
-        seaAlphaU = pow2(min(max(sqrt(sqrt(max(seaMss + seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
-            + geometryRoughness, 1.0));
-        seaAlphaC = pow2(min(max(sqrt(sqrt(max(seaMss - seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
-            + geometryRoughness, 1.0));
-      }
+      // The lobe along the wind (SEA_AXIS, world/seaWind axisSlopes), only
+      // where there is water: with none the mix below is exactly one, so
+      // land skips the work and draws what it drew. The wind's frame on the
+      // shading normal: east and north from the body's pole in view space
+      // (the body frame's +Y, the pole the equirect maps are laid on), as
+      // world/reliefFrame builds them, the pole's length cancelling in the
+      // normalisation; each direction is read by its east and north parts
+      // against the axis in doubled angle (seaAxisAlong2), so no angle is
+      // taken. At a pole the frame collapses to nothing and every direction
+      // reads halfway between the two alphas; the map's own averaging has
+      // the axis near zero there anyway. Each axis's roughness is formed as
+      // three forms the one it lights with, its floor and this fragment's
+      // geometry roughness included, from the water's own slopes and never
+      // from material.roughness, which at a coast is the blend of water and
+      // land. Where the map was not read the lobe keeps three's alpha, round.
+      // The division stays by three's own isotropic GGX at its own alpha,
+      // which is what three put in.
+      if (seaWater > 0.0) {
+        vec3 seaEast = cross(normalMatrix[1], normal);
+        seaEast *= inversesqrt(max(dot(seaEast, seaEast), 1e-30));
+        vec3 seaNorth = cross(normal, seaEast);
+        float seaAxisLength = length(seaAxisWind.yz);
+        vec2 seaAxisDir = seaAxisWind.yz / max(seaAxisLength, 1e-6);
+        float seaAlphaU = seaAlpha;
+        float seaAlphaC = seaAlpha;
+        if (seaAxisWind.x >= 0.0) {
+          float seaMss = ${COX_MUNK_SLOPE_CALM.toFixed(5)} + ${COX_MUNK_SLOPE_PER_MS.toFixed(5)} * seaAxisWind.x;
+          float seaSkew = (${COX_MUNK_UPWIND_PER_MS.toFixed(5)} * seaAxisWind.x
+              - (${COX_MUNK_CROSSWIND_CALM.toFixed(5)} + ${COX_MUNK_CROSSWIND_PER_MS.toFixed(5)} * seaAxisWind.x))
+              * min(seaAxisLength, 1.0);
+          seaAlphaU = pow2(min(max(sqrt(sqrt(max(seaMss + seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+              + geometryRoughness, 1.0));
+          seaAlphaC = pow2(min(max(sqrt(sqrt(max(seaMss - seaSkew, ${COX_MUNK_SLOPE_CALM.toFixed(5)}))), 0.0525)
+              + geometryRoughness, 1.0));
+        }
 #ifdef SEA_BEAM
-      vec3 seaSunDir = normalize(vSunViewDir);
-      float seaBeamVis = seaBeckmannAxisVis(seaAlphaU, seaAlphaC,
-          vec2(dot(seaSunDir, seaAlong), dot(seaSunDir, seaAcross)),
-          vec2(dot(seaViewDir, seaAlong), dot(seaViewDir, seaAcross)), seaDotNL, seaDotNV);
+        vec3 seaSunDir = normalize(vSunViewDir);
+        float seaBeamVis = seaBeckmannAxisVis(seaAlphaU, seaAlphaC,
+            seaAxisAlong2(seaAxisDir, vec2(dot(seaSunDir, seaEast), dot(seaSunDir, seaNorth))),
+            seaAxisAlong2(seaAxisDir, vec2(dot(seaViewDir, seaEast), dot(seaViewDir, seaNorth))), seaDotNL, seaDotNV);
 #else
-      float seaBeamVis = seaVis;
+        float seaBeamVis = seaVis;
 #endif
-      seaLobe = mix(1.0,
-          seaBeamVis * seaBeckmannAxis(seaAlphaU, seaAlphaC, dot(seaHalfDir, seaAlong), dot(seaHalfDir, seaAcross), seaDotNH)
-              / (seaVis * D_GGX(seaAlpha, seaDotNH)),
-          seaWater);
+        seaLobe = mix(1.0,
+            seaBeamVis * seaBeckmannAxis(seaAlphaU, seaAlphaC,
+                seaAxisAlong2(seaAxisDir, vec2(dot(seaHalfDir, seaEast), dot(seaHalfDir, seaNorth))), seaDotNH)
+                / (seaVis * D_GGX(seaAlpha, seaDotNH)),
+            seaWater);
+      }
 #else
 #ifdef SEA_BEAM
       float seaBeamVis = seaBeckmannVis(seaAlpha, seaDotNL, seaDotNV);

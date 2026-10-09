@@ -3343,7 +3343,9 @@ export function setFoamAlbedo(value: number): number {
 export function parseFoamParam(search: string): number | null {
   if (!import.meta.env.DEV) return null;
   const raw = new URLSearchParams(search).get('foam');
-  if (!raw) return null;
+  // A plain decimal only: Number() reads a blank, a space or a hex form as
+  // zero, and a mistyped link must leave the picture alone, not darken the sea.
+  if (raw === null || !/^\s*\d*\.?\d+(e-?\d+)?\s*$/i.test(raw)) return null;
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }

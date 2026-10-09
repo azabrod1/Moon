@@ -1043,6 +1043,12 @@ describe('the sea', () => {
     expect(parseFoamParam('?foam=')).toBeNull();
     expect(parseFoamParam('?foam=1.5')).toBeNull();
     expect(parseFoamParam('?foam=grey')).toBeNull();
+    // A blank, a space or a hex form would read as zero through Number():
+    // a mistyped link leaves the picture alone.
+    expect(parseFoamParam('?foam=+')).toBeNull();
+    expect(parseFoamParam('?foam=%20')).toBeNull();
+    expect(parseFoamParam('?foam=0x0')).toBeNull();
+    expect(parseFoamParam('?foam=.15')).toBe(0.15);
     const mat = new THREE.MeshStandardMaterial();
     augmentSurfaceMaterial(mat, 'earth', undefined, 0, undefined, undefined, 'Earth');
     expect(whitecapsOn()).toBe(true);

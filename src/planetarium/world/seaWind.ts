@@ -119,7 +119,7 @@ export const WHITECAP_MEAN_FACTOR = 2.1;
  * processing removes for whitecaps. One grey, the same in every channel; the
  * measured value is about 11 % lower at 670 nm, which is ignored. Mixed over
  * the water colour by the cover, so it greys the sea rather than whitening
- * it: 4 % foam over (0.0015, 0.009, 0.028) raises red about 6.9 times, green
+ * it: 4 % foam over (0.0015, 0.009, 0.028) raises red about 6.8 times, green
  * about 1.9 times and blue by about 27 %.
  */
 export const WHITECAP_ALBEDO = 0.22;

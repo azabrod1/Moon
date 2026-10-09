@@ -17,7 +17,7 @@
  *
  * The beam as drawn and as predicted is the foam-free sea's (the whitecaps,
  * world/seaWind, grey the diffuse colour and leave the mirror term whole), up
- * to about 5.6 % brighter than a foam-covered one at the map's windiest
+ * to about 5.9 % brighter than a foam-covered one at the map's windiest
  * annual mean (13.38 m/s), on the safe side for a meter that only lowers the
  * exposure.
  *

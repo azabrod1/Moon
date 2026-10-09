@@ -111,8 +111,8 @@ describe('whitecapCoverage', () => {
     expect(red / SEA_WATER_COLOUR[0]).toBeCloseTo(6.83, 2);
     expect(green / SEA_WATER_COLOUR[1]).toBeCloseTo(1.94, 2);
     expect(blue / SEA_WATER_COLOUR[2]).toBeCloseTo(1.27, 2);
-    // Still darker than every land albedo the map paints and far from white:
-    // at the windiest annual mean the sea's blue is under a tenth.
+    // Still far from white: at the windiest annual mean no channel reaches
+    // 0.04, well under a tenth.
     expect(Math.max(...at(whitecapCoverage(13.38)))).toBeLessThan(0.04);
   });
 });

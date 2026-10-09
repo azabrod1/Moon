@@ -7418,13 +7418,13 @@ export class PlanetariumMode {
         const slot = scenePositions.get(planet.data.name)!;
         slot.x = p.x; slot.y = p.y; slot.z = p.z;
       }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer, this.scenePixelRatio());
+      this.planetLabels.collectForegroundSpheres(scenePositions, this.renderer, this.scenePixelRatio());
       this.collectDynamicOccluders();
       if (pickerWanted) {
         this.buildBodyPickList(scenePositions, excludeName);
         // Resolve a just-recognized tap against this fresh pick list.
         if (this.hasPendingTap) {
-          const hit = pickBodyAtPointer(this.bodyPickList, this.planetLabels.foregroundDiscs, this.pendingTapX, this.pendingTapY);
+          const hit = pickBodyAtPointer(this.bodyPickList, this.planetLabels.foregroundSpheres, this.pendingTapX, this.pendingTapY);
           if (hit) {
             this.touchRevealBody = hit;
             this.touchRevealUntil = performance.now() + PlanetariumMode.TOUCH_REVEAL_MS;
@@ -7527,20 +7527,23 @@ export class PlanetariumMode {
         // a 20° disc 30° off-axis at 60°), so a catch around the centre would
         // leave the outer crescent dead on one side. Markers stay on the centre.
         const fp = projectSphereToScreen(pos, planet.data.radiusAU, this.camera, canvasW, canvasH, this.sphereScreenProjection);
-        this.pushPickCandidate(planet.data.name, fp.footprintX, fp.footprintY, fp.radiusPx, dist);
+        this.pushPickCandidate(planet.data.name, fp.footprintX, fp.footprintY, fp.radiusPx, dist, dx, dy, dz);
       } else {
-        this.pushPickCandidate(planet.data.name, proj.x, proj.y, markerRadiusPx, dist);
+        this.pushPickCandidate(planet.data.name, proj.x, proj.y, markerRadiusPx, dist, dx, dy, dz);
       }
     }
 
     // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
     {
       const sunPos = this.solarSystem.sun.position;
-      const dist = cam.distanceTo(sunPos);
+      const dx = sunPos.x - cam.x;
+      const dy = sunPos.y - cam.y;
+      const dz = sunPos.z - cam.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
       if (this.pickProjOnScreen(canvasW, canvasH)) {
         const sun = this.getSunScreenProjection();
-        this.pushPickCandidate('Sun', sun.footprintX, sun.footprintY, sun.radiusPx, dist);
+        this.pushPickCandidate('Sun', sun.footprintX, sun.footprintY, sun.radiusPx, dist, dx, dy, dz);
       }
     }
 
@@ -7589,25 +7592,35 @@ export class PlanetariumMode {
           onDisc ? eff.footprintY : proj.y,
           Math.max(discPadPx, dotPx),
           dist,
+          dx, dy, dz,
         );
       }
     }
   }
 
   /** Append one pick candidate, reusing a pooled object (zero allocation in
-   *  steady state). pickRadiusPx floors at 18 so tiny dots stay hittable. */
-  private pushPickCandidate(name: string, x: number, y: number, radiusPx: number, dist: number): void {
+   *  steady state). pickRadiusPx floors at 18 so tiny dots stay hittable.
+   *  (dx, dy, dz) is the body's offset from the camera, `dist` its length:
+   *  the sight line the picker tests against the foreground spheres. */
+  private pushPickCandidate(
+    name: string, x: number, y: number, radiusPx: number, dist: number,
+    dx: number, dy: number, dz: number,
+  ): void {
     const n = this.bodyPickList.length;
     let c = this.bodyPickPool[n];
     if (!c) {
-      c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0 };
+      c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0, dirX: 0, dirY: 0, dirZ: 0 };
       this.bodyPickPool[n] = c;
     }
+    const inv = 1 / Math.max(dist, 1e-12);
     c.name = name;
     c.screenX = x;
     c.screenY = y;
     c.pickRadiusPx = Math.max(radiusPx, 18);
     c.distFromCamera = dist;
+    c.dirX = dx * inv;
+    c.dirY = dy * inv;
+    c.dirZ = dz * inv;
     this.bodyPickList.push(c);
   }
 
@@ -7643,7 +7656,7 @@ export class PlanetariumMode {
     }
     if (pickerWanted && this.hoverEligible && this.planetLabels) {
       this.revealedBody = pickBodyAtPointer(
-        this.bodyPickList, this.planetLabels.foregroundDiscs, this.hoverClientX, this.hoverClientY,
+        this.bodyPickList, this.planetLabels.foregroundSpheres, this.hoverClientX, this.hoverClientY,
       );
       return;
     }
@@ -7670,10 +7683,10 @@ export class PlanetariumMode {
   }
 
   /**
-   * Second pass: contribute foreground discs for the Sun, visible moons and
+   * Second pass: contribute foreground spheres for the Sun, visible moons and
    * the player ship to `planetLabels`, so any label or marker rendered
    * afterwards (planet, moon, sun) is occluded when it would sit on top of
-   * one of them. Must run AFTER `planetLabels.collectForegroundDiscs()` and
+   * one of them. Must run AFTER `planetLabels.collectForegroundSpheres()` and
    * BEFORE any label rendering (`renderLabels`, `renderMoonLabels`,
    * `updateSunLabel`). A body blocks only while it is a face seen from
    * outside: one the camera sits inside is a room, not an obstacle.
@@ -7699,13 +7712,13 @@ export class PlanetariumMode {
   }
 
   /** A moon's effective-radius screen projection, measured at most once per
-   *  frame (MoonMesh.effProj): the dot, occlusion-disc, label and pick passes
+   *  frame (MoonMesh.effProj): the dot, label and pick passes
    *  ask with identical inputs — the mesh's world position, the rendered-size
    *  radius (the mesh scale IS renderedMoonSizeAU), the settled camera — so
-   *  whichever runs first serves the rest. Gates differ per pass (occluders
-   *  skip small discs, labels skip hidden names), which the lazy fill absorbs:
+   *  whichever runs first serves the rest. Gates differ per pass (labels skip
+   *  hidden names, picks skip the unaimable), which the lazy fill absorbs:
    *  a moon only ever measures for its first asker. A cache hit ignores the
-   *  arguments, so only those four passes may call this — they all run after
+   *  arguments, so only those three passes may call this — they all run after
    *  the frame's final camera.updateMatrixWorld (the surface-view dots after
    *  the surface re-pin, with no other asker that frame). updateBodyLOD in
    *  particular must NOT join: it runs before the camera-safety pass and
@@ -7741,26 +7754,27 @@ export class PlanetariumMode {
 
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
-    const canvasW = this.renderer.domElement.clientWidth;
-    const canvasH = this.renderer.domElement.clientHeight;
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
     const tempV = this.tmpLabelMoonWorld;
 
     // The Sun. No angular-size gate: markers no longer depth-test, so this
-    // disc is the only thing keeping a far planet's marker (and label) from
-    // drawing over the solar disc — however few pixels it covers. The Sun
-    // label itself is safe: equal camera distance short-circuits the test.
+    // sphere is the only thing keeping a far planet's marker (and label) from
+    // drawing over the solar disc — however few pixels it covers. A tenth over
+    // the photosphere, the margin its screen disc always carried, keeps the
+    // beacons clear of the disc's soft drawn edge; the glare beyond is the
+    // labels' own fade. The Sun's label is placed clear of the disc (its
+    // pass excludes the Sun by name).
     {
       const sunPos = this.solarSystem.sun.position;
-      const distFromCamera = this.camera.position.distanceTo(sunPos);
-      const proj = this.getSunScreenProjection();
-      if (proj.ndcZ < 1 && distFromCamera > 0) {
-        const radiusPx = proj.radiusPx * 1.1;
-        this.planetLabels.addForegroundDisc({
-          screenX: proj.footprintX, screenY: proj.footprintY, radiusPx, distFromCamera, name: 'Sun',
-        });
+      const x = sunPos.x - camX;
+      const y = sunPos.y - camY;
+      const z = sunPos.z - camZ;
+      const distFromCamera = Math.sqrt(x * x + y * y + z * z);
+      const radiusAU = SUN_DATA.radiusAU * 1.1;
+      if (distFromCamera > radiusAU) {
+        this.planetLabels.addForegroundSphere({ x, y, z, radiusAU, distFromCamera, name: 'Sun' });
       }
     }
 
@@ -7777,27 +7791,22 @@ export class PlanetariumMode {
         const dz = tempV.z - camZ;
         const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
         // Effective rendered radius: the same curve the mesh uses, so the
-        // occlusion disc matches what's actually drawn.
+        // occlusion sphere matches what's actually drawn.
         const effectiveRadiusAU = this.renderedMoonSizeAU(m.data.radiusAU, parentR, this.moonRenderAnchorRatio(planet.data.name));
         // A sphere the camera is inside occludes nothing: its back faces cull
-        // and you see out through it. The projection answers 'covering' there —
-        // a conservative classification, not a measured disc — which as a
-        // blocker would blank every label and beacon in the sky. Testing it
-        // first also guarantees a positive distance for the ratio below.
+        // and you see out through it, while the sight-line test would hide
+        // everything. Testing it first also guarantees a positive distance for
+        // the ratio below.
         if (distFromCamera <= effectiveRadiusAU) continue;
         // Angular-size gate, compared WITHOUT a floor under the distance: a
         // floored denominator turns the ratio into an absolute-size test at
         // close range, and no moon whose rendered radius is under ~75 km can
         // ever satisfy it — Phobos and Deimos would contribute no occlusion
-        // disc at any distance, letting labels and beacons draw over their faces.
+        // sphere at any distance, letting labels and beacons draw over their faces.
         if (effectiveRadiusAU * 2 <= 0.01 * distFromCamera) continue;
-
-        const proj = this.moonEffScreenProjection(m, tempV, effectiveRadiusAU);
-        if (proj.ndcZ >= 1) continue;
-        const screenX = proj.footprintX;
-        const screenY = proj.footprintY;
-        const radiusPx = proj.radiusPx * 1.1;
-        this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
+        this.planetLabels.addForegroundSphere({
+          x: dx, y: dy, z: dz, radiusAU: effectiveRadiusAU, distFromCamera, name: `moon:${m.data.name}`,
+        });
       }
     }
 
@@ -7805,24 +7814,13 @@ export class PlanetariumMode {
     // origin), so its camera distance is just the camera's magnitude.
     if (this.player.group.visible && !this.landedOn) {
       const distFromCamera = this.camera.position.length();
-      if (distFromCamera > 0) {
-        const shipSceneRadiusAU = SHIP_OCCLUDER_RADIUS_AU;
+      const shipSceneRadiusAU = SHIP_OCCLUDER_RADIUS_AU;
+      if (distFromCamera > shipSceneRadiusAU) {
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
-          const proj = projectSphereToScreen(
-            tempV.set(0, 0, 0),
-            shipSceneRadiusAU,
-            this.camera,
-            canvasW,
-            canvasH,
-            this.sphereScreenProjection,
-          );
-          if (proj.ndcZ < 1) {
-            const screenX = proj.footprintX;
-            const screenY = proj.footprintY;
-            const radiusPx = proj.radiusPx;
-            this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
-          }
+          this.planetLabels.addForegroundSphere({
+            x: -camX, y: -camY, z: -camZ, radiusAU: shipSceneRadiusAU, distFromCamera, name: 'ship',
+          });
         }
       }
     }
@@ -7979,7 +7977,7 @@ export class PlanetariumMode {
 
   /**
    * Third pass: place HTML labels for visible moons. Uses the occluder set
-   * populated by `planetLabels.collectForegroundDiscs` + `collectDynamicOccluders`.
+   * populated by `planetLabels.collectForegroundSpheres` + `collectDynamicOccluders`.
    */
   private renderMoonLabels() {
     if (!this.solarSystem || this.moonLabelContainer === null) return;
@@ -10068,8 +10066,10 @@ export class PlanetariumMode {
     this.statsPanel.render(stats, this.fpsDisplay);
   }
 
+  // The Sun's own sphere is excluded by name: the label hangs just under the
+  // disc, and the sight-line test would otherwise read its own near face.
   private readonly sunLabelOcclusionProbe = (x: number, y: number, depth: number): boolean =>
-    this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false;
+    this.planetLabels?.isScreenPointOccluded(x, y, depth, 'Sun') ?? false;
 
   private updateSunLabel() {
     if (!this.solarSystem) return;
@@ -15986,17 +15986,24 @@ export class PlanetariumMode {
     return true;
   }
 
-  /** The live analytic foreground-occlusion disc a planet contributed this frame
-   *  (screen centre + radius px from `collectForegroundDiscs` under the lens), so
-   *  the harness can place a marker at its predicted limb. Needs the label pass
-   *  to have run (markers or labels on). */
+  /** The limb a planet's foreground sphere hides behind this frame, as the
+   *  circle it draws on the screen (its displayed tangent footprint under the
+   *  lens: centre + radius px), so the harness can place a marker just inside
+   *  and just outside the limb and see the sight-line test agree. Needs the
+   *  label pass to have run (markers or labels on) so the sphere exists. */
   devPlanetOccluderDisc(name: string): unknown {
-    const disc = this.planetLabels?.foregroundDiscs.find((d) => d.name === name);
-    if (!disc) return null;
+    const sphere = this.planetLabels?.foregroundSpheres.find((d) => d.name === name);
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === name);
+    if (!sphere || !planet) return null;
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    const proj = projectSphereToScreen(
+      planet.group.position, planet.data.radiusAU, this.camera, w, h, this.sphereScreenProjection,
+    );
     return {
-      screenX: disc.screenX, screenY: disc.screenY, radiusPx: disc.radiusPx,
-      distFromCamera: disc.distFromCamera,
-      viewport: { w: this.renderer.domElement.clientWidth, h: this.renderer.domElement.clientHeight },
+      screenX: proj.footprintX, screenY: proj.footprintY, radiusPx: proj.radiusPx,
+      distFromCamera: sphere.distFromCamera,
+      viewport: { w, h },
     };
   }
 
@@ -16178,8 +16185,8 @@ export class PlanetariumMode {
   /**
    * Place a bright-red marker SPRITE at a DISPLAYED screen pixel and cull it
    * through the REAL analytic occlusion path (`isScreenPointOccluded` against the
-   * foreground occluder discs), exactly as a planet marker beacon is culled — so
-   * its DRAWN pixels reflect the analytic-disc decision, not GPU depth. `depthAU`
+   * foreground spheres), exactly as a planet marker beacon is culled — so
+   * its DRAWN pixels reflect the sight-line decision, not GPU depth. `depthAU`
    * is the marker's camera distance for the depth compare (put it behind the
    * occluding planet). Returns the occlusion verdict. Dev only.
    */

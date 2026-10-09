@@ -221,12 +221,24 @@ export function lensUnwarpNdc(
   strength: number,
   out: { x: number; y: number },
 ): { x: number; y: number } {
-  if (strength <= 0) {
+  makeLensWarpContext(designFovDeg, renderFovDeg, aspect, strength, warpCtxScratch);
+  return lensUnwarpNdcWithContext(warpCtxScratch, ndcX, ndcY, out);
+}
+
+/** Point half of the inverse map, constants from the context: the one
+ *  definition `lensUnwarpNdc` delegates to. */
+export function lensUnwarpNdcWithContext(
+  ctx: LensWarpContext,
+  ndcX: number,
+  ndcY: number,
+  out: { x: number; y: number },
+): { x: number; y: number } {
+  if (ctx.strength <= 0) {
     out.x = ndcX;
     out.y = ndcY;
     return out;
   }
-  const dx = ndcX * aspect;
+  const dx = ndcX * ctx.aspect;
   const dy = ndcY;
   const mOut = Math.hypot(dx, dy);
   if (mOut < 1e-9) {
@@ -234,13 +246,124 @@ export function lensUnwarpNdc(
     out.y = 0;
     return out;
   }
-  const rEdge = lensRadial((designFovDeg / 2) * DEG, strength);
-  const theta = lensRadialInverse(mOut * rEdge, strength);
-  const tanHalfRender = Math.tan((renderFovDeg / 2) * DEG);
-  const k = Math.tan(theta) / (mOut * tanHalfRender);
-  out.x = (dx * k) / aspect;
+  const theta = lensRadialInverse(mOut * ctx.rEdge, ctx.strength);
+  const k = Math.tan(theta) / (mOut * ctx.tanHalfRender);
+  out.x = (dx * k) / ctx.aspect;
   out.y = dy * k;
   return out;
+}
+
+/** How the lens scales the picture at one view angle, as multiples of its
+ *  scale on the axis: radially (along the direction away from the frame
+ *  centre) and tangentially (across it). Both are 1 on the axis; at strength
+ *  1 they stay equal (the map is conformal) and the picture is simply
+ *  magnified off-axis, at strength 0 they are 1/cos²θ and 1/cosθ. The scale
+ *  on the axis is `(height / 2) / lensDisplayHalfTan` output px per radian,
+ *  so these two times that number convert a small angle at any point of the
+ *  frame into output pixels. */
+export interface LensLocalScale {
+  radial: number;
+  tangential: number;
+}
+
+export function lensLocalScale(theta: number, strength: number, out: LensLocalScale): LensLocalScale {
+  if (!(theta > 1e-9)) {
+    out.radial = 1;
+    out.tangential = 1;
+    return out;
+  }
+  out.radial = (1 - strength) / Math.cos(theta) ** 2 + strength / Math.cos(theta / 2) ** 2;
+  out.tangential = lensRadial(theta, strength) / Math.sin(theta);
+  return out;
+}
+
+/** An axis-aligned rectangle in NDC (output or source), inclusive. */
+export interface NdcRect {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+const boundSampleScratch = { x: 0, y: 0 };
+
+/**
+ * The rectilinear-source rectangle that covers every output pixel of an
+ * output-space rectangle, after clipping it to the displayed frame.
+ *
+ * A screen-authored primitive that is too large to pre-distort corner by
+ * corner (the Sun's glare: a frame-sized wash) draws a source-space quad
+ * only to COVER the pixels its fragment then measures in output space. This
+ * is that quad. Clipping first is what makes it representable: the overscan
+ * is sized so the displayed frame's corners have source data, so the
+ * pre-image of anything inside the frame lies inside the source square, and
+ * a support reaching past the frame edge wants no pixels there anyway.
+ *
+ * The bound is exact, not sampled. The inverse map is radial about the frame
+ * centre and its radial factor grows with the output radius, so along an
+ * edge of fixed x the source x is monotone in |y|: the extremes of the
+ * pre-image sit at the rectangle's four corners or at the point of each edge
+ * nearest the frame centre. Those eight points, unwarped, bound it; the
+ * margin (in source NDC, one texel each way plus float fringe) is added after.
+ * Returns false when the clipped rectangle is empty (nothing to draw). Any
+ * non-finite input or result falls back to the whole source frame, which the
+ * clipping argument above makes always sufficient.
+ */
+export function lensSourceBoundOfOutputRect(
+  ctx: LensWarpContext,
+  rect: NdcRect,
+  marginX: number,
+  marginY: number,
+  out: NdcRect,
+): boolean {
+  const minX = Math.max(rect.minX, -1);
+  const maxX = Math.min(rect.maxX, 1);
+  const minY = Math.max(rect.minY, -1);
+  const maxY = Math.min(rect.maxY, 1);
+  if (!(maxX > minX && maxY > minY)) {
+    if (Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)) {
+      return false;
+    }
+    out.minX = -1;
+    out.minY = -1;
+    out.maxX = 1;
+    out.maxY = 1;
+    return true;
+  }
+  // The point of each edge nearest the frame centre, clamped onto the edge.
+  const nearX = Math.min(Math.max(0, minX), maxX);
+  const nearY = Math.min(Math.max(0, minY), maxY);
+  let sMinX = Infinity;
+  let sMaxX = -Infinity;
+  let sMinY = Infinity;
+  let sMaxY = -Infinity;
+  const sample = (x: number, y: number) => {
+    const p = lensUnwarpNdcWithContext(ctx, x, y, boundSampleScratch);
+    sMinX = Math.min(sMinX, p.x);
+    sMaxX = Math.max(sMaxX, p.x);
+    sMinY = Math.min(sMinY, p.y);
+    sMaxY = Math.max(sMaxY, p.y);
+  };
+  sample(minX, minY);
+  sample(maxX, minY);
+  sample(minX, maxY);
+  sample(maxX, maxY);
+  sample(minX, nearY);
+  sample(maxX, nearY);
+  sample(nearX, minY);
+  sample(nearX, maxY);
+  if (!(Number.isFinite(sMinX) && Number.isFinite(sMaxX) && Number.isFinite(sMinY) && Number.isFinite(sMaxY))) {
+    out.minX = -1;
+    out.minY = -1;
+    out.maxX = 1;
+    out.maxY = 1;
+    return true;
+  }
+  out.minX = sMinX - marginX;
+  out.maxX = sMaxX + marginX;
+  out.minY = sMinY - marginY;
+  out.maxY = sMaxY + marginY;
+  return true;
 }
 
 /**

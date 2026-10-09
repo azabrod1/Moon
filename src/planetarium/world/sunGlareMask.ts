@@ -9,8 +9,10 @@
  * The signal mirrors the glare shader's own wide veil (a screen-space Moffat
  * wash plus two diffraction arms) plus a small geometric core so the Sun's bare
  * outer-system glint still obscures coincident points when the wash is idle.
- * Everything is a pure function of aspect-correct CSS pixels measured from the
- * Sun's unclamped screen position, so it keeps working when the Sun is off-frame
+ * Everything is a pure function of aspect-correct CSS pixels of the displayed
+ * frame, measured from the Sun's unclamped screen position — the same pixels
+ * and the same centre the glare fragment measures its veil in, so the fade
+ * sits on the wash it hides — so it keeps working when the Sun is off-frame
  * and collapses to a no-op (mask 0) when the Sun is behind the camera or the
  * glare pipeline is ineligible.
  *

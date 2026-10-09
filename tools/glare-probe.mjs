@@ -58,6 +58,9 @@ const modes = [
   { name: 'bloom', query: '', bloom: true, strengths: [1, 0.5] },
   { name: 'no-bloom', query: '', bloom: false, strengths: [1] },
   { name: 'no-float', query: '&nofloat=1', bloom: false, strengths: [1] },
+  // The three-pass chain, where a lens pass of its own warps the scene before
+  // the bloom reads it.
+  { name: 'unfused', query: '&fused=0', bloom: true, strengths: [1] },
 ];
 function posesFor(viewport) {
   const portrait = viewport.height > viewport.width;

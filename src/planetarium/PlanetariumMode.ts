@@ -8564,6 +8564,16 @@ export class PlanetariumMode {
         sunMat.uniforms.uWhiteout.value = whiteout;
       }
       if (glareMat) {
+        // The fragment reads its own position through the lens block, so the
+        // block is kept current here too: this path returns before the
+        // ordinary per-frame sync below.
+        applyLensShaderUniforms(
+          glareMat.uniforms as unknown as LensShaderUniforms,
+          this.camera,
+          Math.max(this.renderer.domElement.clientWidth, 1),
+          Math.max(this.renderer.domElement.clientHeight, 1),
+          this.scenePixelRatio(),
+        );
         const baseStrength = (glareMat.userData.baseGlareStrength ??=
           glareMat.uniforms.uGlareStrength.value);
         glareMat.uniforms.uGlareStrength.value = baseStrength * interiorFade;

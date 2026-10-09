@@ -201,21 +201,39 @@ try {
                 smooth[y * width + x] = sum / n;
               }
             }
-            // The peak: the brightest smoothed pixel within 40 px of where the
-            // controller says the Sun is (a bright star elsewhere must not win).
-            let peakX = Math.round(expectedPoint.x);
-            let peakY = Math.round(expectedPoint.y);
+            // The peak: the brightest smoothed value within 40 px of where the
+            // controller says the Sun is (a bright star elsewhere must not
+            // win), located at the centroid of the pixels within a count of
+            // it. The core saturates into a flat plateau, and the first pixel
+            // of a plateau sits at its edge, which would read as asymmetry.
             let peak = -1;
+            const x0 = Math.round(expectedPoint.x);
+            const y0 = Math.round(expectedPoint.y);
             for (let dy = -40; dy <= 40; dy++) {
               for (let dx = -40; dx <= 40; dx++) {
-                const x = Math.round(expectedPoint.x) + dx;
-                const y = Math.round(expectedPoint.y) + dy;
+                const x = x0 + dx;
+                const y = y0 + dy;
                 if (x < 0 || x >= width || y < 0 || y >= height) continue;
-                const v = smooth[y * width + x];
-                if (v > peak) { peak = v; peakX = x; peakY = y; }
+                peak = Math.max(peak, smooth[y * width + x]);
               }
             }
             if (peak < 0) return { error: 'the Sun is off-frame' };
+            let plateauN = 0;
+            let plateauX = 0;
+            let plateauY = 0;
+            for (let dy = -40; dy <= 40; dy++) {
+              for (let dx = -40; dx <= 40; dx++) {
+                const x = x0 + dx;
+                const y = y0 + dy;
+                if (x < 0 || x >= width || y < 0 || y >= height) continue;
+                if (smooth[y * width + x] < peak - 1) continue;
+                plateauN++;
+                plateauX += x;
+                plateauY += y;
+              }
+            }
+            const peakX = Math.round(plateauX / plateauN);
+            const peakY = Math.round(plateauY / plateauN);
 
             const visited = new Uint8Array(width * height);
             const queue = new Int32Array(width * height);

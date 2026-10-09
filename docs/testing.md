@@ -13,7 +13,7 @@
 
 Each tool's header gives its scenarios, its bars and its control arm. Most take `--assert`, which exits 1 on a failure.
 
-- `oval-probe`: the lens. `approach-probe`: the lens flattening out as a planet fills the view.
+- `oval-probe`: the lens. `approach-probe`: the lens flattening out as a planet fills the view. `glare-probe`: the Sun's glare stays round at every framing, and its centred size per path is the baseline (`--software` under a headless GPU that renders black).
 - `flyby-probe`: arrivals. `station-probe`: a parked ship holds its ground. `orbit-line-probe`: orbit lines hold still as the ship moves.
 - `smoothness-gate`: frame delivery.
 - `sector-probe`: sector tiles and the texture ladder against the memory envelope. `ground-cull-probe`: the hidden-ground cut is pixel-identical.

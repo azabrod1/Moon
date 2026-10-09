@@ -144,13 +144,15 @@ describe('the scan at the probe pose (400 km, Sun 10°, 7.03 m/s)', () => {
 
   it('asks for less exposure there, and for none from geostationary distance', () => {
     const cov = coverageOfBeam(peak.halfWidthAlongDeg, peak.halfWidthAcrossDeg, 40, 27);
-    // Even over a 7 m/s sea the beam's red channel sits past the target —
-    // the white smear the meter is for — so it asks for a little less, well
-    // short of the floor.
+    // Over a 7 m/s sea the beam's red channel sits just under the target:
+    // it drew 2.8 and more until the ozone's red was corrected (2026-10-09,
+    // absorbed at four times the old rate), and the Sun's grazing path in
+    // now costs the beam an eighth, so the meter asks for nothing here. The
+    // calm sea below is the case that asks for less.
     const plain = highlightTarget(peak.drawnMax, cov);
-    expect(peak.drawnMax).toBeGreaterThan(2.8);
-    expect(plain).toBeLessThan(1);
-    expect(plain).toBeGreaterThan(0.6);
+    expect(peak.drawnMax).toBeGreaterThan(2.3);
+    expect(peak.drawnMax).toBeLessThan(2.8);
+    expect(plain).toBe(1);
     // A brighter beam (a calm sea under the mirror point) asks for more. A
     // 1.5 m/s sea has the peak a texel half glassy at 7 m/s had when the sea
     // was drawn as two lobes, so the case is the one this pinned before.
@@ -315,11 +317,13 @@ describe('the cloud on both sides of the beam', () => {
     const sunSide = createBeamPeak();
     scanBeam(pose, LIGHT, beamSea, underDeck(0.5, 1), table, scratch, sunSide);
     expect(sunSide.drawnMax).toBeGreaterThan(0.5 * clear.drawnMax * 1.05);
-    // Both, as a uniform half cover gives them: the review's numbers, the
-    // clear beam well past the target and the covered one under it.
+    // Both, as a uniform half cover gives them: the review's numbers (4.26
+    // and 2.13 at the ozone of the time; the corrected ozone of 2026-10-09
+    // takes an eighth more of the Sun's red at 5°), the clear beam well
+    // past the target and the covered one under it.
     const both = createBeamPeak();
     scanBeam(pose, LIGHT, beamSea, underDeck(0.5, 0.5), table, scratch, both);
-    expect(sunSide.drawnMax).toBeCloseTo(4.26, 1);
+    expect(sunSide.drawnMax).toBeCloseTo(3.58, 1);
     expect(both.drawnMax).toBeCloseTo(0.5 * sunSide.drawnMax, 9);
     expect(both.drawnMax).toBeLessThan(HIGHLIGHT_KNOBS.target);
   });
@@ -372,8 +376,9 @@ describe('a camera inside the air', () => {
     // The brightest point along the line through the segment, every 0.002°
     // of ground, the oracle the scan's peak is held to. The whole column
     // drew 2.36 at its own peak, under the target, and the meter asked for
-    // nothing; through the segment the same point draws 4.62, and the
-    // brightest one more.
+    // nothing; through the segment the same point drew 4.62, and the
+    // brightest one more (at the ozone of the time; the corrected ozone of
+    // 2026-10-09 takes an eighth more of a beam under a 2° Sun).
     const at: [number, number, number] = [0, 0, 0];
     let oracle = 0;
     for (let phiDeg = 0.02; phiDeg < 1.0; phiDeg += 0.002) {
@@ -391,7 +396,7 @@ describe('a camera inside the air', () => {
       const seg = [0, 1, 2].map((c) => (at[c] / (1 + (tc[c] - 1) * wt)) * (1 + (ts[c] - 1) * wt));
       oracle = Math.max(oracle, drawnMaxOf(seg, beamSea));
     }
-    expect(oracle).toBeGreaterThan(4.62);
+    expect(oracle).toBeGreaterThan(3.8);
     expect(peak.drawnMax).toBeGreaterThan(0.98 * oracle);
     expect(peak.drawnMax).toBeLessThan(1.02 * oracle);
     expect(peak.drawnMax).toBeGreaterThan(HIGHLIGHT_KNOBS.target);

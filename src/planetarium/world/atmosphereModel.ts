@@ -156,8 +156,18 @@ export const EARTH_AEROSOL: AerosolLoad = { opticalDepth550: 0.06, ...MARINE_AER
  * turned into per-metre coefficients by aerosolFromOpticalDepth (the phase
  * parameter is the Cornette-Shanks value whose mean cosine is the quoted
  * asymmetry: 0.76 is a parameter of 0.703). The analytic shell keeps its own
- * art-directed 0.83. Ozone is the standard 10-40 km tent peaking at 25 km.
- * Ground albedo 0.1 is the usual global mean.
+ * art-directed 0.83. Ozone is the standard 10-40 km tent peaking at 25 km,
+ * 300 Dobson units. Its extinction is NOT the cross-section at the three
+ * sample wavelengths: that put red at 680 nm, on the weak wing of the Chappuis
+ * band, so a tangent path lost a third of its green and only an eighth of its
+ * red, and the limb drew lavender. A display's red sits near 600 nm, inside
+ * the band, so each channel takes the cross-section averaged under that
+ * channel's spectral weight (the CIE 1931 matching functions turned into
+ * linear sRGB, times the Sun's spectrum for the light that comes straight
+ * through, or times the blue airlight's for the light the limb scatters);
+ * the two weightings bracket the value and the middle is shipped.
+ * atmosphereModel.ozone.test.ts derives the bracket from the tables and pins
+ * the shipped triplet inside it. Ground albedo 0.1 is the usual global mean.
  *
  * The 100 km top is 12.5 Rayleigh scale heights and sits 27 km inside the
  * shell mesh at scale 1.02 — the taper room the module header requires.
@@ -171,7 +181,7 @@ const EARTH_SPEC: AtmosphereSpec = {
     bottomKm: 10,
     peakKm: 25,
     topKm: 40,
-    extinctionPerM: [0.65e-6, 1.881e-6, 0.085e-6],
+    extinctionPerM: [2.7e-6, 1.8e-6, 0.09e-6],
   },
   groundAlbedo: 0.1,
 };

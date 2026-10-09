@@ -807,9 +807,11 @@ describe('the bloom threshold', () => {
     // that quietly moved can pass unremarked. The marine aerosol of 2026-10
     // (a phase parameter of 0.703 against the old 0.83) lowered the haze
     // term and lifted the ceiling from 1.85e5 to 2.76e5; the gain stays at
-    // the value the night-side look was judged at, now 0.63 of the ceiling.
-    expect(maxGain).toBeGreaterThan(2.7e5);
-    expect(maxGain).toBeLessThan(2.8e5);
+    // the value the night-side look was judged at, 0.63 of that ceiling. The
+    // per-channel ozone of 2026-10-09 (red absorbed at four times the old
+    // rate) trimmed the moonlit haze term again, 2.76e5 to 2.84e5: 0.61.
+    expect(maxGain).toBeGreaterThan(2.8e5);
+    expect(maxGain).toBeLessThan(2.9e5);
     expect(MOONLIGHT_NIGHT_GAIN).toBeLessThan(maxGain);
     expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeGreaterThan(0.6);
     expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeLessThan(0.7);

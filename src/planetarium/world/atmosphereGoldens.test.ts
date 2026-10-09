@@ -434,9 +434,11 @@ describe('the ?mieexact=0 control set', () => {
     // Rebuilt from rgb, single Mie's green and blue come out too bright, most
     // in the lowest twilight band. In these frames the difference is small —
     // a step or two of 8 bits where it shows, chiefly in the ground's aerial
-    // perspective toward the limb — but it is one-sided: summed over every
-    // sampled point of every pose, the control's green and blue are higher,
-    // and its red, which both arms read from the same texel, is not.
+    // perspective toward the limb — and in blue it is one-sided: summed over
+    // every sampled point of every pose, the control's blue is higher, its
+    // green within a few steps of even (8 up before the ozone correction of
+    // 2026-10-09, 0 after: the nadir pose runs the other way), and its red,
+    // which both arms read from the same texel, is not.
     const sum = (g: Golden, c: number): number =>
       [...g.samples, ...g.limbScan].reduce((a, rgb) => a + rgb[c], 0);
     let red = 0, green = 0, blue = 0, differing = 0, redStep = 0;
@@ -453,7 +455,7 @@ describe('the ?mieexact=0 control set', () => {
       });
     }
     expect(differing).toBeGreaterThanOrEqual(5);
-    expect(green).toBeGreaterThan(0);
+    expect(Math.abs(green)).toBeLessThan(20);
     expect(blue).toBeGreaterThan(0);
     // The two sets are two browser sessions, and a sampled point that sits on
     // a rounding edge flips by one step between them (the re-record of

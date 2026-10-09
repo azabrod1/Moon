@@ -203,7 +203,9 @@ describe('the cloud between the sea and the camera', () => {
     // Clear, the beam is past the target and the meter closes down.
     const clear = settled(new HighlightMeter(uniformMaps(4, 0), shoulder), probeContext(400, 5, 12));
     expect(clear.hold).toBe('metering');
-    expect(clear.drawnMax).toBeGreaterThan(7);
+    // 7 and more until the ozone's red was corrected (2026-10-09); the Sun
+    // at 5° now loses a third of its red on the way in and the beam an eighth.
+    expect(clear.drawnMax).toBeGreaterThan(6.5);
     expect(clear.target).toBeLessThan(0.5);
     // Under half cover the deck takes its half twice: the Sun's ray through
     // it, and the deck drawn over the sea in the line of sight. What is left
@@ -211,8 +213,8 @@ describe('the cloud between the sea and the camera', () => {
     const covered = settled(new HighlightMeter(uniformMaps(4, 0.5), shoulder), probeContext(400, 5, 12));
     expect(covered.peakSample.cloudKeep).toBeCloseTo(0.5, 2);
     expect(covered.peakSample.deckKeep).toBeCloseTo(0.5, 2);
-    expect(covered.drawnMax).toBeGreaterThan(2.0);
-    expect(covered.drawnMax).toBeLessThan(2.3);
+    expect(covered.drawnMax).toBeGreaterThan(1.6);
+    expect(covered.drawnMax).toBeLessThan(1.9);
     expect(covered.drawnMax).toBeLessThan(covered.knobs.target);
     expect(covered.target).toBe(1);
   });
@@ -272,8 +274,10 @@ describe('a camera inside the air', () => {
     const t = meter.telemetry();
     expect(t.hold).toBe('metering');
     // Through the whole column this read 2.36, under the target, and the
-    // meter asked for nothing while the shader drew 4.6 and more.
-    expect(t.drawnMax).toBeGreaterThan(4.6);
+    // meter asked for nothing while the shader drew 4.6 and more (at the
+    // ozone of the time; the corrected ozone of 2026-10-09 takes an eighth
+    // more of a beam under a 2° Sun, on the CPU and the GPU alike).
+    expect(t.drawnMax).toBeGreaterThan(3.8);
     expect(t.drawnMax).toBeLessThan(6);
     expect(t.drawnMax).toBeGreaterThan(t.knobs.target);
   });

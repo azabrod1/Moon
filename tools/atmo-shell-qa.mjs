@@ -46,7 +46,12 @@
 // goldens are captured with the night-side exposure rule off, because the rule
 // meters a pose by how much sunlit ground it holds and the half-lit terminator
 // poses would otherwise capture a day exposure instead of the shader's own
-// night terms. An empty `--extra=` captures with the rule on.
+// night terms. An empty `--extra=` captures with the rule on. The sharp cloud
+// tiles and the map sectors are off in both sets (`&cloudtiles=0&sectors=0`):
+// they stream in after the boot, and two sessions that catch them in different
+// states move every cloud edge of the near poses by up to ten steps, which is
+// noise on a set that pins the air, not the clouds (seen 2026-10-09: the same
+// pose captured twice in the same arm differed at 13,900 pixels).
 //
 // Writes <pose>.<tier>.png plus <pose>.<tier>.json — 20 sampled radiances on a
 // fixed grid and a 41-point scan across the limb, which is the part a test can
@@ -81,14 +86,14 @@ const url = arg('url', 'http://localhost:5640');
 const SETS = {
   shipped: {
     out: 'tools/goldens/atmosphere',
-    extra: '&nightexposure=0',
+    extra: '&nightexposure=0&cloudtiles=0&sectors=0',
     tiers: 'analytic,lut,nofloat',
     ghost: true,
     pins: 'src/planetarium/world/atmosphereGoldens.pinned.ts',
   },
   control: {
     out: 'tools/goldens/atmosphere-mieexact0',
-    extra: '&nightexposure=0&mieexact=0',
+    extra: '&nightexposure=0&cloudtiles=0&sectors=0&mieexact=0',
     tiers: 'lut',
     ghost: false,
     pins: 'src/planetarium/world/atmosphereGoldens.mieexact0.pinned.ts',

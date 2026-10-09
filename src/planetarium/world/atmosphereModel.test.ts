@@ -37,6 +37,7 @@ import {
   transmittanceUvFromRMu,
   toRadiusUnits,
   EARTH_AEROSOL,
+  atmosphereSpec,
 } from './atmosphereModel';
 import { ATMOSPHERES, SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from '../PlanetFactory';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
@@ -57,10 +58,10 @@ describe('atmosphere parameters', () => {
     for (let i = 0; i < 3; i++) expect(earth.mieScattering[i] / (fields.mieScatteringPerM[i] * perM)).toBeCloseTo(1, 12);
     // Mie extinction is scattering over the aerosol's single-scattering albedo.
     expect(earth.mieExtinction[0] / earth.mieScattering[0]).toBeCloseTo(1 / EARTH_AEROSOL.singleScatteringAlbedo, 12);
-    // The survey's ozone triple is quoted to five figures; compare relatively.
-    expect(earth.absorptionExtinction[0] / 9.724e4).toBeCloseTo(1, 4);
-    expect(earth.absorptionExtinction[1] / 2.8140e5).toBeCloseTo(1, 4);
-    expect(earth.absorptionExtinction[2] / 1.2716e4).toBeCloseTo(1, 4);
+    // Ozone is no longer the survey's triple but the per-channel value
+    // atmosphereModel.ozone.test.ts derives; here only the conversion.
+    const ozone = atmosphereSpec('Earth')!.absorption!.extinctionPerM;
+    for (let i = 0; i < 3; i++) expect(earth.absorptionExtinction[i] / (ozone[i] * perM)).toBeCloseTo(1, 12);
     expect(earth.miePhaseG).toBeCloseTo(cornetteShanksParameter(EARTH_AEROSOL.asymmetry), 12);
     expect(earth.groundAlbedo).toBe(0.1);
   });

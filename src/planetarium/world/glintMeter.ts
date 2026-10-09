@@ -67,7 +67,15 @@
  * than the line has found and more than the caller acts on, the scan also
  * reads one and two of the lobe's expected half-widths either side of it,
  * and the refinement moves across the line as well as along it. Over open, clear sea the line holds the
- * brightest point of every step, and the scan is the line's alone.
+ * brightest point of every step, and the scan is the line's alone. With the
+ * lobe along the wind, an axis oblique to the line moves the brightest
+ * point a little off it, which the scan does not chase over open sea; the
+ * probe's shape arm (tools/glint-probe.mjs `--moments`) put the twin's
+ * brightest point 0.12° of ground from the line's peak and 0.06 % brighter
+ * at the NE trades (8.5 m/s, the axis 28° off the line), 0.02° and 0.04°
+ * (0.01 % and 0.15 %) at the beam pose's bearings 180 and 0, and 1.0° and
+ * 2.3 % from GOES-West's whole disc, where the Sun stands 86.5° high and the
+ * line is a short arc under it — all inside the hand-off bar.
  * The beam's extent is fitted from one sample along and one across the line
  * as a Gaussian fall from the peak, and handed back as the angles the
  * half-maximum half-widths subtend at the camera, for the caller to turn

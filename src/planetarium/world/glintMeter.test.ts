@@ -742,8 +742,10 @@ describe('the lobe along the wind', () => {
       const cosNH = Math.cos(deg * DEG);
       const bound = axisLobeBound(cosNH);
       let most = 0;
-      for (let step = 0; step <= 640; step++) {
-        const wind = (SEA_WIND_MAX_MS * step) / 640;
+      // Winds halfway between the build's 1024 steps, and both ends: the
+      // margin is for exactly these.
+      for (let step = 0; step <= 2048; step++) {
+        const wind = step === 2048 ? SEA_WIND_MAX_MS : (SEA_WIND_MAX_MS * (step + 0.5)) / 2048;
         for (const k of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
           axisSlopes(wind, k, 0, slopes);
           for (let az = 0; az <= 90; az += 7.5) {

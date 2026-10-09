@@ -430,8 +430,8 @@ export function axisAlpha(along: number, across: number, along2: number): number
 export const AXIS_BOUND_NODES = 256;
 export const AXIS_BOUND_TAN2_MAX = 1;
 /** The widening over the winds between the build's steps: their own
- *  shortfall is a few millionths, and the tests hold the bound over a finer
- *  search of wind and axis. */
+ *  shortfall is a few millionths, and the tests hold the bound at winds
+ *  halfway between the build's steps, twice as many of them. */
 const AXIS_BOUND_MARGIN = 1.002;
 const AXIS_BOUND_WIND_STEPS = 1024;
 let axisBoundTable: { values: Float64Array; roughestAlong: number } | null = null;
@@ -465,6 +465,12 @@ let axisBoundTable: { values: Float64Array; roughestAlong: number } | null = nul
  * the mirror grow forty times, and the scan read beside the line at every
  * step a coast cuts.
  */
+/** Build the bound's table now if it is not built: the highlight meter calls
+ *  this before its timed region, so the one-off build (about two
+ *  milliseconds) is never read as a scan's cost or a frame's spike. */
+export function prepareAxisLobeBound(): void {
+  axisBoundTable ??= buildAxisBoundTable();
+}
 export function axisLobeBound(cosNH: number): number {
   const table = axisBoundTable ?? (axisBoundTable = buildAxisBoundTable());
   const cos2 = Math.max(cosNH * cosNH, 1e-6);

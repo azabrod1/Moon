@@ -41,7 +41,7 @@ import type { RGB } from './world/atmosphereModel';
 import { atmosphereParams, bodySolarIrradianceScale } from './world/atmosphereModel';
 import {
   HIGHLIGHT_KNOBS, advanceExposureStops, beamRadianceAt, buildColumnDepthTable, buildTransmittanceTable, coverageOfBeam, createBeamPeak, createBeamPlace, createGlintScratch,
-  placeBeamInFrame,
+  placeBeamInFrame, prepareAxisLobeBound,
   highlightTarget, scanBeam, shoulder,
   type BeamPeak, type GlintMeterLight, type GlintMeterPose, type GlintMeterSea, type GlintScratch,
   type HighlightKnobs, type SurfaceSampler, type TransmittanceTable,
@@ -230,6 +230,9 @@ export class HighlightMeter {
     if (!this.table.column && ctx.camera.length() < this.table.topRadius) {
       this.table = { ...this.table, column: buildColumnDepthTable(atmosphereParams('Earth')) };
     }
+    // The bound the scan reads beside the line by with the lobe along the
+    // wind on: built here, not on the first step a coast or a cloud cuts.
+    if (ctx.seaAxisOn) prepareAxisLobeBound();
     // Timed from here: the tables above are built once a session, and in the
     // average they would read as the scan's own cost for a hundred frames after.
     const t0 = now();

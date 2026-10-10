@@ -307,10 +307,16 @@ try {
               const right = extent(1, 0);
               const up = extent(0, -1);
               const down = extent(0, 1);
+              // A contour of a few pixels cannot be judged for shape: the
+              // covariance of two pixels is a line, and one pixel of extent
+              // is a fifth of a three-pixel radius. The distant glint's
+              // faint contours are such; they are reported, not judged.
+              const tooSmall = count < 50 || left + right < 40 || up + down < 40;
               isophotes.push({
                 level,
                 count,
                 clipped,
+                tooSmall,
                 equivalentRadiusPx: Math.sqrt(count / Math.PI),
                 axisErrorPct: (Math.sqrt(eigenMax / Math.max(eigenMin, 1e-9)) - 1) * 100,
                 longAxisDeg: (Math.atan2(2 * covXY, covXX - covYY) / 2) * 180 / Math.PI,
@@ -337,14 +343,16 @@ try {
               ...iso,
             };
             rows.push(row);
-            const flag = iso.clipped ? ' (touches the frame edge: shape not judged)' : '';
+            const flag = iso.clipped
+              ? ' (touches the frame edge: shape not judged)'
+              : (iso.tooSmall ? ' (a few pixels: shape not judged)' : '');
             console.log(
               `${viewport.name.padEnd(7)} ${mode.name.padEnd(8)} s=${String(strength).padEnd(3)} ${pose.name.padEnd(9)} ` +
               `L${String(iso.level).padStart(3)} r=${iso.equivalentRadiusPx.toFixed(1).padStart(6)}px ` +
               `axis=${iso.axisErrorPct.toFixed(2).padStart(5)}% at ${iso.longAxisDeg.toFixed(0).padStart(4)}° ` +
               `V/H=${iso.verticalOverHorizontal.toFixed(3)} asym=${iso.horizontalAsymmetryPct.toFixed(1)}%/${iso.verticalAsymmetryPct.toFixed(1)}%${flag}`,
             );
-            if (iso.clipped) continue;
+            if (iso.clipped || iso.tooSmall) continue;
             if (iso.axisErrorPct > maxAxisErrorPct) failures.push(`${tag} L${iso.level}: axis ${iso.axisErrorPct.toFixed(2)}%`);
             if (iso.horizontalAsymmetryPct > maxAsymmetryPct) failures.push(`${tag} L${iso.level}: horizontal asymmetry ${iso.horizontalAsymmetryPct.toFixed(1)}%`);
             if (iso.verticalAsymmetryPct > maxAsymmetryPct) failures.push(`${tag} L${iso.level}: vertical asymmetry ${iso.verticalAsymmetryPct.toFixed(1)}%`);

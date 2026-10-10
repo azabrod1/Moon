@@ -612,7 +612,7 @@ const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
  *  sky the stars and constellations are drawn in. */
 const SUN_POLE_DIRECTION = raDecToVector(SUN_POLE_RA_DEG, SUN_POLE_DEC_DEG).normalize();
 
-// Visibility floor the veil billboard is sized to: the pixel radius where the
+// Visibility floor the veil's support is sized to: the pixel radius where the
 // wash and arms fall below this HDR value is the quad's support, so the quad
 // tracks the light instead of an authored amount. Small enough that the
 // drawn-quad edge fade lands well inside where the wash is already invisible.
@@ -1317,8 +1317,8 @@ export class PlanetariumMode {
   /** Guarded signed centroid (solar radii) actually driving the glare/mask this
    *  frame; 0 with no occluder or when a second body muddies the single lens. */
   private sunCrescentCentroidSr = 0;
-  /** The centroid displacement in CSS px (|centroidSr| x solarRadiusPx) the quad
-   *  grows by so the shifted wash never clips at the billboard edge. */
+  /** The centroid displacement in CSS px (|centroidSr| x solarRadiusPx) the
+   *  supports grow by so the shifted wash never clips at their edge. */
   private sunCrescentDisplacementPx = 0;
   /** Set by computeVisibleSunFraction: the second-strongest single-body solar
    *  occlusion this frame. Above ~0.05 the single-lens centroid is a lie, so the
@@ -1350,7 +1350,15 @@ export class PlanetariumMode {
    *  tangential factors there), and the larger of the two, which anything
    *  that must COVER a sky-measured term uses. */
   private sunPxPerRadian = 1;
-  private sunPxPerRadianMax = 1;
+  /** What that scale was built from, for the support's far-edge bound: the
+   *  scale on the axis, the Sun's off-axis angle and the lens strength. */
+  private sunCentreScalePx = 1;
+  private sunOffAxisRad = 0;
+  private sunLensStrength = 0;
+  /** The light centre's screen position as last projected live; held through
+   *  the contact latch so the bead's pixel-frame centre freezes with its
+   *  sky-frame one. */
+  private sunLightPxLatched = new THREE.Vector2();
   /** This frame's glint floor in output px: the authored floor at the
    *  outer-system scale. */
   private sunGlintFloorPx = 0;
@@ -8386,10 +8394,11 @@ export class PlanetariumMode {
     const local = lensLocalScale(theta, strength, this.tmpGlareLocalScale);
     const centreScale = (viewportHeight / 2) / lensDisplayHalfTan(displayFovDeg(this.camera), strength);
     this.sunPxPerRadian = centreScale * 0.5 * (local.radial + local.tangential);
-    // Below full strength the two factors part, and a sky-measured extent is
-    // an ellipse on screen: coverage takes the larger one so the longer axis
-    // is never cut.
-    this.sunPxPerRadianMax = centreScale * Math.max(local.radial, local.tangential);
+    // Kept for the support's bound, which re-evaluates the scale at the
+    // extent's far edge (the scale only grows outward).
+    this.sunCentreScalePx = centreScale;
+    this.sunOffAxisRad = theta;
+    this.sunLensStrength = strength;
   }
 
   /** A world direction on the glare's sky frame: its gnomonic coordinates
@@ -8410,7 +8419,7 @@ export class PlanetariumMode {
 
   /** Screen-space support the veiling glare needs, in CSS pixels: the radius
    *  where the Moffat wash and the diffraction arms fall below the visibility
-   *  floor. The billboard is grown to this so it tracks how far the light
+   *  floor. The support is grown to this so it tracks how far the light
    *  actually carries rather than an authored size, and the arm decay lengths it
    *  hands back are the same ones the shader draws with (one source of truth, so
    *  the quad always contains the arms it renders). Writes into shared scratch. */
@@ -8555,9 +8564,9 @@ export class PlanetariumMode {
       this.sunSilhouetteSnapPending = false;
       this.sunAtmosphereMix = 0;
       // One submersion fade drives everything a buried camera can still see:
-      // the shell's interior fog, the glare quad's wash (which would otherwise
-      // hold a flat grey until the billboard plane snaps behind the camera at
-      // the exact centre), and the exposure floor. Full brightness at the
+      // the shell's interior fog, the glare's wash (an even core over the whole
+      // sky from inside, which would otherwise hold a flat grey), and the
+      // exposure floor. Full brightness at the
       // surface keeps the crossing continuous with the close-up view; a small
       // floor keeps the deep interior an ember glow rather than a dead screen.
       const submersion = THREE.MathUtils.clamp(sunDistance / SUN_DATA.radiusAU, 0, 1);
@@ -8593,7 +8602,7 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilAmt.value = 0;
         glareMat.uniforms.uOccluderShade.value = 0;
         // No occluder crescent from inside the photosphere: clear the light-shift
-        // and contact-blaze uniforms and undo the crescent's min-size growth, so a
+        // and contact-blaze uniforms and drop the crescent's support growth, so a
         // buried-camera frame entered straight from a second-contact pose can't
         // leave a displaced glare centroid, a diamond ring, or a contact arc
         // live. Those terms carry no visibleEnergy factor, so only an explicit
@@ -8620,11 +8629,18 @@ export class PlanetariumMode {
           ? this.tmpSunFrameDir.copy(toSun).multiplyScalar(1 / sunDistance)
           : this.camera.getWorldDirection(this.tmpSunFrameDir);
         this.uploadSunGlareSkyFrame(glareMat, insideDirection, insideHeight);
-        this.sunUnitAngRad = Math.asin(0.999999);
-        this.sunUnitTanRad = Math.tan(this.sunUnitAngRad);
-        this.sunUnitPx = this.sunUnitTanRad * this.sunPxPerRadian;
+        // A unit far past any ray's reach, so every radius the fragment
+        // measures is ~0 and the core's wash is even in every direction
+        // (tan of the clamped angular radius, ~700, left a dimmer band
+        // beyond 90° from the centre direction, where the shader's own clamp
+        // on the ray's depth took over). The pixel scale is a fixed finite
+        // number: the lens's local scale is meaningless behind the camera
+        // and could read zero there.
+        this.sunUnitAngRad = Math.PI / 2;
+        this.sunUnitTanRad = 1e6;
+        this.sunUnitPx = 1e6;
         glareMat.uniforms.uSunTanRad.value = this.sunUnitTanRad;
-        glareMat.uniforms.uSrPerPx.value = 1 / this.sunUnitPx;
+        glareMat.uniforms.uSrPerPx.value = 1e-6;
         glareMat.uniforms.uFloorMix.value = 0;
         (glareMat.uniforms.uSunOutPx.value as THREE.Vector2).set(insideWidth / 2, insideHeight / 2);
         (glareMat.uniforms.uLightOutPx.value as THREE.Vector2).set(insideWidth / 2, insideHeight / 2);
@@ -8735,8 +8751,8 @@ export class PlanetariumMode {
         this.sunGlintFloorScale = glintFloorScale;
         this.sunGlintFloorPx = (glareMat.userData.glintFloorPx as number) * glintFloorScale;
         // The glare's frames for this pose. Its solar-radius unit is the
-        // disc's size on screen, floored to the glint: a sub-pixel Sun keeps
-        // a fixed pixel footprint, as the quad's minimum size once gave it,
+        // disc's size on screen, floored to the glint: a Sun of a few pixels
+        // keeps a fixed pixel footprint, as the quad's minimum size once gave it,
         // and every sky-frame term scales with that unit as it did then.
         this.uploadSunGlareSkyFrame(glareMat, toSun, viewportHeight);
         const discUnitPx = this.sunPxPerRadian * solarAngularRadius;
@@ -8781,7 +8797,7 @@ export class PlanetariumMode {
       // look round needs only this number.
       veilArmCoeff = 0;
 
-      // Size the billboard from where the wash and arms fall below the visibility
+      // Size the support from where the wash and arms fall below the visibility
       // floor rather than from an authored amount. This upper bound (full Sun,
       // full exposure — occlusion and dimming only shrink it) both widens the
       // eligibility gate so the wide wash is never stranded off-screen and,
@@ -8880,12 +8896,15 @@ export class PlanetariumMode {
     });
     this.lastSunVisibleFraction = appearanceEligible ? bodyVisibleFraction : 1;
 
+    // Whether the contact latch holds this frame (set below): the light
+    // centre's screen position then holds too.
+    let contactLatched = false;
     if (glareMat) {
       glareMat.uniforms.uVisibleFraction.value = visibleFraction;
       glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
       glareMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       glareMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
-      // veilAmt is 0 unless the wash is on-screen and unoccluded; the billboard
+      // veilAmt is 0 unless the wash is on-screen and unoccluded; the support
       // size and arm uniforms are set after exposure below (they need it).
       glareMat.uniforms.uVeilAmt.value = veilAmt;
       // Where the Sun's rotation axis lies on the glare's sky frame. Decomposed
@@ -8912,13 +8931,18 @@ export class PlanetariumMode {
       }
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
-      // The occluder's size in solar radii also positions the shader's
-      // carve-out of the eclipsing disc, which the silhouette shade above
-      // drives, positioned from the occluder's true direction so an off-centre
-      // partial carves where the body actually is.
+      // The occluder's size also positions the shader's carve-out of the
+      // eclipsing disc, which the silhouette shade above drives, positioned
+      // from the occluder's true direction so an off-centre partial carves
+      // where the body actually is. Clamped in true solar radii, then put in
+      // the glare's unit — the disc's radius floored to the glint — the same
+      // unit its offset and the crescent centroid are in, so with the floor
+      // active the carve is the body's drawn size at the body's drawn place
+      // and the contact bead beside it survives the cut.
       glareMat.uniforms.uEclipseLike.value = occluderLikeness;
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
+          * (Math.tan(solarAngularRadius) / this.sunUnitTanRad)
         : 1;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
@@ -8954,6 +8978,7 @@ export class PlanetariumMode {
         && bodyVisibleFraction <= 0
         && this.sunDiamondRing > 0.01
         && !silhouetteSnap;
+      contactLatched = holdContactPoint;
       if (!holdContactPoint) {
         this.sunCrescentCentroidSr = 0;
         this.sunCrescentDisplacementPx = 0;
@@ -9114,7 +9139,7 @@ export class PlanetariumMode {
     let maskArmDecayYPx = 0;
     if (glareMat) {
       glareMat.uniforms.uExposureScale.value = exposureScale;
-      // Now that occlusion and exposure are both known, size the billboard to
+      // Now that occlusion and exposure are both known, size the support to
       // where the wash and arms actually fade out and hand the shader the exact
       // arm decay lengths used to size it — the quad always contains the arms it
       // draws. 0 amount (off-screen, occluded, in totality) collapses it all.
@@ -9143,11 +9168,19 @@ export class PlanetariumMode {
       // extent or the veil's reach, whichever is larger, grown by the crescent
       // displacement so the wash and PSF shifted onto the exposed crescent
       // never clip at its edge. The extent is measured on the sky, so its
-      // pixel size takes the larger of the lens's two local scales: below
-      // full strength it is an ellipse on screen, and the support must hold
-      // its longer axis or the outer corona fades early.
+      // pixel size takes the larger of the lens's two local scales, and takes
+      // them at the extent's far edge, where both are largest: below full
+      // strength it is an ellipse on screen that grows outward, and the
+      // support must hold its longer axis to the end or the outer corona
+      // fades early. The far edge is held inside the source's widest corner.
+      const farTheta = Math.min(
+        this.sunOffAxisRad + SUN_GLARE_EXTENT_SOLAR_RADII * this.sunUnitAngRad,
+        80 * DEG2RAD,
+      );
+      const far = lensLocalScale(farTheta, this.sunLensStrength, this.tmpGlareLocalScale);
+      const pxPerRadianFar = this.sunCentreScalePx * Math.max(far.radial, far.tangential);
       const extentHalfPx = SUN_GLARE_EXTENT_SOLAR_RADII
-        * Math.max(this.sunUnitAngRad * this.sunPxPerRadianMax, this.sunUnitPx);
+        * Math.max(this.sunUnitAngRad * pxPerRadianFar, this.sunUnitPx);
       const drawnHalfPx = Math.max(extentHalfPx, veilHalfPx) + this.sunCrescentDisplacementPx;
       glareMat.uniforms.uDrawnHalfPx.value = drawnHalfPx;
       // The quad covers exactly the source pixels the lens carries into the
@@ -9216,7 +9249,13 @@ export class PlanetariumMode {
     // exposed side and project that point on the Sun's sphere; the geometric core
     // still covers the whole disc, so this only moves the wash centre.
     let maskCentred = false;
-    if (this.sunCrescentCentroidSr !== 0 && appearanceEligible) {
+    if (contactLatched) {
+      // The sky-frame centroid is frozen through the latch; the pixel-frame
+      // centre freezes with it, or the two would part while the bead melts.
+      maskParams.sunXPx = this.sunLightPxLatched.x;
+      maskParams.sunYPx = this.sunLightPxLatched.y;
+      maskCentred = true;
+    } else if (this.sunCrescentCentroidSr !== 0 && appearanceEligible) {
       const dir = this.sunDominantOccluderDirection;
       const along = dir.dot(toSun);
       const tangent = this.tmpCrescentTangent.copy(dir).addScaledVector(toSun, -along);
@@ -9238,6 +9277,7 @@ export class PlanetariumMode {
       maskParams.sunXPx = (this.tmpSunScreen.x * 0.5 + 0.5) * viewportWidth;
       maskParams.sunYPx = (-this.tmpSunScreen.y * 0.5 + 0.5) * viewportHeight;
     }
+    if (!contactLatched) this.sunLightPxLatched.set(maskParams.sunXPx, maskParams.sunYPx);
     // The glare's light centre is the mask's: one projection for both, so the
     // drawn wash and the fade that hides stars inside it sit on one point.
     if (glareMat) {

@@ -290,7 +290,7 @@ void main() {
  *  fraction of viewport height, in OUTPUT pixels — the displayed frame's) and
  *  outer exponent. Interpolated into the fragment shader below AND inverted by
  *  the controller's support solver (computeSunVeilSupport) to size the
- *  billboard — one definition site, so the drawn profile and the derived
+ *  support — one definition site, so the drawn profile and the derived
  *  support can never drift apart. The value is the 0.022 the wash was tuned
  *  at, which the quad then drew in source pixels that the lens magnified by
  *  1.4266 at the centre of a 16:9 frame (and by less at every other shape):
@@ -318,15 +318,16 @@ uniform vec2 uGlareCentroidSr;
 // The sky frame's anchors, in camera space: the Sun's direction, the two
 // tangent-basis vectors its gnomonic coordinates are measured on, and
 // tan(its angular radius) — floored to the glint's angular size once the
-// disc is sub-pixel, so the outer-system point keeps a fixed pixel footprint.
+// disc is under a few pixels, so the outer-system point keeps a fixed pixel
+// footprint.
 uniform vec3 uSunDir;
 uniform vec3 uSunTangentU;
 uniform vec3 uSunTangentV;
 uniform float uSunTanRad;
 // The image-plane frame's anchors, in CSS pixels of the displayed frame: the
 // Sun's centre, the light centre (the crescent centroid, or the Sun), the
-// physical quad's half-size and the drawn support's half-size, both about the
-// Sun's centre, and solar radii per output pixel.
+// drawn support's half-size about the Sun's centre, and solar radii per
+// output pixel.
 uniform vec2 uSunOutPx;
 uniform vec2 uLightOutPx;
 uniform float uDrawnHalfPx;
@@ -541,10 +542,14 @@ void main() {
   // saturated channel, so a wide bright dazzle whites out the chromosphere
   // arc beside the bead — the reds only read where the dazzle has died off.
   // The floors are the 2 and 4 source pixels they were tuned at, in the
-  // output pixels the 16:9 centre magnification made of them.
+  // output pixels the 16:9 centre magnification made of them. Those were
+  // framebuffer pixels (the old derivative counted the scene's own texels),
+  // so they are per DEVICE pixel: srPerPx is per CSS pixel and the scene
+  // draws at its pixel ratio.
+  float srPerDevicePx = srPerPx * uLensViewportPx.y / max(uLensFramebufferPx.y, 1.0);
   float beadDist = lightSolarRadii;
-  float coreFold = max(1.0 / 12.0, srPerPx * 2.85);
-  float dazzleFold = max(1.0 / 3.0, srPerPx * 5.7);
+  float coreFold = max(1.0 / 12.0, srPerDevicePx * 2.85);
+  float dazzleFold = max(1.0 / 3.0, srPerDevicePx * 5.7);
   float diamondCore = exp(-beadDist / coreFold) * 2.4;
   float diamondDazzle = exp(-beadDist / dazzleFold) * 0.15;
   // Because it has no visibleEnergy, the generic silhouette floor below still
@@ -623,9 +628,9 @@ void main() {
   // (CPU-computed Sun/occluder angular-size ratio) keeps the corona to true
   // eclipse geometry: a whole planet blotting out the sky reveals nothing.
   // The block stays behind a real branch: its atan/normalize are undefined at
-  // the quad centre, and even multiplied by zero a NaN would poison the pixel.
-  // It reads the base frame (pB/baseRadius) too, so a veil-enlarged quad during
-  // the partial phase leaves the solar-radii corona geometry untouched.
+  // the Sun's centre, and even multiplied by zero a NaN would poison the pixel.
+  // It reads the sky frame (pB/baseRadius), so the veil's larger support
+  // during the partial phase leaves the solar-radii corona geometry untouched.
   float coverage = 1.0 - clamp(uVisibleFraction, 0.0, 1.0);
   float eclipse = smoothstep(0.97, 0.995, coverage) * clamp(uEclipseLike, 0.0, 1.0);
   float corona = 0.0;

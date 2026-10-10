@@ -45,12 +45,22 @@ const maxAsymmetryPct = Number(arg('max-asymmetry-pct', '5'));
 const distanceAu = Number(arg('dist', '1'));
 const dsf = Number(arg('dsf', '1'));
 const useSoftware = process.argv.includes('--software');
+// Narrow a run: `--modes=bloom,no-float` keeps only those paths, and
+// `--strengths=1,0.5,0` runs every kept path at those lens strengths (0 is the
+// lens off). The distant Sun is the case for both: `--dist=30
+// --modes=bloom,no-float --strengths=1,0.5,0` is the glint floor's own run,
+// where the artificial pixel footprint must stay round with the lens's two
+// scales apart.
+const onlyModes = arg('modes', '').split(',').map((s) => s.trim()).filter(Boolean);
+const onlyViewports = arg('viewports', '').split(',').map((s) => s.trim()).filter(Boolean);
+const strengthOverride = arg('strengths', '').split(',').map((s) => s.trim()).filter(Boolean).map(Number);
 await mkdir(outDir, { recursive: true });
 
 const viewports = [
   { name: 'desktop', width: 1600, height: 900 },
   { name: 'phone', width: 390, height: 844 },
-];
+].filter((viewport) => onlyViewports.length === 0 || onlyViewports.includes(viewport.name));
+if (viewports.length === 0) throw new Error('--viewports names neither desktop nor phone');
 // The bloom path is what ships; it also runs at half lens strength, where the
 // blend is no longer conformal and a limb-hugging term can only stay round if
 // it is measured on the sky rather than on the quad.
@@ -62,6 +72,10 @@ const modes = [
   // the bloom reads it.
   { name: 'unfused', query: '&fused=0', bloom: true, strengths: [1] },
 ];
+const activeModes = modes
+  .filter((mode) => onlyModes.length === 0 || onlyModes.includes(mode.name))
+  .map((mode) => (strengthOverride.length ? { ...mode, strengths: strengthOverride } : mode));
+if (activeModes.length === 0) throw new Error(`--modes names none of: ${modes.map((m) => m.name).join(', ')}`);
 function posesFor(viewport) {
   const portrait = viewport.height > viewport.width;
   // The same edge and corner fractions the lens probe uses for its sphere.
@@ -96,7 +110,7 @@ const failures = [];
 const rows = [];
 try {
   for (const viewport of viewports) {
-    for (const mode of modes) {
+    for (const mode of activeModes) {
       const context = await browser.newContext({
         viewport: { width: viewport.width, height: viewport.height },
         deviceScaleFactor: dsf,

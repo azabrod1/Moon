@@ -1331,18 +1331,19 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // the controller. The sky frame: the Sun's camera-space direction, the
       // tangent basis its gnomonic coordinates are measured on, and tan of its
       // solar-radius unit. The image-plane frame: the Sun's and the light
-      // centre's positions in CSS px of the displayed frame, the physical and
-      // drawn support half-sizes about the Sun, solar radii per output px, and
-      // the source-NDC rectangle the quad covers.
+      // centre's positions in CSS px of the displayed frame, the drawn
+      // support's half-size about the Sun, solar radii per output px, how far
+      // the glint floor owns the physical PSF, and the source-NDC rectangle
+      // the quad covers.
       uSunDir: { value: new THREE.Vector3(0, 0, -1) },
       uSunTangentU: { value: new THREE.Vector3(1, 0, 0) },
       uSunTangentV: { value: new THREE.Vector3(0, 1, 0) },
       uSunTanRad: { value: 1 },
       uSunOutPx: { value: new THREE.Vector2() },
       uLightOutPx: { value: new THREE.Vector2() },
-      uBaseHalfPx: { value: 0 },
       uDrawnHalfPx: { value: 0 },
       uSrPerPx: { value: 1 },
+      uFloorMix: { value: 0 },
       uQuadRect: { value: new THREE.Vector4(-1, -1, 1, 1) },
       // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.

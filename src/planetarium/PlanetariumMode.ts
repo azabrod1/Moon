@@ -1345,14 +1345,19 @@ export class PlanetariumMode {
   private tmpGlareLocalScale: LensLocalScale = { radial: 1, tangential: 1 };
   private tmpGlareOutRect: NdcRect = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   private tmpGlareSrcRect: NdcRect = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-  /** Output pixels per radian of sky at the Sun's screen position this frame. */
+  /** Output pixels per radian of sky at the Sun's screen position this
+   *  frame: the representative scale (the mean of the lens's radial and
+   *  tangential factors there), and the larger of the two, which anything
+   *  that must COVER a sky-measured term uses. */
   private sunPxPerRadian = 1;
+  private sunPxPerRadianMax = 1;
   /** This frame's glint floor in output px: the authored floor at the
    *  outer-system scale. */
   private sunGlintFloorPx = 0;
-  /** The glare's solar-radius unit this frame: output px, and tan of the
-   *  angle (the disc's angular radius, floored to the glint). */
+  /** The glare's solar-radius unit this frame: output px, the angle (the
+   *  disc's angular radius, floored to the glint) and its tangent. */
   private sunUnitPx = 1;
+  private sunUnitAngRad = 0.01;
   private sunUnitTanRad = 1;
   private tmpScreenRay = new THREE.Vector3();
   private readonly tmpScreenForward = new THREE.Vector3(0, 0, -1);
@@ -8379,8 +8384,12 @@ export class PlanetariumMode {
     const strength = lens ? lens.effectiveStrength ?? lens.strength : 0;
     const theta = Math.acos(THREE.MathUtils.clamp(-s.z, -1, 1));
     const local = lensLocalScale(theta, strength, this.tmpGlareLocalScale);
-    this.sunPxPerRadian = ((viewportHeight / 2) / lensDisplayHalfTan(displayFovDeg(this.camera), strength))
-      * 0.5 * (local.radial + local.tangential);
+    const centreScale = (viewportHeight / 2) / lensDisplayHalfTan(displayFovDeg(this.camera), strength);
+    this.sunPxPerRadian = centreScale * 0.5 * (local.radial + local.tangential);
+    // Below full strength the two factors part, and a sky-measured extent is
+    // an ellipse on screen: coverage takes the larger one so the longer axis
+    // is never cut.
+    this.sunPxPerRadianMax = centreScale * Math.max(local.radial, local.tangential);
   }
 
   /** A world direction on the glare's sky frame: its gnomonic coordinates
@@ -8611,13 +8620,14 @@ export class PlanetariumMode {
           ? this.tmpSunFrameDir.copy(toSun).multiplyScalar(1 / sunDistance)
           : this.camera.getWorldDirection(this.tmpSunFrameDir);
         this.uploadSunGlareSkyFrame(glareMat, insideDirection, insideHeight);
-        this.sunUnitTanRad = Math.tan(Math.asin(0.999999));
+        this.sunUnitAngRad = Math.asin(0.999999);
+        this.sunUnitTanRad = Math.tan(this.sunUnitAngRad);
         this.sunUnitPx = this.sunUnitTanRad * this.sunPxPerRadian;
         glareMat.uniforms.uSunTanRad.value = this.sunUnitTanRad;
         glareMat.uniforms.uSrPerPx.value = 1 / this.sunUnitPx;
+        glareMat.uniforms.uFloorMix.value = 0;
         (glareMat.uniforms.uSunOutPx.value as THREE.Vector2).set(insideWidth / 2, insideHeight / 2);
         (glareMat.uniforms.uLightOutPx.value as THREE.Vector2).set(insideWidth / 2, insideHeight / 2);
-        glareMat.uniforms.uBaseHalfPx.value = 1e7;
         glareMat.uniforms.uDrawnHalfPx.value = 1e7;
         (glareMat.uniforms.uQuadRect.value as THREE.Vector4).set(-1, -1, 1, 1);
         if (glareMesh) glareMesh.visible = true;
@@ -8729,13 +8739,19 @@ export class PlanetariumMode {
         // a fixed pixel footprint, as the quad's minimum size once gave it,
         // and every sky-frame term scales with that unit as it did then.
         this.uploadSunGlareSkyFrame(glareMat, toSun, viewportHeight);
-        this.sunUnitPx = Math.max(
-          this.sunPxPerRadian * solarAngularRadius,
-          this.sunGlintFloorPx / glareExtent,
-        );
-        this.sunUnitTanRad = Math.tan(this.sunUnitPx / this.sunPxPerRadian);
+        const discUnitPx = this.sunPxPerRadian * solarAngularRadius;
+        const floorUnitPx = this.sunGlintFloorPx / glareExtent;
+        this.sunUnitPx = Math.max(discUnitPx, floorUnitPx);
+        this.sunUnitAngRad = this.sunUnitPx / this.sunPxPerRadian;
+        this.sunUnitTanRad = Math.tan(this.sunUnitAngRad);
         glareMat.uniforms.uSunTanRad.value = this.sunUnitTanRad;
         glareMat.uniforms.uSrPerPx.value = 1 / this.sunUnitPx;
+        // The glint floor is an artificial pixel footprint, so once it owns
+        // the unit the physical PSF measures in output pixels (round where the
+        // lens's two scales differ) instead of on the sky; the handover is
+        // blended over the last factor of two of disc size, where there is no
+        // limb detail left to hug.
+        glareMat.uniforms.uFloorMix.value = 1 - THREE.MathUtils.smoothstep(discUnitPx / floorUnitPx, 0.5, 1);
         (glareMat.uniforms.uSunOutPx.value as THREE.Vector2).set(
           (this.tmpSunScreen.x * 0.5 + 0.5) * viewportWidth,
           (-this.tmpSunScreen.y * 0.5 + 0.5) * viewportHeight,
@@ -9123,13 +9139,16 @@ export class PlanetariumMode {
         glareMat.uniforms.uArmDecayYPx.value = 0;
         glareMat.uniforms.uArmCoeff.value = 0;
       }
-      // The supports about the Sun's centre, in output px: the physical quad
-      // (the glare's extent in its unit) and the drawn support (that, or the
-      // veil's reach), both grown by the crescent displacement so the wash
-      // and PSF shifted onto the exposed crescent never clip at their edge.
-      const baseHalfPx = this.sunUnitPx * SUN_GLARE_EXTENT_SOLAR_RADII + this.sunCrescentDisplacementPx;
-      const drawnHalfPx = Math.max(baseHalfPx, veilHalfPx + this.sunCrescentDisplacementPx);
-      glareMat.uniforms.uBaseHalfPx.value = baseHalfPx;
+      // The drawn support about the Sun's centre, in output px: the physical
+      // extent or the veil's reach, whichever is larger, grown by the crescent
+      // displacement so the wash and PSF shifted onto the exposed crescent
+      // never clip at its edge. The extent is measured on the sky, so its
+      // pixel size takes the larger of the lens's two local scales: below
+      // full strength it is an ellipse on screen, and the support must hold
+      // its longer axis or the outer corona fades early.
+      const extentHalfPx = SUN_GLARE_EXTENT_SOLAR_RADII
+        * Math.max(this.sunUnitAngRad * this.sunPxPerRadianMax, this.sunUnitPx);
+      const drawnHalfPx = Math.max(extentHalfPx, veilHalfPx) + this.sunCrescentDisplacementPx;
       glareMat.uniforms.uDrawnHalfPx.value = drawnHalfPx;
       // The quad covers exactly the source pixels the lens carries into the
       // drawn support (shared/math/lensProjection.ts

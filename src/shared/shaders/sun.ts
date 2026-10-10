@@ -329,9 +329,14 @@ uniform float uSunTanRad;
 // Sun's centre, and solar radii per output pixel.
 uniform vec2 uSunOutPx;
 uniform vec2 uLightOutPx;
-uniform float uBaseHalfPx;
 uniform float uDrawnHalfPx;
 uniform float uSrPerPx;
+// How far the glint floor owns the physical PSF: 0 while the disc resolves
+// (the PSF measures on the sky and hugs the drawn limb), 1 once the disc is
+// well under the floor (the glint is an artificial pixel footprint, so it
+// measures in output pixels and stays round where the lens's two scales
+// differ), blended over the last factor of two so the handover never pops.
+uniform float uFloorMix;
 // Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
 // at totality). Drives the compact contact bead and its round dazzle.
 uniform float uDiamondRing;
@@ -459,17 +464,24 @@ void main() {
   // screen; un-occluded, both coincide with the Sun's and every term below is
   // what an un-occluded frame draws.
   vec2 pLight = pSky - uGlareCentroidSr;
-  float lightSolarRadii = length(pLight);
-  float lightOutside = max(lightSolarRadii - 1.0, 0.0);
   // Solar radii per output pixel, for terms that must stay resolvable on a
   // tiny on-screen Sun.
   float srPerPx = uSrPerPx;
-
-  float outside = max(solarRadii - 1.0, 0.0);
-  // The physical PSF and corona fade at the physical quad's own edge, so the
-  // veil's larger support never carries them further; the veil fades at the
-  // drawn support's edge as its own safety net.
-  float baseEdgeFade = 1.0 - smoothstep(0.72, 0.94, sunPixelDist / max(uBaseHalfPx, 1e-3));
+  // The physical PSF's radii: on the sky while the disc resolves, so the core
+  // hugs the drawn limb at any lens strength; in output pixels once the glint
+  // floor owns it, so the artificial footprint stays round where the lens's
+  // radial and tangential scales differ (uFloorMix).
+  float lightSolarRadii = mix(length(pLight), distance(outPx, uLightOutPx) * srPerPx, uFloorMix);
+  float lightOutside = max(lightSolarRadii - 1.0, 0.0);
+  float psfSolarRadii = mix(solarRadii, sunPixelDist * srPerPx, uFloorMix);
+  float outside = max(psfSolarRadii - 1.0, 0.0);
+  // The physical PSF and corona fade at the physical extent's own edge,
+  // measured in the frame they are drawn in (the sky, grown by the crescent
+  // shift so the light centre's terms never clip), so the veil's larger
+  // support never carries them further; the veil fades at the drawn
+  // support's edge as its own safety net.
+  float baseExtentSr = uExtent + length(uGlareCentroidSr);
+  float baseEdgeFade = 1.0 - smoothstep(0.72, 0.94, psfSolarRadii / baseExtentSr);
   float edgeFade = 1.0 - smoothstep(0.72, 0.94, planeRadius);
 
   // Optical point-spread profile: a tight hot core, medium aureole, and a

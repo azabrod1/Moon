@@ -418,7 +418,7 @@ import { pauseBadgeVisible } from './ui/pauseBadgeLogic';
 import { PlanetariumBottomBar } from './ui/PlanetariumBottomBar';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
-import { PlanetariumNotification } from './ui/PlanetariumNotification';
+import { PlanetariumNotification, type NotificationOptions } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
@@ -2506,8 +2506,8 @@ export class PlanetariumMode {
 
   /** A short notice in the mode's own toast (mode switching lives in main.ts,
    *  which has no toast of its own). */
-  notify(message: string): void {
-    this.notification.show(message);
+  notify(message: string, opts?: NotificationOptions): void {
+    this.notification.show(message, opts);
   }
 
   // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry

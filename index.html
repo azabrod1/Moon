@@ -1621,6 +1621,25 @@
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     #planetarium-notification.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    /* A banner carrying a button (ui/PlanetariumNotification.ts action) has to
+       take the tap; the plain banner never does, so the scene stays clickable
+       under it. */
+    #planetarium-notification.has-action.visible { pointer-events: auto; }
+    #planetarium-notification .notification-action {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 3px 10px;
+      border: 1px solid rgba(var(--accent-rgb), 0.55);
+      border-radius: 999px;
+      background: rgba(var(--accent-rgb), 0.14);
+      color: var(--text-primary);
+      font: inherit;
+      line-height: 1.3;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #planetarium-notification .notification-action:hover { background: rgba(var(--accent-rgb), 0.26); }
+    #planetarium-notification .notification-action:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 2px; }
 
     #historic-panel {
       display: none;

@@ -1,8 +1,26 @@
 /**
  * Transient notification banner shown in the Planetarium HUD. Fades after
  * 4 seconds; each new call cancels the previous timeout.
+ *
+ * A banner can carry one action button (a failed tool open offers Reload).
+ * Such a banner stays up three times as long, since the reader has to find
+ * and press it, and it takes pointers, which the plain banner never does so
+ * the scene under it stays clickable.
  */
 const VISIBLE_MS = 4000;
+const VISIBLE_WITH_ACTION_MS = 12000;
+
+export interface NotificationAction {
+  label: string;
+  run: () => void;
+}
+
+export interface NotificationOptions {
+  /** Bypass the mute — for the manual-Save confirmation and the tutorial's
+   *  own end toasts, which must not be silent. */
+  force?: boolean;
+  action?: NotificationAction;
+}
 
 export class PlanetariumNotification {
   private el: HTMLElement | null;
@@ -24,19 +42,30 @@ export class PlanetariumNotification {
     if (muted) this.clear();
   }
 
-  /** `force` bypasses the mute — for the manual-Save confirmation and the
-   *  tutorial's own end toasts, which must not be silent. */
-  show(text: string, opts?: { force?: boolean }): void {
+  show(text: string, opts?: NotificationOptions): void {
     if (!this.el) return;
     if (this.muted && !opts?.force) return;
+    const action = opts?.action;
     this.el.textContent = text;
+    this.el.classList.toggle('has-action', !!action);
+    if (action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'notification-action';
+      button.textContent = action.label;
+      button.addEventListener('click', () => {
+        this.clear();
+        action.run();
+      });
+      this.el.append(' ', button);
+    }
     this.el.classList.add('visible');
 
     if (this.hideTimeout !== null) clearTimeout(this.hideTimeout);
     this.hideTimeout = window.setTimeout(() => {
       this.el?.classList.remove('visible');
       this.hideTimeout = null;
-    }, VISIBLE_MS);
+    }, action ? VISIBLE_WITH_ACTION_MS : VISIBLE_MS);
   }
 
   private clear(): void {

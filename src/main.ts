@@ -22,6 +22,7 @@ import type { InteriorMode } from './interior/InteriorMode';
 import { setInteriorTransition } from './interior/interiorTransition';
 import { parseCssDurationMs } from './shared/cssDuration';
 import { applyRenderProfile, toneMappingWord, type AppMode } from './app/renderProfile';
+import { describeModeSwitchFailure, loadToolChunk } from './app/modeSwitchFailure';
 import type { ToolRequest } from './planetarium/toolRequest';
 import { canGPUDoBloom, halfFloatTargetSampleCounts } from './app/gpuCapability';
 import { installShaderSalt } from './app/shaderSalt';
@@ -2715,6 +2716,14 @@ function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
  *  the camera on that would be posing a pre-restore ship. */
 let plmActivated = false;
 
+/** Each mode as the failure toast names it: the words on its own door. */
+const TOOL_NAMES: Record<AppMode, string> = {
+  planetarium: 'Planets',
+  moonFlight: 'Flight',
+  volumeCompare: 'How many fit?',
+  interior: 'Look inside',
+};
+
 /** True when the switch happened; false when refused (same mode, or one
  *  already in flight) or when it failed and the app fell back. */
 async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<boolean> {
@@ -2725,6 +2734,8 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
   const from = appMode;
   let switched = false;
   let failed = false;
+  /** What threw, when it failed: the notice below is chosen from it. */
+  let failure: unknown = null;
   /** What the destination wants done the instant the veil starts coming off
    *  (the Look-inside tool: its marks, and the cut it held closed). */
   let afterVeilRemoved: (() => void) | null = null;
@@ -2757,7 +2768,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     // failure from being reported as an unhandled rejection while nothing is
     // awaiting it yet — the await below is what handles it.
     const interiorModuleFetch = newMode === 'interior' && !interiorMode
-      ? (debugLog('Loading interior module'), import('./interior/InteriorMode'))
+      ? (debugLog('Loading interior module'), loadToolChunk(TOOL_NAMES.interior, import('./interior/InteriorMode')))
       : null;
     void interiorModuleFetch?.catch(() => {});
     const beatStartedAt = performance.now();
@@ -2850,7 +2861,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // leave the user in the mode they can still see.
       const flightModule = moonFlightMode ? null : await (async () => {
         debugLog('Loading moon flight module');
-        return import('./moonFlight/MoonFlightMode');
+        return loadToolChunk(TOOL_NAMES.moonFlight, import('./moonFlight/MoonFlightMode'));
       })();
       appMode = 'moonFlight';
       if (planetariumMode) planetariumMode.deactivate();
@@ -2890,7 +2901,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
       // failed chunk fetch must not strand the user in a mode with no UI.
       const compareModule = volumeCompareMode ? null : await (async () => {
         debugLog('Loading volume compare module');
-        return import('./volumeCompare/VolumeCompareMode');
+        return loadToolChunk(TOOL_NAMES.volumeCompare, import('./volumeCompare/VolumeCompareMode'));
       })();
       appMode = 'volumeCompare';
       if (planetariumMode) planetariumMode.deactivate();
@@ -3024,6 +3035,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
     debugError('Mode switch failed', { from, to: newMode, err });
     console.error('Mode switch failed:', err);
     failed = true;
+    failure = err;
   } finally {
     // The veil must never strand: if a mode activation throws, the app is
     // degraded but the user can still see a scene and click their way out.
@@ -3044,11 +3056,18 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
   // A failure after the current mode was taken down would leave a mode with
   // no UI and no exit; the planetarium is the one mode that always comes back.
   // Either way the user hears about it: a chunk that would not load looks
-  // like a dead button otherwise.
+  // like a dead button otherwise. The sentence depends on what threw
+  // (app/modeSwitchFailure.ts): a chunk that did not arrive is the connection
+  // or a tab older than the site, and only a reload can fix it, so the toast
+  // offers one; anything else is the app's own fault and is not blamed on
+  // the connection.
   // (A failure of the very first activation is the boot's to report — init()
   // takes it to the error screen — so no toast for that one.)
   if (failed && appModeInitialized) {
-    const notice = () => planetariumMode?.notify('That could not be opened. Check the connection and try again.');
+    const { text, action } = describeModeSwitchFailure(failure, TOOL_NAMES[newMode]);
+    const notice = () => planetariumMode?.notify(text, {
+      action: action === 'reload' ? { label: 'Reload', run: () => window.location.reload() } : undefined,
+    });
     if (appMode !== 'planetarium') void switchAppMode('planetarium').then(notice);
     else notice();
   }

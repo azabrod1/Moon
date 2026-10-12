@@ -19,7 +19,7 @@ Each tool's header gives its scenarios, its bars and its control arm. Most take 
 - `sector-probe`: sector tiles and the texture ladder against the memory envelope. `ground-cull-probe`: the hidden-ground cut is pixel-identical.
 - `cloud-field-probe`: the cloud field's pages. `cloud-hd-probe`: cloud shadows against the drawn deck. `cloud-detail-probe`: the deck's detail rides its cloud. `cloud-magnify-probe`: magnified clouds stay white.
 - `glint-probe`: the sea's glint as linear radiance; `--meter` is the highlight meter's battery.
-- `interior-sweep`, `interior-open-probe`: Look inside, its races and its opening cost.
+- `interior-sweep`, `interior-open-probe`: Look inside, its races and its opening cost. `tool-open-failure-probe`: a tool whose chunk will not load (a stale tab after a deploy) gets a Reload toast; a fault inside the tool gets a different sentence.
 - `mini-size-probe`: the corner chart's size and gestures. `fullscreen-probe`: full screen, the safe-area box, and the tools framed on the canvas's box.
 - `save-probe`: a save writes the journey the user left, never a historic mission's staged scene, and the clock and ship as the user left them, not as ☰ or the help sheet holds them.
 - `pixel-gate`: did a switch move a pixel. `visual-sweep`: what the surfaces look like. `atmo-shell-qa`: the atmosphere goldens, and with `--set=control` their `?mieexact=0` control set. `sampler-census`: texture units per switch combination.

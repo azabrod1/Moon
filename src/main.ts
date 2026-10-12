@@ -3845,7 +3845,7 @@ function installDevHooks() {
     mapMoonStats: () => planetariumMode?.devMapMoonStats() ?? null,
     setMapMoonOffset: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapMoonOffset(partial) ?? false,
-    mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
+    mapCommit: (verb: 'travel' | 'observe' | 'pilot' | 'leave') => planetariumMode?.devMapCommit(verb) ?? false,
     // Teleport anywhere: mapTeleportAt runs the gesture at a canvas pixel (a
     // right-click / a matured long press), mapTeleportState reads the offer,
     // and the pair below are the chip's own two answers.

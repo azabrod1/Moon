@@ -14328,8 +14328,19 @@ export class PlanetariumMode {
       this.commitObservePick(target, sameBody, fromPanel);
       return true;
     }
-    if (sameBody) {
-      // Your own row on Travel/Autopilot: lift off and park nearby.
+    if (verb === 'leave') {
+      // The map card's Leave on the body you stand on: the cluster's own
+      // take-off (an Observatory excursion returns to its stashed cruise pose).
+      if (!this.landedOn) return false;
+      this.exitLandedMode();
+      return true;
+    }
+    if (sameBody && verb === 'pilot') {
+      // Your own row on Autopilot: lift off and park nearby. Travel is NOT
+      // short-circuited the same way: the Teleport tab lists the body you
+      // stand on, and a pick there is a real jump to its flyby pose below —
+      // a take-off instead used to drop an Observatory excursion back at
+      // wherever the ship was before the Observatory grabbed it.
       this.exitLandedMode();
       return true;
     }

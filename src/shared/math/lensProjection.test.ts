@@ -8,12 +8,19 @@ import {
   lensEffectiveStrength,
   lensMaxFrameScale,
   lensOverscanFovDeg,
+  lensLocalScale,
   lensPassFragmentShader,
   lensRadial,
+  lensSourceBoundOfOutputRect,
   lensSourceUvGlsl,
   lensRadialInverse,
   lensUnwarpNdc,
+  lensUnwarpNdcWithContext,
   lensWarpNdc,
+  lensWarpNdcWithContext,
+  makeLensWarpContext,
+  type LensWarpContext,
+  type NdcRect,
 } from './lensProjection';
 
 const DEG = Math.PI / 180;
@@ -371,6 +378,152 @@ describe('CPU/GPU inverse convergence', () => {
       lensUnwarpNdc(out.x, out.y, 60, renderFov, aspect, strength, back);
       expect(back.x).toBeCloseTo(sx, 9);
       expect(back.y).toBeCloseTo(sy, 9);
+    }
+  });
+});
+
+describe('lensUnwarpNdcWithContext', () => {
+  it('is the same map as lensUnwarpNdc, constants hoisted', () => {
+    const ctx: LensWarpContext = { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 };
+    for (const [aspect, strength] of [[16 / 9, 1], [0.46, 0.5], [1.5, 0.2], [1, 0]] as const) {
+      const design = 60;
+      const render = lensOverscanFovDeg(design, aspect, strength);
+      makeLensWarpContext(design, render, aspect, strength, ctx);
+      for (const [x, y] of [[0.3, -0.2], [-0.9, 0.9], [0, 0], [0.01, 0.99]]) {
+        const a = lensUnwarpNdc(x, y, design, render, aspect, strength, { x: 0, y: 0 });
+        const b = lensUnwarpNdcWithContext(ctx, x, y, { x: 0, y: 0 });
+        expect(b.x).toBe(a.x);
+        expect(b.y).toBe(a.y);
+      }
+    }
+  });
+});
+
+describe('lensLocalScale', () => {
+  it('is the forward map\'s own derivative, radially and tangentially', () => {
+    const ctx: LensWarpContext = { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 };
+    const design = 60;
+    const aspect = 16 / 9;
+    const height = 1000;
+    for (const strength of [0, 0.5, 1]) {
+      const render = lensOverscanFovDeg(design, aspect, strength);
+      makeLensWarpContext(design, render, aspect, strength, ctx);
+      const centreScale = (height / 2) / lensDisplayHalfTan(design, strength);
+      // The render camera's own half-tangent: the context leaves its copy at
+      // 0 when the lens is off, since the identity map never reads it.
+      const tanHalfRender = Math.tan((render / 2) * DEG);
+      const sourceOfAngle = (theta: number, azimuth: number) => ({
+        x: (Math.tan(theta) * Math.cos(azimuth)) / (tanHalfRender * aspect),
+        y: (Math.tan(theta) * Math.sin(azimuth)) / tanHalfRender,
+      });
+      const outputPx = (theta: number, azimuth: number) => {
+        const s = sourceOfAngle(theta, azimuth);
+        const o = lensWarpNdcWithContext(ctx, s.x, s.y, { x: 0, y: 0 });
+        return { x: o.x * aspect * (height / 2), y: o.y * (height / 2) };
+      };
+      for (const thetaDeg of [5, 20, 32]) {
+        const theta = thetaDeg * DEG;
+        const azimuth = 0.7;
+        const scale = lensLocalScale(theta, strength, { radial: 0, tangential: 0 });
+        const h = 1e-5;
+        const a = outputPx(theta - h, azimuth);
+        const b = outputPx(theta + h, azimuth);
+        const radialPxPerRad = Math.hypot(b.x - a.x, b.y - a.y) / (2 * h);
+        const c = outputPx(theta, azimuth - h);
+        const d = outputPx(theta, azimuth + h);
+        // An azimuth step dφ at angle θ is an arc of sinθ·dφ on the sky.
+        const tangentialPxPerRad = Math.hypot(d.x - c.x, d.y - c.y) / (2 * h * Math.sin(theta));
+        expect(scale.radial * centreScale).toBeCloseTo(radialPxPerRad, 3);
+        expect(scale.tangential * centreScale).toBeCloseTo(tangentialPxPerRad, 3);
+      }
+      expect(lensLocalScale(0, strength, { radial: 0, tangential: 0 })).toEqual({ radial: 1, tangential: 1 });
+    }
+  });
+
+  it('is conformal at full strength and 1/cos²θ by 1/cosθ with the lens off', () => {
+    const theta = 32 * DEG;
+    const full = lensLocalScale(theta, 1, { radial: 0, tangential: 0 });
+    expect(full.radial).toBeCloseTo(full.tangential, 12);
+    const off = lensLocalScale(theta, 0, { radial: 0, tangential: 0 });
+    expect(off.radial).toBeCloseTo(1 / Math.cos(theta) ** 2, 12);
+    expect(off.tangential).toBeCloseTo(1 / Math.cos(theta), 12);
+  });
+});
+
+describe('lensSourceBoundOfOutputRect', () => {
+  const ctx: LensWarpContext = { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 };
+  const out: NdcRect = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
+  it('contains the pre-image of every point of the clipped rectangle', () => {
+    // A seeded generator: the sweep is a property check, and a failure must
+    // reproduce.
+    let seed = 20261009;
+    const random = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
+    let cases = 0;
+    let worst = 0;
+    while (cases < 600) {
+      const aspect = pick([0.46, 0.75, 0.82, 1, 1.55, 16 / 9, 2.4]);
+      const design = pick([30, 45, 60, 75, 90, 110, 130]);
+      const strength = lensEffectiveStrength(design, aspect, pick([1, 0.75, 0.5, 0.25, 0.1, 0]));
+      makeLensWarpContext(design, lensOverscanFovDeg(design, aspect, strength), aspect, strength, ctx);
+      // A support disc anywhere, an off-frame Sun's included.
+      const cx = random() * 3.2 - 1.6;
+      const cy = random() * 3.2 - 1.6;
+      const r = 0.02 + random() * 1.8;
+      const rect: NdcRect = { minX: cx - r, maxX: cx + r, minY: cy - r * aspect, maxY: cy + r * aspect };
+      if (!lensSourceBoundOfOutputRect(ctx, rect, 0, 0, out)) continue;
+      cases++;
+      const minX = Math.max(rect.minX, -1);
+      const maxX = Math.min(rect.maxX, 1);
+      const minY = Math.max(rect.minY, -1);
+      const maxY = Math.min(rect.maxY, 1);
+      for (let i = 0; i < 120; i++) {
+        const x = minX + random() * (maxX - minX);
+        const y = minY + random() * (maxY - minY);
+        const p = lensUnwarpNdcWithContext(ctx, x, y, { x: 0, y: 0 });
+        worst = Math.max(worst, out.minX - p.x, p.x - out.maxX, out.minY - p.y, p.y - out.maxY);
+      }
+    }
+    expect(cases).toBe(600);
+    expect(worst).toBeLessThanOrEqual(1e-12);
+  });
+
+  it('is the clipped rectangle itself with the lens off, plus the margin', () => {
+    makeLensWarpContext(60, 60, 16 / 9, 0, ctx);
+    expect(lensSourceBoundOfOutputRect(ctx, { minX: -0.5, maxX: 1.7, minY: 0.2, maxY: 0.4 }, 0.01, 0.02, out)).toBe(true);
+    expect(out.minX).toBeCloseTo(-0.51, 12);
+    expect(out.maxX).toBeCloseTo(1.01, 12);
+    expect(out.minY).toBeCloseTo(0.18, 12);
+    expect(out.maxY).toBeCloseTo(0.42, 12);
+  });
+
+  it('reports a support wholly off the frame as nothing to draw', () => {
+    makeLensWarpContext(60, lensOverscanFovDeg(60, 16 / 9, 1), 16 / 9, 1, ctx);
+    expect(lensSourceBoundOfOutputRect(ctx, { minX: 1.2, maxX: 1.9, minY: -0.3, maxY: 0.3 }, 0, 0, out)).toBe(false);
+    expect(lensSourceBoundOfOutputRect(ctx, { minX: -0.3, maxX: 0.3, minY: -2, maxY: -1.01 }, 0, 0, out)).toBe(false);
+  });
+
+  it('falls back to the whole source frame on a non-finite input, which always covers the frame', () => {
+    makeLensWarpContext(60, lensOverscanFovDeg(60, 16 / 9, 1), 16 / 9, 1, ctx);
+    expect(lensSourceBoundOfOutputRect(ctx, { minX: NaN, maxX: 0.3, minY: -0.3, maxY: 0.3 }, 0, 0, out)).toBe(true);
+    expect(out).toEqual({ minX: -1, minY: -1, maxX: 1, maxY: 1 });
+    // The displayed frame's own pre-image never leaves the source square.
+    for (const aspect of [0.46, 1, 16 / 9, 2.4]) {
+      for (const design of [30, 60, 90, 130]) {
+        for (const requested of [1, 0.5, 0]) {
+          const strength = lensEffectiveStrength(design, aspect, requested);
+          makeLensWarpContext(design, lensOverscanFovDeg(design, aspect, strength), aspect, strength, ctx);
+          lensSourceBoundOfOutputRect(ctx, { minX: -1, maxX: 1, minY: -1, maxY: 1 }, 0, 0, out);
+          expect(out.minX).toBeGreaterThanOrEqual(-1 - 1e-9);
+          expect(out.maxX).toBeLessThanOrEqual(1 + 1e-9);
+          expect(out.minY).toBeGreaterThanOrEqual(-1 - 1e-9);
+          expect(out.maxY).toBeLessThanOrEqual(1 + 1e-9);
+        }
+      }
     }
   });
 });

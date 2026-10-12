@@ -1,6 +1,6 @@
 /**
  * The Sun's veiling glare, as an obscuration mask over everything drawn behind
- * it. The glare itself is an additive billboard; stars, the asteroid belt, and
+ * it. The glare itself is an additive quad; stars, the asteroid belt, and
  * the marker/label overlays render under (or above) it and would otherwise read
  * straight *through* the blaze. This is the one definition site for a screen-
  * space mask that fades those consumers inside the glare so nothing shows
@@ -9,8 +9,10 @@
  * The signal mirrors the glare shader's own wide veil (a screen-space Moffat
  * wash plus two diffraction arms) plus a small geometric core so the Sun's bare
  * outer-system glint still obscures coincident points when the wash is idle.
- * Everything is a pure function of aspect-correct CSS pixels measured from the
- * Sun's unclamped screen position, so it keeps working when the Sun is off-frame
+ * Everything is a pure function of aspect-correct CSS pixels of the displayed
+ * frame, measured from the Sun's unclamped screen position — the same pixels
+ * and the same centre the glare fragment measures its veil in, so the fade
+ * sits on the wash it hides — so it keeps working when the Sun is off-frame
  * and collapses to a no-op (mask 0) when the Sun is behind the camera or the
  * glare pipeline is ineligible.
  *
@@ -248,7 +250,7 @@ uniform float uSunMaskCoreOuterPx;
 float sunGlareMask(vec4 clip) {
   if (uSunMaskActive < 0.5 || clip.w <= 0.0) return 0.0;
   // GPU points are still in the overscan source at this stage. Compare them
-  // in the same final-output pixel space as the DOM labels and glare billboard.
+  // in the same final-output pixel space as the DOM labels and the glare.
   vec2 ndc = lensWarpSourceNdc(clip.xy / clip.w);
   vec2 px = vec2(
     (ndc.x * 0.5 + 0.5) * uSunMaskViewportPx.x,

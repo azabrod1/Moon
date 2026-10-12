@@ -62,8 +62,10 @@ describe('sunGlareMaskAt — wide (Moffat) mask', () => {
   });
 
   it('crosses through a partial band strictly inside (0, 1)', () => {
-    // ~81 px gives peak·moffat ≈ 0.045, the midpoint of the [0.01, 0.08] ramp.
-    const m = sunGlareMaskAt(base(), 81, 0);
+    // The distance where peak·moffat = 0.045, the midpoint of the [0.01, 0.08]
+    // ramp, solved from the shared scale rather than pinned in pixels.
+    const dPx = SCALE * Math.sqrt(Math.pow(1 / 0.045, 1 / SUN_VEIL_BETA) - 1);
+    const m = sunGlareMaskAt(base(), dPx, 0);
     expect(m).toBeGreaterThan(0.3);
     expect(m).toBeLessThan(0.7);
   });
@@ -171,7 +173,7 @@ describe('sunLabelClearRadiusPx', () => {
   it('is continuous across the L = 0.02 boundary', () => {
     // As peak approaches 0.02 from above the solved radius approaches the pad,
     // so the pad-floor branch joins the Moffat solve without a step.
-    expect(sunLabelClearRadiusPx({ ...base(), peak: 0.0200001 })).toBeCloseTo(12, 1);
+    expect(sunLabelClearRadiusPx({ ...base(), peak: 0.02000001 })).toBeCloseTo(12, 1);
     expect(sunLabelClearRadiusPx({ ...base(), peak: 0.02 })).toBe(12);
   });
 

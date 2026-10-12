@@ -1290,8 +1290,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   group.add(prominences);
 
   // One analytic point-spread profile replaces two baked canvas gradients.
-  // Its vertex shader billboards it; the controller supplies the visible
-  // photosphere fraction so occultations affect glare and exposure together.
+  // Its quad covers the source pixels the controller hands it; the controller
+  // supplies the visible photosphere fraction so occultations affect glare
+  // and exposure together.
   const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
   const glareMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -1307,9 +1308,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uOccluderRadii: { value: 1 },
       uOccluderShade: { value: 0 },
       uOccluderOffsetSr: { value: new THREE.Vector2() },
-      // Exposed-crescent centroid (solar radii) and authored diamond-ring
-      // strength; both 0 unless an occluder is on the disc, so an un-occluded Sun
-      // draws with neither term.
+      // Exposed-crescent centroid (on the sky frame, in the glare's
+      // solar-radius unit) and authored diamond-ring strength; both 0 unless an
+      // occluder is on the disc, so an un-occluded Sun draws with neither term.
       uGlareCentroidSr: { value: new THREE.Vector2() },
       uDiamondOccluderSr: { value: new THREE.Vector2() },
       uBeadCarveDepth: { value: 0 },
@@ -1325,20 +1326,36 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(...SUN_ATMOSPHERE_TINT_RGB) },
-      uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
       ...createLensShaderUniforms(),
+      // The glare's two frames (sunGlareFragmentShader), driven per frame by
+      // the controller. The sky frame: the Sun's camera-space direction, the
+      // tangent basis its gnomonic coordinates are measured on, and tan of its
+      // solar-radius unit. The image-plane frame: the Sun's and the light
+      // centre's positions in CSS px of the displayed frame, the drawn
+      // support's half-size about the Sun, solar radii per output px, how far
+      // the glint floor owns the physical PSF, and the source-NDC rectangle
+      // the quad covers.
+      uSunDir: { value: new THREE.Vector3(0, 0, -1) },
+      uSunTangentU: { value: new THREE.Vector3(1, 0, 0) },
+      uSunTangentV: { value: new THREE.Vector3(0, 1, 0) },
+      uSunTanRad: { value: 1 },
+      uSunOutPx: { value: new THREE.Vector2() },
+      uLightOutPx: { value: new THREE.Vector2() },
+      uDrawnHalfPx: { value: 0 },
+      uSrPerPx: { value: 1 },
+      uFloorMix: { value: 0 },
+      uQuadRect: { value: new THREE.Vector4(-1, -1, 1, 1) },
       // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
-      // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) and uVeilHalfPx
-      // (the billboard half-size in px the veil needs) are driven per frame.
+      // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) is driven
+      // per frame, and the support the wash needs goes into uDrawnHalfPx.
       uVeilStrength: { value: 1.4 },
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
-      uVeilHalfPx: { value: 0 },
       // Veil diffraction-arm decay lengths (CSS px) and coefficient, driven
       // per frame. The controller hands a coefficient of zero (the cross is a
-      // camera's signature; the Sun here is an eye's) and sizes the billboard
+      // camera's signature; the Sun here is an eye's) and sizes the support
       // to the same decay lengths.
       uArmDecayPx: { value: 0 },
       uArmDecayYPx: { value: 0 },
@@ -1356,16 +1373,21 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     premultipliedAlpha: true,
     side: THREE.DoubleSide,
   });
-  const glare = new THREE.Mesh(
-    new THREE.PlaneGeometry(SUN_DATA.radiusAU * glareExtent * 2, SUN_DATA.radiusAU * glareExtent * 2),
-    glareMat,
-  );
+  // A unit quad the vertex shader places in clip space at the source
+  // rectangle the controller hands it (uQuadRect); the mesh's own transform
+  // never reaches the GPU, so its bounds mean nothing to culling.
+  const glare = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), glareMat);
   glare.name = 'Sun glare';
   glare.renderOrder = 8;
-  // The vertex shader's minimum-pixel boost renders far outside the geometry
-  // bounds in the outer system; default culling would pop the glint at the
-  // viewport edge. Behind-camera vertices still clip.
   glare.frustumCulled = false;
+  // The glint floor: the glare's minimum half-size in output px, so an
+  // outer-system Sun whose disc is a few pixels or less keeps an optical
+  // point. The
+  // values are the 18 and 22 source px the floor was tuned at, in the output
+  // px the 16:9 centre magnification (1.4266) made of them, so the reference
+  // look is what every frame shape now draws. Read by the controller, which
+  // scales it with distance and floors the glare's solar-radius unit to it.
+  glareMat.userData.glintFloorPx = useBloom ? 25.7 : 31.4;
   group.add(glare);
 
   // Three tiny clip-space quads make one restrained optical ghost train. They
@@ -1429,6 +1451,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   group.userData.sunInteriorMesh = interior;
   group.userData.sunProminenceMaterial = prominenceMat;
   group.userData.sunGlareMaterial = glareMat;
+  group.userData.sunGlareMesh = glare;
   group.userData.sunLensGhostMaterial = ghostMat;
   return group;
 }

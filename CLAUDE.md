@@ -39,6 +39,7 @@ A Three.js app. `src/planetarium/` is the whole solar system at real scale, wher
 
 - **Coordinates.** The scene uses one fixed sky frame (J2000: +X toward the March equinox, +Y toward celestial north). Convert sky positions only through `raDecToVector` in `planetary.ts`. The sign conventions are pinned by tests: never flip one on its own, or the sky comes out mirrored.
 - **The lens.** The picture passes through a curved-lens effect, so the camera renders a wider view than the screen shows. Set the field of view only with `applyDesignFov`, read the visible one with `displayFovDeg()`, never `camera.fov`, and size things on screen with `projectSphereToScreen`. `tools/oval-probe.mjs` tests this.
+- **Screen-space effects measure in output pixels** through the warp in `lensShader.ts`, and anything that must hug a drawn limb measures in sky angle; never in a quad's own plane or in source pixels, which the lens stretches off-axis. `tools/glare-probe.mjs` tests the Sun's glare.
 - **Never show anything half-loaded.** A moon appears only after its texture is painted, and a jump waits behind the loading veil until the destination is ready.
 - **Earth's ground uses the alpha channel** to mark the sea for the glow pass. Anything drawn over Earth must not write alpha, or the sun's reflection on the sea grows a halo.
 - **The Sun's brightness is set in one place**, `src/planetarium/sunLight.ts`. Any brightness threshold you add is multiplied by `SUN_LIGHT_BASELINE`.

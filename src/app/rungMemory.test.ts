@@ -558,7 +558,7 @@ describe('what keeps the memory out of a boot', () => {
   });
 
   it('a render-path switch or a measurement pin', () => {
-    for (const q of ['?msaa=0', '?msaa=4', '?fused=0', '?alloc=0', '?canvasaa=1', '?perfoff=fused-final', '?ratio=3',
+    for (const q of ['?msaa=0', '?msaa=4', '?fused=0', '?fuseddown=0', '?alloc=0', '?canvasaa=1', '?perfoff=fused-final', '?ratio=3',
       '?refresh=120', '?envelope=512', '?upscale=1.5', '?sectors=0', '?synth=0', '?synthdepth=5', '?gpuclock=0']) {
       expect(rungMemoryUrlBlock(q)).not.toBeNull();
     }

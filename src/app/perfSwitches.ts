@@ -31,6 +31,16 @@
  * as far as the sweep is concerned: a relink inside a measured hold is measured
  * as the thing being measured.
  *
+ * `fused-downsample` is the same kind of item without the rebuild. A scene
+ * drawn larger than the canvas is averaged down inside the finishing pass
+ * rather than by a downsample pass after it (app/FusedOutputPass.ts), and the
+ * average moves pixels by a least significant bit here and there — the taps
+ * are averaged before the 8-bit store rather than after — so it is not exact
+ * either, and its old path ships too: `?fuseddown=0` is the production door.
+ * But both of its paths live in one program behind a uniform, and the switch
+ * flips that uniform and the downsample pass's enabled flag and nothing else,
+ * so it is a live switch: no reload, no relink.
+ *
  * `ground-cull` is the streamer leaving out of a draw the ground a finer drawn
  * sector tile covers (world/groundCull): the globe and each coarser level under
  * a tile are shaded and then lose the depth test on Apple GPUs, so they are not
@@ -102,6 +112,7 @@ export type PerfSwitchKey =
   | 'bloom-nodepth'
   | 'depth-discard'
   | 'fused-final'
+  | 'fused-downsample'
   | 'cloud-program'
   | 'ground-cull'
   | 'cloud-noise-frame'
@@ -119,9 +130,9 @@ export type PerfSwitchKey =
  * The default is also what a production build compiles: a switch that defaults
  * on has its cheap path as the only path there, and one that defaults off has
  * neither path. The exception is a key whose old path is a kill switch reached
- * by a URL parameter of its own — `fused-final`, `ground-cull`, `cloud-shadow`,
- * `cloud-light` — where both paths are in the production bundle and only this
- * registry's reading of them is DEV.
+ * by a URL parameter of its own — `fused-final`, `fused-downsample`,
+ * `ground-cull`, `cloud-shadow`, `cloud-light` — where both paths are in the
+ * production bundle and only this registry's reading of them is DEV.
  */
 export const PERF_SWITCHES: ReadonlyArray<{
   key: PerfSwitchKey;
@@ -140,6 +151,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'bloom-nodepth', label: 'Bloom targets without depth', on: true },
   { key: 'depth-discard', label: 'Scene depth/stencil discard', on: true },
   { key: 'fused-final', label: 'Lens, glow and tone map as one pass', on: true, needsReload: true },
+  { key: 'fused-downsample', label: 'Supersample averaged in the finishing pass', on: true },
   { key: 'cloud-program', label: 'Cloud deck program of its own', on: true, needsReload: true },
   { key: 'ground-cull', label: 'Ground under a finer tile left undrawn', on: true },
   { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
@@ -164,6 +176,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'bloom-nodepth': true,
   'depth-discard': true,
   'fused-final': true,
+  'fused-downsample': true,
   'cloud-program': true,
   'ground-cull': true,
   'cloud-noise-frame': true,

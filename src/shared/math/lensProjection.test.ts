@@ -12,6 +12,8 @@ import {
   lensPassFragmentShader,
   lensRadial,
   lensSourceBoundOfOutputRect,
+  lensSourceFootprint,
+  lensSourceFootprintGlsl,
   lensSourceUvGlsl,
   lensRadialInverse,
   lensUnwarpNdc,
@@ -525,5 +527,90 @@ describe('lensSourceBoundOfOutputRect', () => {
         }
       }
     }
+  });
+});
+
+describe('the inverse map with its derivative (the supersample box’s footprint)', () => {
+  /** The context the warp uniforms carry at a design FOV, aspect and strength. */
+  const contextFor = (designFovDeg: number, aspect: number, strength: number): LensWarpContext =>
+    makeLensWarpContext(designFovDeg, lensOverscanFovDeg(designFovDeg, aspect, strength), aspect, strength,
+      { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 });
+  /** The scene uv the CPU inverse map puts under an output uv, scaled into a
+   *  sub-rect. */
+  const sourceUv = (ctx: LensWarpContext, scale: { x: number; y: number }, u: number, v: number) => {
+    const out = lensUnwarpNdcWithContext(ctx, u * 2 - 1, v * 2 - 1, { x: 0, y: 0 });
+    return { x: (out.x * 0.5 + 0.5) * scale.x, y: (out.y * 0.5 + 0.5) * scale.y };
+  };
+  const W = 3456;
+  const H = 2234;
+  const scale = { x: 4320 / 5184, y: 2792 / 3351 };
+
+  it('puts the pixel’s centre where the inverse map does', () => {
+    for (const strength of [1, 0.6, 0.25]) {
+      const ctx = contextFor(60, W / H, strength);
+      for (const [u, v] of [[0.5, 0.5], [0.1, 0.2], [0.97, 0.03], [0.5, 0.999], [0.73, 0.41]]) {
+        const fp = lensSourceFootprint(ctx, scale, u, v, W, H);
+        const ref = sourceUv(ctx, scale, u, v);
+        expect(fp.x).toBeCloseTo(ref.x, 12);
+        expect(fp.y).toBeCloseTo(ref.y, 12);
+      }
+    }
+  });
+
+  it('moves per output pixel as a finite difference of the inverse map does, corners included', () => {
+    // The derivative is worked out, not differenced (the finishing text is
+    // GLSL ES 1.00): held here to a central difference of the CPU seam, which
+    // other tests hold to the shader's own Newton solve.
+    for (const [fov, aspect] of [[60, W / H], [60, 16 / 9], [90, 21 / 9]] as const) {
+      for (const strength of [1, 0.6]) {
+        const ctx = contextFor(fov, aspect, lensEffectiveStrength(fov, aspect, strength));
+        const w = Math.round(H * aspect);
+        for (const [u, v] of [[0.5, 0.5], [0.501, 0.5], [0.1, 0.2], [0.999, 0.999], [0.0005, 0.9995], [0.62, 0.17]]) {
+          const fp = lensSourceFootprint(ctx, scale, u, v, w, H);
+          const h = 0.25;
+          const xp = sourceUv(ctx, scale, u + h / w, v);
+          const xm = sourceUv(ctx, scale, u - h / w, v);
+          const yp = sourceUv(ctx, scale, u, v + h / H);
+          const ym = sourceUv(ctx, scale, u, v - h / H);
+          const ddx = [(xp.x - xm.x) / (2 * h), (xp.y - xm.y) / (2 * h)];
+          const ddy = [(yp.x - ym.x) / (2 * h), (yp.y - ym.y) / (2 * h)];
+          // Relative to the step's own size: a pixel moves the source by
+          // about uvScale / size, and the difference is good to ~1e-7 of it.
+          const unit = Math.max(scale.x / w, scale.y / H);
+          for (let k = 0; k < 2; k++) {
+            expect(Math.abs(fp.dUdx[k] - ddx[k]) / unit).toBeLessThan(1e-5);
+            expect(Math.abs(fp.dUdy[k] - ddy[k]) / unit).toBeLessThan(1e-5);
+          }
+        }
+      }
+    }
+  });
+
+  it('is the plain scaled read and a plain pixel step at strength 0', () => {
+    const ctx = contextFor(60, W / H, 0);
+    const fp = lensSourceFootprint(ctx, scale, 0.3, 0.8, W, H);
+    expect(fp.x).toBe(0.3 * scale.x);
+    expect(fp.y).toBe(0.8 * scale.y);
+    expect(fp.dUdx).toEqual([scale.x / W, 0]);
+    expect(fp.dUdy).toEqual([0, scale.y / H]);
+  });
+
+  it('takes the map’s scale on the axis at the optical centre', () => {
+    const ctx = contextFor(60, W / H, 1);
+    const fp = lensSourceFootprint(ctx, scale, 0.5, 0.5, W, H);
+    const g0 = ctx.rEdge / ctx.tanHalfRender;
+    expect(fp.dUdx[0]).toBeCloseTo((g0 * scale.x) / W, 15);
+    expect(fp.dUdy[1]).toBeCloseTo((g0 * scale.y) / H, 15);
+    // And a pixel beside it agrees, so the centre's own branch is no seam.
+    const beside = lensSourceFootprint(ctx, scale, 0.5 + 1 / W, 0.5, W, H);
+    expect(Math.abs(beside.dUdx[0] - fp.dUdx[0]) / fp.dUdx[0]).toBeLessThan(1e-5);
+  });
+
+  it('shares the Newton budget and declares nothing of its own', () => {
+    expect(lensSourceFootprintGlsl).toContain(`i < ${LENS_INVERSE_ITERATIONS};`);
+    expect(lensSourceFootprintGlsl).not.toContain('uniform ');
+    // Unclamped: the taps are clamped one by one after they are placed.
+    expect(lensSourceFootprintGlsl).not.toContain('uUvMax');
+    expect(lensSourceFootprintGlsl).not.toContain('dFdx');
   });
 });

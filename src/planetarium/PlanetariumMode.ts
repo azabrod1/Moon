@@ -403,8 +403,30 @@ import {
   TUTORIAL_STEPS,
   TUTORIAL_TIMELAPSE_RATE,
   tutorialTransition,
+  clockWasLive,
+  restoredClockUtcMs,
   type TutorialPhase,
 } from './tutorialLogic';
+import {
+  bodyLabelsSetting,
+  bodyMarkersSetting,
+  constellationsSetting,
+  labelDistancesSetting,
+  migratePreferencesFromJourney,
+  miniChartSetting,
+  miniChartSizeSetting,
+  orbitLinesSetting,
+  resolvePreferences,
+  showShipSetting,
+  skyPanelOnArrivalSetting,
+  slowerNearPlanetsSetting,
+  withPreferenceFields,
+  withoutPreferenceFields,
+  type PlanetariumPreferences,
+} from './preferences';
+import type { StoredSetting } from '../app/storedSetting';
+import { LIVE_DRIFT_MS } from './ui/PlanetariumTimePanel';
+import type { SheetPark } from './ui/ObservatoryPanel';
 import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
@@ -568,6 +590,23 @@ interface TutorialSnapshot {
   excursion: ObservatoryExcursion | null;
   panelWasOpen: boolean;
   lastObservatoryEvent: ShadowEvent | null;
+  view: TutorialViewSnapshot;
+}
+
+/** The session-only view state the journey save cannot hold, captured at the
+ *  tour's entry so "Back where I was" can put it back: orbit or surface view,
+ *  what the surface view looked at and how wide, where the orbit camera sat
+ *  around the body, where the phone sheet was parked, and whether the clock
+ *  was live (then the restore lands on now, not on a stale instant). */
+interface TutorialViewSnapshot {
+  landedView: 'orbit' | 'surface';
+  surfaceTarget: SurfaceTarget;
+  surfaceFovDeg: number;
+  /** The orbit camera's position in the landed frame (the body at the
+   *  origin); null when the snapshot was cruising. */
+  orbitCameraPos: { x: number; y: number; z: number } | null;
+  sheetPark: SheetPark;
+  clockWasLive: boolean;
 }
 
 /** Which end toast a tutorial stop owes the user (none for lifecycle aborts and New Journey). */
@@ -2421,6 +2460,9 @@ export class PlanetariumMode {
    *  so the mission's staged scene never overwrites the journey on disk. */
   private preMissionState: PlanetariumState | null = null;
   private preMissionMenuVisible = false;
+  /** The Show ship preference a mission forced on; a preference is not the
+   *  journey's to restore, so the mission's exit puts it back itself. */
+  private preMissionShowShip: boolean | null = null;
   /** The pre-tool journey stashed when the volume-compare tool is entered. main.ts
    *  deactivates this mode for the tool (which exits landed mode and saves the
    *  taken-off state), so the snapshot is what restores the exact landing/camera/
@@ -2454,6 +2496,12 @@ export class PlanetariumMode {
     generation: number;
     endRequest: { restore: boolean; toast: TutorialEndToast } | null;
   } | null = null;
+  /** Every ☰ preference the user holds has landed on its own key, so the
+   *  journey save may stop carrying copies of them. False until the
+   *  migration confirms it, and false again after any refused write, so a
+   *  private window that refuses the keys keeps its preferences in the
+   *  journey for the session (preferences.ts). */
+  private preferencesPersisted = false;
 
   private closeMenuPanel() {
     if (!this.menuPanel.isOpen()) return;
@@ -3303,6 +3351,13 @@ export class PlanetariumMode {
         this.moonDots = new MoonDots(dotCount, this.scenePixelRatio(), this.renderer.getPixelRatio());
         this.scene.add(this.moonDots.points);
       }
+
+      // The ☰ preferences come from their own keys, with a save from before
+      // the keys existed read once more as the fallback and copied onto them.
+      // Applied here, never by restoreState: a restore is a journey change,
+      // and New Journey must leave the preferences alone.
+      this.preferencesPersisted = migratePreferencesFromJourney(savedState).complete;
+      this.applyPreferences(resolvePreferences(savedState));
 
       if (this.preToolState) {
         // Returning from a tool (How many fit?, Look inside) — restore the exact pre-tool
@@ -10443,6 +10498,7 @@ export class PlanetariumMode {
     if (this.activeHistoricJourney) return;
     this.preMissionState = this.getState();
     this.preMissionMenuVisible = this.menuPanel.isOpen();
+    this.preMissionShowShip = this.showShip;
   }
 
   private restorePreMissionState() {
@@ -10483,15 +10539,28 @@ export class PlanetariumMode {
       return;
     }
     this.clearBodyReveal();
-    // A pre-tutorial surface view can't be snapshotted (view sub-states are
-    // session-only; getState() carries none of them) — settle to orbit view
-    // now so the tutorial starts from a state the restore can reproduce.
-    if (this.landedView === 'surface') this.exitSurfaceView(true);
+    // The view state the journey cannot hold is captured first: a surface
+    // view, its target and width, the orbit camera's place around the body,
+    // the sheet's park and whether the clock was live. Then the surface view
+    // is left — the stagings need the orbit view — and the restore walks
+    // back into it from this record.
+    const inSurfaceView = this.landedView === 'surface';
+    const orbitCamera = inSurfaceView ? this.preSurfaceCameraPos : this.camera.position;
+    const view: TutorialViewSnapshot = {
+      landedView: this.landedView,
+      surfaceTarget: this.surfaceTarget,
+      surfaceFovDeg: inSurfaceView ? displayFovDeg(this.camera) : this.surfaceFovDeg,
+      orbitCameraPos: this.landedOn ? { x: orbitCamera.x, y: orbitCamera.y, z: orbitCamera.z } : null,
+      sheetPark: this.observatoryPanel.getSheetPark(),
+      clockWasLive: clockWasLive(this.timeState, Date.now(), LIVE_DRIFT_MS),
+    };
+    if (inSurfaceView) this.exitSurfaceView(true);
     const snapshot: TutorialSnapshot = {
       state: this.getState(), // before this.tutorial is set — the override must not see itself
       excursion: this.observatoryExcursion,
       panelWasOpen: this.observatoryPanel.isOpen(),
       lastObservatoryEvent: this.lastObservatoryEvent,
+      view,
     };
     this.tutorial = {
       stepIndex: 0,
@@ -10581,6 +10650,8 @@ export class PlanetariumMode {
       if (toast === 'skip') {
         this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
       } else if (toast === 'return') {
+        // The wrap card's primary: the tour was seen through to its end.
+        this.store.writeTourProgress({ completed: true, completedAt: Date.now() });
         this.notification.show('Back where you started.', { force: true });
       }
     };
@@ -10600,6 +10671,7 @@ export class PlanetariumMode {
     const plan = restorePlan({
       snapshotLandedOn: snap.state.landedOn?.name ?? null,
       panelWasOpen: snap.panelWasOpen,
+      snapshotSurfaceView: snap.view.landedView === 'surface',
       inSurfaceView: this.landedView === 'surface',
       landedOn: this.landedOn?.name ?? null,
       lifecycleAbort: sync,
@@ -10618,10 +10690,20 @@ export class PlanetariumMode {
       // drop the live one and put the snapshot's copy back after restore.
       this.observatoryExcursion = null;
       if (plan.exitLandedFirst && this.landedOn) this.exitLandedMode();
-      this.restoreState(snap.state); // re-lands when the snapshot was landed
+      // A clock that was live when the tour began comes back live — the
+      // snapshot's own instant is minutes stale by now and would read as a
+      // clock stopped in the past. Anything else comes back exactly as held.
+      this.restoreState({
+        ...snap.state,
+        astroTimeUtcMs: restoredClockUtcMs(snap.state.astroTimeUtcMs, snap.view.clockWasLive, Date.now()),
+      }); // re-lands when the snapshot was landed
       this.observatoryExcursion = snap.excursion;
       this.lastObservatoryEvent = snap.lastObservatoryEvent;
-      if (plan.reopenPanel && this.landedOn) this.openObservatoryPanel();
+      if (plan.reopenPanel && this.landedOn) {
+        this.openObservatoryPanel();
+        this.observatoryPanel.setSheetPark(snap.view.sheetPark);
+      }
+      this.restoreTutorialView(snap.view, plan.reenterSurfaceView);
       finish();
     };
     if (plan.veilGate && snap.state.landedOn) {
@@ -10629,6 +10711,30 @@ export class PlanetariumMode {
     } else {
       applyRestore();
     }
+  }
+
+  /**
+   * Put the captured view back once the journey has re-landed: the orbit
+   * camera where it sat around the body (held to the landed range, in case
+   * a size setting moved it), then the surface view the snapshot was in,
+   * aimed at what it watched and eased to the width it had — the entry
+   * glide's fitted width is replaced as its destination, so the glide still
+   * explains the orbit→ground move but ends where the user left off.
+   */
+  private restoreTutorialView(view: TutorialViewSnapshot, reenterSurface: boolean): void {
+    if (!this.landedOn || !view.orbitCameraPos) return;
+    const pos = view.orbitCameraPos;
+    const radius = Math.hypot(pos.x, pos.y, pos.z);
+    if (radius > 0) {
+      const held = Math.min(Math.max(radius, this.controls.minDistance), this.controls.maxDistance);
+      this.camera.position.set(pos.x, pos.y, pos.z).multiplyScalar(held / radius);
+      this.camera.lookAt(0, 0, 0);
+      this.preSurfaceCameraPos.copy(this.camera.position);
+    }
+    if (!reenterSurface) return;
+    this.enterSurfaceView(view.surfaceTarget);
+    if (this.surfaceFovAnim) this.surfaceFovAnim.toFov = view.surfaceFovDeg;
+    else this.setDisplayFov(view.surfaceFovDeg);
   }
 
   /**
@@ -10643,6 +10749,9 @@ export class PlanetariumMode {
     tutorial.stepIndex = index;
     tutorial.phase = 'staging';
     tutorial.totalityReached = false;
+    // The furthest stop reached outlives the tour and the journey: a skip
+    // mid-way is remembered, and the entries can say the tour was finished.
+    this.store.writeTourProgress({ stopReached: index });
     tutorial.generation++;
     if (tutorial.timer !== null) {
       clearTimeout(tutorial.timer);
@@ -11535,6 +11644,7 @@ export class PlanetariumMode {
     // Show ship toggle
     document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
       this.showShip = !this.showShip;
+      this.savePreference(showShipSetting, this.showShip);
       this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
@@ -11546,6 +11656,7 @@ export class PlanetariumMode {
 
     document.getElementById('settings-constellations-toggle')?.addEventListener('click', () => {
       this.showConstellations = !this.showConstellations;
+      this.savePreference(constellationsSetting, this.showConstellations);
       if (this.showConstellations) {
         this.ensureConstellationsReady();
       } else if (this.constellations) {
@@ -11557,6 +11668,7 @@ export class PlanetariumMode {
 
     document.getElementById('settings-labels-toggle')?.addEventListener('click', () => {
       this.showBodyLabels = !this.showBodyLabels;
+      this.savePreference(bodyLabelsSetting, this.showBodyLabels);
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-labels-label');
       if (label) label.textContent = this.showBodyLabels ? 'On' : 'Off';
@@ -11565,6 +11677,7 @@ export class PlanetariumMode {
     const labelDistancesToggle = document.getElementById('settings-label-distances-toggle');
     labelDistancesToggle?.addEventListener('click', () => {
       this.labelDistancesMode = this.labelDistancesMode === 'always' ? 'hover' : 'always';
+      this.savePreference(labelDistancesSetting, this.labelDistancesMode);
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-label-distances-label');
       if (label) label.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
@@ -11573,6 +11686,7 @@ export class PlanetariumMode {
 
     document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
       this.showBodyMarkers = !this.showBodyMarkers;
+      this.savePreference(bodyMarkersSetting, this.showBodyMarkers);
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-markers-label');
       if (label) label.textContent = this.showBodyMarkers ? 'On' : 'Off';
@@ -11582,6 +11696,7 @@ export class PlanetariumMode {
     orbitsToggle?.addEventListener('click', () => {
       // Per-frame updateOrbitLineVisibility applies the flag.
       this.showOrbitLines = !this.showOrbitLines;
+      this.savePreference(orbitLinesSetting, this.showOrbitLines);
       const label = document.getElementById('settings-orbits-label');
       if (label) label.textContent = this.showOrbitLines ? 'On' : 'Off';
       orbitsToggle.setAttribute('aria-pressed', String(this.showOrbitLines));
@@ -11591,6 +11706,7 @@ export class PlanetariumMode {
       // The one writer of the persisted preference: only this deliberate flip
       // gives the save an opinion about the corner chart.
       this.miniChartPrefStored = !this.showMiniChart;
+      this.savePreference(miniChartSetting, this.miniChartPrefStored);
       this.setMiniChartEnabled(!this.showMiniChart);
     });
 
@@ -11604,6 +11720,7 @@ export class PlanetariumMode {
 
     document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
       this.systemSlowdown = !this.systemSlowdown;
+      this.savePreference(slowerNearPlanetsSetting, this.systemSlowdown);
       const label = document.getElementById('settings-throttle-label');
       if (label) label.textContent = this.systemSlowdown ? 'On' : 'Off';
       this.updateSpeedSlider();
@@ -11707,6 +11824,7 @@ export class PlanetariumMode {
     document.getElementById('deck-tab-pilot')?.addEventListener('click', () => this.switchDeckTab('pilot'));
     document.getElementById('deck-pref-toggle')?.addEventListener('click', () => {
       this.skyPrefStored = !this.effectiveSkyPref();
+      this.savePreference(skyPanelOnArrivalSetting, this.skyPrefStored);
       document.getElementById('deck-pref-toggle')?.classList.toggle('on', this.effectiveSkyPref());
     });
     const deckSearch = document.getElementById('deck-search') as HTMLInputElement | null;
@@ -12063,7 +12181,10 @@ export class PlanetariumMode {
   private setMiniSizeScale(scale: number, options: { persist: boolean }): void {
     const clamped = clampMiniSizeScale(scale);
     this.miniSizeScale = clamped;
-    if (options.persist) this.miniSizePrefStored = clamped;
+    if (options.persist) {
+      this.miniSizePrefStored = clamped;
+      this.savePreference(miniChartSizeSetting, clamped);
+    }
     this.syncMiniSizeWidget();
   }
 
@@ -14500,6 +14621,14 @@ export class PlanetariumMode {
     this.scriptedTransfer = null;
     this.player.setProfile('default');
     this.setHistoricPanelVisible(false);
+    // The mission forced the ship on. The user's own preference comes back
+    // whether or not the journey does: New Journey keeps preferences too.
+    if (this.preMissionShowShip !== null) {
+      this.showShip = this.preMissionShowShip;
+      this.preMissionShowShip = null;
+      this.player.group.visible = this.showShip && !this.landedOn;
+      setText('settings-ship-label', this.showShip ? 'On' : 'Off');
+    }
     if (restorePreviousState) this.restorePreMissionState();
     else {
       this.preMissionState = null;
@@ -20456,14 +20585,6 @@ export class PlanetariumMode {
     if (this.preMissionState) {
       return { ...this.preMissionState, timestamp: Date.now() };
     }
-    // A capture session drives the chrome flags directly (devSetChrome); the
-    // save keeps the values the user chose.
-    const chrome = this.devChromeUserState ?? {
-      showShip: this.showShip,
-      showOrbitLines: this.showOrbitLines,
-      showBodyLabels: this.showBodyLabels,
-      showBodyMarkers: this.showBodyMarkers,
-    };
     // The ☰ menu and the help sheet pause a running clock and stop a moving
     // ship while they are up, and put both back when they close. A save made
     // meanwhile (Save sits in the menu; the autosave and the page-hide save
@@ -20473,7 +20594,7 @@ export class PlanetariumMode {
     const helpOpen = this.helpModal.isOpen();
     const clockHeld = (menuOpen && this.resumeTimeAfterMenu) || (helpOpen && this.resumeTimeAfterHelp);
     const shipHeld = (menuOpen && this.resumeShipAfterMenu) || (helpOpen && this.resumeShipAfterHelp);
-    return {
+    const journey: PlanetariumState = {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
       pitchRad: this.player.pitch,
@@ -20489,32 +20610,96 @@ export class PlanetariumMode {
       astroTimeUtcMs: this.timeState.currentUtcMs,
       astroTimeRate: this.timeState.rate,
       astroTimePaused: this.timeState.paused && !clockHeld,
-      showShip: chrome.showShip,
-      showConstellations: this.showConstellations,
-      showBodyLabels: chrome.showBodyLabels,
-      labelDistancesMode: this.labelDistancesMode,
-      showBodyMarkers: chrome.showBodyMarkers,
-      showOrbitLines: chrome.showOrbitLines,
-      // Absent until the toggle is flipped, like skyPref below — the widget
-      // state itself is NOT the preference (dev/capture paths move it).
-      miniChartPref: this.miniChartPrefStored ?? undefined,
-      // And the chart's size the same way: absent until the user resized it.
-      miniChartSizePref: this.miniSizePrefStored ?? undefined,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
-      systemSlowdown: this.systemSlowdown,
       autopilotTarget: this.autopilotTarget,
       autopilotUserEngaged: this.autopilotUserEngaged,
-      // Absent until the user flips the toggle — JSON.stringify drops the
-      // undefined, so an untouched preference never bakes a device default
-      // into the save.
-      skyPref: this.skyPrefStored ?? undefined,
       // Stamped at the source, not in saveState: every session-internal
       // snapshot (pre-mission, pre-tool, the tutorial's) round-trips through
       // here and back into restoreState, and an unlabeled one would be read
       // as legacy and re-rotate the ship on every tutorial exit or tool return.
       headingBasis: 'ecliptic',
     };
+    // The ☰ preferences live on their own keys. The journey carries copies
+    // only while a key write is still owed (a private window, a full store),
+    // so the next boot can find them; once every key has taken its value the
+    // save stops carrying them, and nothing can hand a stale copy back.
+    return this.preferencesPersisted
+      ? withoutPreferenceFields(journey)
+      : withPreferenceFields(journey, this.livePreferences());
+  }
+
+  /**
+   * Put the ☰ preferences on the session: the fields, the scene (ship,
+   * constellations, labels, markers, the corner chart) and the menu's own
+   * labels. Runs once per activation from the resolved keys; a restore never
+   * calls it, so New Journey, a mission's exit and the tutorial's return all
+   * leave the preferences as the user set them.
+   */
+  private applyPreferences(prefs: PlanetariumPreferences): void {
+    this.systemSlowdown = prefs.systemSlowdown;
+    setText('settings-throttle-label', this.systemSlowdown ? 'On' : 'Off');
+    this.showShip = prefs.showShip;
+    this.player.group.visible = this.showShip && !this.landedOn;
+    setText('settings-ship-label', this.showShip ? 'On' : 'Off');
+    this.showConstellations = prefs.showConstellations;
+    if (this.showConstellations) {
+      this.ensureConstellationsReady();
+    } else if (this.constellations) {
+      this.constellations.setVisible(false);
+    }
+    setText('settings-constellations-label', this.showConstellations ? 'On' : 'Off');
+    this.showBodyLabels = prefs.showBodyLabels;
+    this.labelDistancesMode = prefs.labelDistancesMode;
+    this.showBodyMarkers = prefs.showBodyMarkers;
+    this.applyBodyLabelVisibility();
+    setText('settings-labels-label', this.showBodyLabels ? 'On' : 'Off');
+    setText('settings-label-distances-label', this.labelDistancesMode === 'always' ? 'Always' : 'On hover');
+    document.getElementById('settings-label-distances-toggle')
+      ?.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
+    setText('settings-markers-label', this.showBodyMarkers ? 'On' : 'Off');
+    this.showOrbitLines = prefs.showOrbitLines;
+    setText('settings-orbits-label', this.showOrbitLines ? 'On' : 'Off');
+    document.getElementById('settings-orbits-toggle')
+      ?.setAttribute('aria-pressed', String(this.showOrbitLines));
+    // Off unless the user has deliberately turned it on: an absent
+    // preference is no opinion, and no opinion draws the default.
+    this.miniChartPrefStored = prefs.miniChartPref;
+    this.setMiniChartEnabled(prefs.miniChartPref ?? false);
+    this.miniSizePrefStored = prefs.miniChartSizePref;
+    this.setMiniSizeScale(prefs.miniChartSizePref ?? MINI_SIZE_DEFAULT_SCALE, { persist: false });
+    this.skyPrefStored = prefs.skyPref;
+    this.updateSpeedSlider();
+  }
+
+  /** The preferences as the session holds them, with a capture's chrome
+   *  override (devSetChrome) seen through to the user's own values. */
+  private livePreferences(): PlanetariumPreferences {
+    const chrome = this.devChromeUserState ?? {
+      showShip: this.showShip,
+      showOrbitLines: this.showOrbitLines,
+      showBodyLabels: this.showBodyLabels,
+      showBodyMarkers: this.showBodyMarkers,
+    };
+    return {
+      showShip: chrome.showShip,
+      showConstellations: this.showConstellations,
+      showBodyLabels: chrome.showBodyLabels,
+      labelDistancesMode: this.labelDistancesMode,
+      showBodyMarkers: chrome.showBodyMarkers,
+      showOrbitLines: chrome.showOrbitLines,
+      miniChartPref: this.miniChartPrefStored,
+      miniChartSizePref: this.miniSizePrefStored,
+      systemSlowdown: this.systemSlowdown,
+      skyPref: this.skyPrefStored,
+    };
+  }
+
+  /** Write one preference to its key. A refused write (private mode, a full
+   *  store) puts the journey back to carrying the preferences, so nothing is
+   *  lost for the session. */
+  private savePreference<T>(setting: StoredSetting<T>, value: T): void {
+    if (!setting.write(value)) this.preferencesPersisted = false;
   }
 
   private restoreState(saved: PlanetariumState) {
@@ -20565,46 +20750,12 @@ export class PlanetariumMode {
       paused: saved.astroTimePaused ?? false,
     };
     this.player.systemSpeedMultiplier = saved.systemSpeed ?? PlayerShip.SYSTEM_SPEED_DEFAULT;
-    this.systemSlowdown = saved.systemSlowdown ?? true;
-    const throttleLabel = document.getElementById('settings-throttle-label');
-    if (throttleLabel) throttleLabel.textContent = this.systemSlowdown ? 'On' : 'Off';
-    this.showShip = saved.showShip;
+    // The ☰ preferences (ship, constellations, labels, markers, orbit lines,
+    // the mini map, the slowdown, the sky panel switch) are not the journey's
+    // to restore: applyPreferences set them from their own keys at
+    // activation, and a restore — New Journey above all — leaves them alone.
+    // The ship's visibility follows the preference, not the save.
     this.player.group.visible = this.showShip;
-    this.showConstellations = saved.showConstellations ?? false;
-    if (this.showConstellations) {
-      this.ensureConstellationsReady();
-    } else if (this.constellations) {
-      this.constellations.setVisible(false);
-    }
-    const constLabel = document.getElementById('settings-constellations-label');
-    if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
-    this.showBodyLabels = saved.showBodyLabels ?? true;
-    this.labelDistancesMode = saved.labelDistancesMode ?? 'hover';
-    this.showBodyMarkers = saved.showBodyMarkers ?? true;
-    this.applyBodyLabelVisibility();
-    const labelsLabel = document.getElementById('settings-labels-label');
-    if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
-    const labelDistancesLabel = document.getElementById('settings-label-distances-label');
-    if (labelDistancesLabel) labelDistancesLabel.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
-    document.getElementById('settings-label-distances-toggle')
-      ?.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
-    const markersLabel = document.getElementById('settings-markers-label');
-    if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
-    this.showOrbitLines = saved.showOrbitLines ?? false;
-    const orbitsLabel = document.getElementById('settings-orbits-label');
-    if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
-    document.getElementById('settings-orbits-toggle')
-      ?.setAttribute('aria-pressed', String(this.showOrbitLines));
-    // Off unless the user has deliberately turned it on. An absent key is a
-    // save with no opinion — including every save from the on-by-default era,
-    // whose always-written `showMiniChart` the store deliberately ignores: it
-    // baked `true` without a user behind it, for exactly the users the
-    // default change is for.
-    this.miniChartPrefStored = saved.miniChartPref ?? null;
-    this.setMiniChartEnabled(saved.miniChartPref ?? false);
-    // The size, the same shape: a save with no opinion draws the default.
-    this.miniSizePrefStored = saved.miniChartSizePref ?? null;
-    this.setMiniSizeScale(saved.miniChartSizePref ?? MINI_SIZE_DEFAULT_SCALE, { persist: false });
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only
@@ -20616,10 +20767,6 @@ export class PlanetariumMode {
     // an engaged Pilot chip steering nothing. Targetless, disengage.
     if (this.autopilot && !this.autopilotTarget) this.autopilot = false;
     this.updateAutopilotButton();
-    this.skyPrefStored = saved.skyPref ?? null;
-    const shipLabel = document.getElementById('settings-ship-label');
-    if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
-
     this.rebuildPlanetPositions();
 
     this.updateSpeedSlider();

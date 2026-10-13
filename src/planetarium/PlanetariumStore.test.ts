@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createDefaultPlanetariumState,
   sanitizePlanetariumState,
+  sanitizeTourProgress,
   PlanetariumStore,
 } from './PlanetariumStore';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
@@ -332,5 +333,44 @@ describe('clock sanitizing survives the first running frame', () => {
     const clock = advancePlanetariumTime({ currentUtcMs: state.astroTimeUtcMs, rate: state.astroTimeRate!, paused: false }, 1 / 60);
     expect(Number.isFinite(new Date(clock.currentUtcMs).getTime())).toBe(true);
     expect(clock.currentUtcMs).toBe(MAX_UTC_MS);
+  });
+});
+
+describe('the tour record (planetarium-tour)', () => {
+  it('is fresh where nothing legible is stored, and a key of its own', async () => {
+    const local = fakeStorage();
+    const fresh = await withWindow(local, fakeStorage(), async () => new PlanetariumStore().readTourProgress());
+    expect(fresh).toEqual({ completed: false, stopReached: -1, completedAt: null });
+    local.setItem('planetarium-tour', '{not json');
+    const broken = await withWindow(local, fakeStorage(), async () => new PlanetariumStore().readTourProgress());
+    expect(broken).toEqual({ completed: false, stopReached: -1, completedAt: null });
+  });
+
+  it('keeps the furthest stop and a completion already earned', async () => {
+    const local = fakeStorage();
+    await withWindow(local, fakeStorage(), async () => {
+      const store = new PlanetariumStore();
+      expect(store.writeTourProgress({ stopReached: 2 }).stopReached).toBe(2);
+      // A replay skipped at the first stop must not demote the record.
+      expect(store.writeTourProgress({ stopReached: 1 }).stopReached).toBe(2);
+      const done = store.writeTourProgress({ completed: true, completedAt: 1_700_000_000_000 });
+      expect(done).toEqual({ completed: true, stopReached: 2, completedAt: 1_700_000_000_000 });
+      expect(store.writeTourProgress({ stopReached: 0 })).toEqual(done);
+      expect(store.readTourProgress()).toEqual(done);
+    });
+    // Not inside the journey save: New Journey clears that key, not this one.
+    expect(local.getItem(STORAGE_KEY)).toBeNull();
+    expect(local.getItem('planetarium-tour')).not.toBeNull();
+  });
+
+  it('sanitises a hand-edited record', () => {
+    expect(sanitizeTourProgress({ completed: 'yes', stopReached: 2.5, completedAt: 'now' })).toEqual({
+      completed: false,
+      stopReached: -1,
+      completedAt: null,
+    });
+    // A completion time without a completion is nothing.
+    expect(sanitizeTourProgress({ completed: false, completedAt: 5 })?.completedAt).toBeNull();
+    expect(sanitizeTourProgress(null)).toBeNull();
   });
 });

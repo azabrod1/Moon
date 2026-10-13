@@ -203,6 +203,9 @@ export interface RestoreContext {
   snapshotLandedOn: string | null;
   /** The pre-tutorial snapshot had the observatory panel open. */
   panelWasOpen: boolean;
+  /** The pre-tutorial snapshot was in surface view (the tour exits it to
+   *  stage, so the restore has to walk back in). */
+  snapshotSurfaceView: boolean;
   /** Currently in surface view. */
   inSurfaceView: boolean;
   /** Currently landed on this body (null = cruising). */
@@ -226,6 +229,10 @@ export interface RestorePlan {
   veilGate: boolean;
   /** Reopen the observatory panel once re-landed. */
   reopenPanel: boolean;
+  /** Walk back into the surface view the snapshot was in, once re-landed.
+   *  Never on a lifecycle abort: the caller's own teardown is about to tear
+   *  the view down again, and the entry glide would run over it. */
+  reenterSurfaceView: boolean;
 }
 
 export function restorePlan(ctx: RestoreContext): RestorePlan {
@@ -234,7 +241,30 @@ export function restorePlan(ctx: RestoreContext): RestorePlan {
     exitLandedFirst: ctx.landedOn !== null && ctx.snapshotLandedOn === null,
     veilGate: !ctx.lifecycleAbort && ctx.snapshotLandedOn !== null,
     reopenPanel: ctx.panelWasOpen && ctx.snapshotLandedOn !== null,
+    reenterSurfaceView:
+      !ctx.lifecycleAbort && ctx.snapshotSurfaceView && ctx.snapshotLandedOn !== null,
   };
+}
+
+/**
+ * Whether the clock the tour is about to take over was running at now: 1×,
+ * not paused, within the live window of the wall clock. Recorded at entry,
+ * because by the time the tour ends the snapshot's instant is minutes stale
+ * and would restore as a clock that no longer reads live.
+ */
+export function clockWasLive(
+  clock: { currentUtcMs: number; rate: number; paused: boolean },
+  nowMs: number,
+  driftMs: number,
+): boolean {
+  return !clock.paused && clock.rate === 1 && Math.abs(clock.currentUtcMs - nowMs) <= driftMs;
+}
+
+/** The instant a restore puts the clock at: now for a clock that was live,
+ *  else exactly the instant the snapshot holds (a historical date, a paused
+ *  clock, a warped rate all come back as they were). */
+export function restoredClockUtcMs(snapshotUtcMs: number, wasLive: boolean, nowMs: number): number {
+  return wasLive ? nowMs : snapshotUtcMs;
 }
 
 /** The tutorial never starts over a mission, under the resume prompt, or twice. */

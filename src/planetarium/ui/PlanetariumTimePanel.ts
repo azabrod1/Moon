@@ -16,8 +16,9 @@ import {
 
 /** How far (px) a pointer may wander and still count as a tap-in-place. */
 const TAP_SLOP_PX = 4;
-/** The clock counts as "at now" within this much drift (ms). */
-const LIVE_DRIFT_MS = 120_000;
+/** How far from the wall clock a 1× running clock may sit and still read as live
+ *  (ember) — and, for the tutorial, still count as a clock to restore to now. */
+export const LIVE_DRIFT_MS = 120_000;
 /** How long the unit flash covers the clock before fading back. */
 const FLASH_HOLD_MS = 950;
 

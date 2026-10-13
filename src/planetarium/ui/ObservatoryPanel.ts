@@ -887,6 +887,20 @@ export class ObservatoryPanel {
     this.updateSheetInset();
   }
 
+  /** Where the sheet is parked right now. Desktop has no sheet; it reads
+   *  'peek', which show() would set anyway. */
+  getSheetPark(): SheetPark {
+    return this.sheetPark;
+  }
+
+  /** Park the open sheet where a snapshot left it (the tutorial's restore):
+   *  show() always starts at peek, so this runs after it. */
+  setSheetPark(park: SheetPark): void {
+    if (!this.isOpen() || !this.isSheetForm()) return;
+    this.sheetPark = park;
+    this.updateSheetInset();
+  }
+
   show(): void {
     this.panelEl?.classList.add('visible');
     document.body.classList.add('observatory-sheet-open');

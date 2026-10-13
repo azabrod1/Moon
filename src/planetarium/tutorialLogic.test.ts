@@ -10,6 +10,8 @@ import {
   isStepSettled,
   restorePlan,
   canStartTutorial,
+  clockWasLive,
+  restoredClockUtcMs,
 } from './tutorialLogic';
 import type { RestoreContext, SettleSignals, TutorialPhase, TutorialTransitionEvent } from './tutorialLogic';
 import { findShadowEvent } from '../astronomy/shadows';
@@ -162,6 +164,7 @@ describe('restorePlan', () => {
   const BASE: RestoreContext = {
     snapshotLandedOn: null,
     panelWasOpen: false,
+    snapshotSurfaceView: false,
     inSurfaceView: false,
     landedOn: null,
     lifecycleAbort: false,
@@ -179,7 +182,18 @@ describe('restorePlan', () => {
       exitLandedFirst: false,
       veilGate: true,
       reopenPanel: true,
+      reenterSurfaceView: false,
     });
+  });
+
+  it('walks back into a surface view the snapshot was in, only once re-landed and never on a lifecycle abort', () => {
+    const landed = { ...BASE, snapshotLandedOn: 'Moon', snapshotSurfaceView: true };
+    expect(restorePlan(landed).reenterSurfaceView).toBe(true);
+    expect(restorePlan({ ...landed, lifecycleAbort: true }).reenterSurfaceView).toBe(false);
+    // A cruising snapshot has no ground to stand on, whatever the flag says.
+    expect(restorePlan({ ...BASE, snapshotSurfaceView: true }).reenterSurfaceView).toBe(false);
+    // Still exits the tour's own surface view before the landed state changes.
+    expect(restorePlan({ ...landed, inSurfaceView: true }).exitSurfaceView).toBe(true);
   });
 
   it('lifecycle aborts never veil-gate, even to a landed snapshot', () => {
@@ -250,5 +264,25 @@ describe('the showcase eclipse', () => {
     expect(formatTimeRateLabel(TUTORIAL_ECLIPSE_APPROACH_RATE, false)).toBe('20 min/s');
     const presets = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
     expect(presets).toContain(TUTORIAL_ECLIPSE_APPROACH_RATE);
+  });
+});
+
+describe('the clock the tour hands back', () => {
+  const now = 1_800_000_000_000;
+  const DRIFT = 120_000;
+
+  it('counts as live only at 1\u00d7, running, within the live window of now', () => {
+    expect(clockWasLive({ currentUtcMs: now - 30_000, rate: 1, paused: false }, now, DRIFT)).toBe(true);
+    expect(clockWasLive({ currentUtcMs: now - DRIFT, rate: 1, paused: false }, now, DRIFT)).toBe(true);
+    expect(clockWasLive({ currentUtcMs: now - DRIFT - 1, rate: 1, paused: false }, now, DRIFT)).toBe(false);
+    expect(clockWasLive({ currentUtcMs: now, rate: 60, paused: false }, now, DRIFT)).toBe(false);
+    expect(clockWasLive({ currentUtcMs: now, rate: 1, paused: true }, now, DRIFT)).toBe(false);
+    expect(clockWasLive({ currentUtcMs: now + 10 * DRIFT, rate: 1, paused: false }, now, DRIFT)).toBe(false);
+  });
+
+  it('comes back at now when it was live, and exactly as held otherwise', () => {
+    const later = now + 5 * MIN;
+    expect(restoredClockUtcMs(now, true, later)).toBe(later);
+    expect(restoredClockUtcMs(Date.parse('1977-09-05T12:56:00Z'), false, later)).toBe(Date.parse('1977-09-05T12:56:00Z'));
   });
 });

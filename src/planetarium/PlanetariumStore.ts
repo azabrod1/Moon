@@ -22,6 +22,40 @@ const LOOKUP_COACH_SEEN_KEY = 'planetarium-lookup-coach-seen';
 // Pre-rename key, read-only compat: a user who dismissed help in the old
 // "explore" build shouldn't be shown it again after upgrading.
 const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
+/** The guided tour's progress, on a key of its own like the hint flags:
+ *  whether it was ever completed and the furthest stop reached, so the
+ *  entries can say "Replay the tour" and a skip mid-way is remembered. */
+const TOUR_KEY = 'planetarium-tour';
+
+export interface TourProgress {
+  completed: boolean;
+  /** Index of the furthest stop staged, −1 before any. */
+  stopReached: number;
+  /** When the wrap card was taken, or null. */
+  completedAt: number | null;
+}
+
+export const FRESH_TOUR_PROGRESS: Readonly<TourProgress> = {
+  completed: false,
+  stopReached: -1,
+  completedAt: null,
+};
+
+/** Exported for tests: what a stored tour record is allowed to say. */
+export function sanitizeTourProgress(raw: unknown): TourProgress | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const completed = record.completed === true;
+  const stopReached =
+    typeof record.stopReached === 'number' && Number.isInteger(record.stopReached) && record.stopReached >= -1
+      ? record.stopReached
+      : -1;
+  const completedAt =
+    completed && typeof record.completedAt === 'number' && Number.isFinite(record.completedAt)
+      ? record.completedAt
+      : null;
+  return { completed, stopReached, completedAt };
+}
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 /** The widest journey the app can pose. Anything past this is a corrupt or
  *  hand-edited save, not a place a ship has ever been (Pluto's aphelion is
@@ -64,7 +98,12 @@ export interface PlanetariumState {
   astroTimePaused?: boolean;
   /** Retired alongside layoutMode — see the note there. */
   planetScale?: number;
-  showShip: boolean;         // show player ship mesh
+  // The ☰ preferences below (ship, constellations, labels, label distances,
+  // markers, orbit lines, the mini map and its size, the system slowdown,
+  // the sky panel switch) now live on keys of their own (preferences.ts).
+  // They stay declared so a save from before those keys parses and can be
+  // migrated; a save written after the keys took them carries none of them.
+  showShip?: boolean;        // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
   labelDistancesMode?: LabelDistancesMode; // distance line: reveal on hover/tap, or always
@@ -406,6 +445,36 @@ export class PlanetariumStore {
     } catch {
       /* ignore: private browsing */
     }
+  }
+
+  /** The tour's progress, or the fresh record where nothing legible is
+   *  stored. Never part of the journey: New Journey must not forget it. */
+  readTourProgress(): TourProgress {
+    const raw = this.readWebStorage('local', TOUR_KEY);
+    if (!raw) return { ...FRESH_TOUR_PROGRESS };
+    try {
+      return sanitizeTourProgress(JSON.parse(raw) as unknown) ?? { ...FRESH_TOUR_PROGRESS };
+    } catch {
+      return { ...FRESH_TOUR_PROGRESS };
+    }
+  }
+
+  /** Record progress, keeping the furthest stop and a completion already
+   *  earned: a replay skipped at stop one must not demote a finished tour. */
+  writeTourProgress(update: Partial<TourProgress>): TourProgress {
+    const current = this.readTourProgress();
+    const next: TourProgress = {
+      completed: current.completed || update.completed === true,
+      stopReached: Math.max(current.stopReached, update.stopReached ?? -1),
+      completedAt: update.completedAt ?? current.completedAt,
+    };
+    const storage = this.getWebStorage('local');
+    try {
+      storage?.setItem(TOUR_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore: private browsing */
+    }
+    return next;
   }
 
   private removeLegacyState(): void {

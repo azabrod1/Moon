@@ -8,6 +8,7 @@
  * unit-testable; PlanetariumMode owns the scene staging and the card widget.
  */
 import type { ShadowEventSpec } from '../astronomy/shadows';
+import { TIME_RATE_PRESETS } from './timeRates';
 
 export type TutorialStepId = 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
 
@@ -44,6 +45,11 @@ export interface TutorialStep {
   /** The demonstration played before the arrival (see TutorialBeat); absent
    *  for a stop that stages in one move. */
   beats?: readonly TutorialBeat[];
+  /** The held primary's label while the stop settles after its beats
+   *  ("Watching…" for the eclipse's approach); "Arriving…" when absent. */
+  busyLabel?: string;
+  /** The card once the eclipse reaches totality: the climax gets its own words. */
+  totality?: { title: string; kicker: string; body: string };
   /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
   /** Ghost skip button; null on the wrap card — ending the tutorial always takes
@@ -65,7 +71,11 @@ export type TutorialTargetRef =
   | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-menu' }
   | { kind: 'deck-row'; name: string }
   /** The Observatory panel's Look up window. */
-  | { kind: 'panel-window' };
+  | { kind: 'panel-window' }
+  /** One of the panel's almanac arrows, by its element id. */
+  | { kind: 'panel-step'; id: 'observatory-next-solar' }
+  /** The time rail with its clock, at the bottom of the screen. */
+  | { kind: 'time-rail' };
 
 /** The scene work a beat's press stands for. The host performs it and reports
  *  when it has landed (the deck open with the row in view; the arrival done;
@@ -77,7 +87,15 @@ export type TutorialPerform =
   | { kind: 'arrive' }
   | { kind: 'observe'; name: string; parentPlanet?: string }
   | { kind: 'open-panel' }
-  | { kind: 'look-up' };
+  | { kind: 'look-up' }
+  /** Step the clock up the real ladder, one detent every `stepMs`, flashing each. */
+  | { kind: 'rate-ladder'; rates: readonly number[]; stepMs: number }
+  /** The panel's own almanac jump: the next event of this type from the clock. */
+  | { kind: 'jump'; type: 'solar-eclipse'; direction: 1 }
+  /** Back to the jumped-to event's first contact, at realtime. */
+  | { kind: 'rewind' }
+  /** Declutter the surface view and run the clock at this rate toward the climax. */
+  | { kind: 'approach'; rate: number };
 
 export interface TutorialBeat {
   id: string;
@@ -148,6 +166,53 @@ const MOON_BEATS: readonly TutorialBeat[] = [
   },
 ];
 
+/** The detents the Jupiter stop climbs: 1 min/s, 20 min/s, 1 hr/s — real
+ *  rungs of the shared ladder, so the rail's thumb lands where a tap could. */
+export const TUTORIAL_RATE_LADDER: readonly number[] = TIME_RATE_PRESETS.slice(1, 4);
+
+const JUPITER_BEATS: readonly TutorialBeat[] = [
+  { id: 'jupiter-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Jupiter…' },
+  {
+    id: 'time-rail',
+    spotlight: { target: { kind: 'time-rail' }, label: 'Time' },
+    press: false,
+    perform: { kind: 'rate-ladder', rates: TUTORIAL_RATE_LADDER, stepMs: 700 },
+    minHoldMs: 1200,
+  },
+];
+
+const ECLIPSE_REWIND_BODY = 'Let’s rewind two hours and watch it begin.';
+
+const ECLIPSE_BEATS: readonly TutorialBeat[] = [
+  { id: 'earth-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Earth…' },
+  {
+    id: 'next-solar',
+    spotlight: { target: { kind: 'panel-step', id: 'observatory-next-solar' }, label: 'Next eclipse' },
+    press: true,
+    perform: { kind: 'jump', type: 'solar-eclipse', direction: 1 },
+    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    body: 'From any world, the panel lists the eclipses to come. The arrow jumps to the next one.',
+  },
+  {
+    id: 'jumped',
+    spotlight: null,
+    press: false,
+    perform: { kind: 'none' },
+    minHoldMs: 2600,
+    body: 'That parks you three minutes before the peak, on 2 August 2027.',
+  },
+  { id: 'rewind', spotlight: null, press: false, perform: { kind: 'rewind' }, minHoldMs: 400, body: ECLIPSE_REWIND_BODY },
+  {
+    id: 'look-up',
+    spotlight: { target: { kind: 'panel-window' }, label: 'Look up' },
+    press: true,
+    perform: { kind: 'look-up' },
+    minHoldMs: 1800,
+    body: ECLIPSE_REWIND_BODY,
+  },
+  { id: 'approach', spotlight: null, press: false, perform: { kind: 'approach', rate: 1200 }, minHoldMs: 0 },
+];
+
 const SATURN_BEATS: readonly TutorialBeat[] = [
   {
     id: 'teleport-chip',
@@ -208,19 +273,30 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   },
   {
     id: 'timelapse',
-    title: 'Jupiter in fast-forward',
-    kicker: null,
-    body: 'The clock at the bottom of the screen controls time: tap it to set the speed or jump to a date. It’s running at two hours per second now, so Jupiter spins through a full day in five seconds and Io laps it in about twenty.',
-    primaryLabel: 'Next: the eclipse',
+    title: 'Speed up time',
+    kicker: 'Jupiter · 1 hr/s',
+    bodyDuring: 'Next, time. The clock at the bottom of the screen sets the speed; let’s run it up.',
+    body: 'An hour passes every second. Jupiter turns once in ten seconds; Io laps it in forty-two. Tap a notch on the rail for any speed, or tap the date to jump.',
+    beats: JUPITER_BEATS,
+    primaryLabel: 'Next: an eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
     settle: SCENE_SETTLE,
   },
   {
     id: 'eclipse',
-    title: 'August 2, 2027',
-    kicker: null,
-    body: 'You got here through the Observatory: land on Earth, pick the next Solar Eclipse in the panel, then Look up. You’re standing in the path of the Moon’s shadow — watch the Sun as the Moon crosses it.',
+    title: 'A total solar eclipse',
+    kicker: 'From Earth · 2 August 2027',
+    bodyDuring: 'Last stop: Earth, and the sky’s best show.',
+    // Settling is the approach: the kicker counts down to the peak live.
+    body: 'The Moon is crossing the Sun at twenty minutes a second. Stay with it.',
+    beats: ECLIPSE_BEATS,
+    busyLabel: 'Watching…',
+    totality: {
+      title: 'Totality',
+      kicker: '6 minutes · the longest on land this century',
+      body: 'The Sun’s corona, from the ground. You can drag to look around; the clock is back to realtime.',
+    },
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
     stage: 'eclipse',
@@ -404,12 +480,11 @@ export const TUTORIAL_ECLIPSE = {
   expectedPeakUtcMs: Date.parse('2027-08-02T10:06:41Z'),
 };
 
-/** Time-lapse card rate — 2 hr/s over Jupiter: a full rotation every ~5 s with
- *  the Galilean moons visibly wheeling (Io laps in ~21 s). Deliberately off the
- *  −/+ stepper's preset ladder (1 hr/s felt slow, 6 hr/s frantic): every rate
- *  readout formats the live value, and stepSimulationRate snaps off-ladder
- *  magnitudes back onto the ladder. */
-export const TUTORIAL_TIMELAPSE_RATE = 7200;
+/** Time-lapse card rate — 1 hr/s over Jupiter: a full rotation every ~10 s
+ *  with the Galilean moons visibly wheeling (Io laps in ~42 s). The top of the
+ *  ladder the stop climbs, and a real detent: the rail's thumb lands where a
+ *  tap of the user's own could put it, so the card can say so. */
+export const TUTORIAL_TIMELAPSE_RATE = TUTORIAL_RATE_LADDER[TUTORIAL_RATE_LADDER.length - 1];
 
 /** Eclipse approach rate — the "20 min/s" preset: the ~2 h from first contact
  *  to peak plays as a few seconds of the Moon biting into the Sun. */

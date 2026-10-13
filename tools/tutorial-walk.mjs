@@ -9,6 +9,11 @@
 //     offered (the desktop taps the row, the phone presses Show me), lands
 //     quietly, opens the panel after the picture, presses Look up, and ends in
 //     surface view with Earth on screen and a live phase on the card;
+//   - Jupiter rings the time rail while the clock climbs three real detents to
+//     1 hr/s with the panel closed; the eclipse presses the panel's own
+//     next-solar arrow (parking three minutes before the 2027-08-02 peak),
+//     rewinds to first contact, presses Look up, declutters the surface view
+//     and approaches at 20 min/s, holding "Watching…" until totality's card;
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
@@ -60,6 +65,8 @@ try {
       viewport: { width: viewport.w, height: viewport.h }, deviceScaleFactor: viewport.dsf ?? 1,
       hasTouch: touch, isMobile: touch,
     });
+    // Software rendering: a click waits for a frame, and frames take seconds.
+    context.setDefaultTimeout(120_000);
     await context.addInitScript((opts) => {
       try {
         // A fresh slate once per tab: a reload must keep what the page wrote.
@@ -258,7 +265,8 @@ try {
     check(card.busy && card.primary === 'Arriving…', `${tag} saturn: the primary says why it waits`, { primary: card.primary, busy: card.busy });
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     const saturn = await waitReady(page, tag, 'saturn');
-    check(saturn.beatCount >= 4, `${tag} saturn: the beats played (chip hold, press, row hold, press)`, saturn.beatCount);
+    // Polling can miss a one-frame stage; the recorder below proves the presses.
+    check(saturn.beatCount >= 2, `${tag} saturn: the beats played`, saturn.beatCount);
     check(saturn.seen.presses.includes('planetarium-btn-travel'), `${tag} saturn: the Teleport chip was visibly pressed`, saturn.seen.presses);
     check(saturn.seen.presses.some((p) => /pk-row/.test(p)), `${tag} saturn: the Saturn row was visibly pressed`, saturn.seen.presses);
     check(saturn.seen.veilNotes.length === 0 || saturn.seen.veilNotes.every((n) => /Teleporting to Saturn/.test(n)), `${tag} saturn: every veil caption was the tour's own (or no veil was needed)`, saturn.seen.veilNotes);
@@ -320,16 +328,58 @@ try {
     check(/Earth · \d+% lit/.test(card.kicker), `${tag} moon: the kicker is Earth's live phase`, card.kicker);
     check(card.body === 'Look up, and there is Earth.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
     await shot(page, `${tag}-14-moon`);
+    // Jupiter: the arrival, then the rail ringed while the clock climbs.
     await page.evaluate(() => window.__moon.tutorialNext());
     const timelapse = await waitReady(page, tag, 'timelapse');
-    check(timelapse.state.landedOn === 'Jupiter', `${tag} timelapse: on Jupiter`, timelapse.state.landedOn);
+    const j = timelapse.state;
+    check(j.landedOn === 'Jupiter' && !j.panelOpen && !j.surface, `${tag} timelapse: on Jupiter from orbit with the panel closed`, { landed: j.landedOn, panel: j.panelOpen });
+    check(j.rate === 3600 && !j.paused, `${tag} timelapse: the clock landed on the 1 hr/s detent`, { rate: j.rate, paused: j.paused });
+    check(timelapse.seen.veilNotes.length === 0 || timelapse.seen.veilNotes.every((n) => /Landing on Jupiter/.test(n)), `${tag} timelapse: the veil caption was the tour's`, timelapse.seen.veilNotes);
+    card = await cardText(page);
+    check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
     await shot(page, `${tag}-15-timelapse`);
+
+    // The eclipse: the panel's own arrow, the rewind, Look up, the approach, totality.
     await page.evaluate(() => window.__moon.tutorialNext());
-    await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'eclipse' && window.__moon.tutorialState().phase !== 'staging', null, { timeout: 400_000 });
+    const PEAK_MS = Date.parse('2027-08-02T10:06:41Z');
+    let jumpedState = null;
+    let rewoundState = null;
+    const eclipseStaged = await (async () => {
+      const started = Date.now();
+      await resetRecorder(page);
+      let lastBeat = null;
+      for (;;) {
+        const state = await tstate(page);
+        if (!state.active || state.phase !== 'staging') return { state, seen: await recorded(page) };
+        const key = state.beat ? `${state.beat.id}:${state.beat.stage}` : null;
+        if (key && key !== lastBeat) {
+          lastBeat = key;
+          await shot(page, `${tag}-eclipse-${state.beat.id}-${state.beat.stage}`);
+          if (state.beat.stage === 'hold' && state.beat.spotlight !== undefined && state.spotlight) await assertSpotlight(page, tag, 'eclipse', state);
+          if (state.beat.id === 'jumped' && state.beat.stage === 'hold') jumpedState = state;
+          if (state.beat.id === 'look-up' && state.beat.stage === 'hold') rewoundState = state;
+        }
+        if (Date.now() - started > 420_000) { check(false, `${tag} eclipse: never left staging`, state); return { state, seen: await recorded(page) }; }
+        await sleep(120);
+      }
+    })();
+    check(jumpedState !== null && Math.abs(jumpedState.timeMs - (PEAK_MS - 3 * 60_000)) < 20 * 60_000 && jumpedState.rate === 1, `${tag} eclipse: the arrow parked the clock three minutes before the 2027-08-02 peak at realtime`, jumpedState && { timeMs: jumpedState.timeMs, rate: jumpedState.rate });
+    check(jumpedState !== null && jumpedState.panelOpen && jumpedState.landedOn === 'Earth', `${tag} eclipse: on Earth with the panel open after the jump`, jumpedState && { panel: jumpedState.panelOpen, landed: jumpedState.landedOn });
+    check(rewoundState !== null && jumpedState !== null && jumpedState.timeMs - rewoundState.timeMs > 60 * 60_000 && rewoundState.rate === 1, `${tag} eclipse: the rewind went back over an hour at realtime`, rewoundState && jumpedState && { back: (jumpedState.timeMs - rewoundState.timeMs) / 60_000 });
+    check(eclipseStaged.seen.presses.includes('observatory-next-solar') && eclipseStaged.seen.presses.includes('observatory-lookup'), `${tag} eclipse: the arrow and the window were visibly pressed`, eclipseStaged.seen.presses);
+    check(eclipseStaged.seen.veilNotes.length === 0 || eclipseStaged.seen.veilNotes.every((n) => /Landing on Earth/.test(n)), `${tag} eclipse: the veil caption was the tour's`, eclipseStaged.seen.veilNotes);
+    const approach = eclipseStaged.state;
+    check(approach.surface && approach.rate === 1200 && approach.declutter, `${tag} eclipse: approaching in a decluttered surface view at 20 min/s`, { surface: approach.surface, rate: approach.rate, declutter: approach.declutter });
+    check(approach.sunOnScreen === true, `${tag} eclipse: the Sun is on screen during the approach`, approach.sunOnScreen);
+    card = await cardText(page);
+    check(card.primary === 'Watching…' && card.busy && /peak in|starts in/.test(card.kicker), `${tag} eclipse: Watching… with a live countdown`, { primary: card.primary, kicker: card.kicker });
     await sleep(1500);
     await shot(page, `${tag}-17-eclipse-approach`);
     const eclipse = await waitReady(page, tag, 'eclipse', { shots: false });
-    check(eclipse.state.surface && eclipse.state.totalityReached, `${tag} eclipse: in surface view at totality`, eclipse.state);
+    check(eclipse.state.surface && eclipse.state.totalityReached && eclipse.state.rate === 1, `${tag} eclipse: in surface view at totality, back at realtime`, { surface: eclipse.state.surface, totality: eclipse.state.totalityReached, rate: eclipse.state.rate });
+    card = await cardText(page);
+    check(card.title === 'Totality' && /corona/.test(card.body) && card.primary === 'Next: wrap up', `${tag} eclipse: the climax card`, { title: card.title, primary: card.primary });
+    check(!(await page.evaluate(() => document.getElementById('surface-trackpill')?.offsetParent !== null)), `${tag} eclipse: the tracking pill is out of the picture`);
     await shot(page, `${tag}-18-eclipse-totality`);
     await page.evaluate(() => window.__moon.tutorialNext());
     await waitReady(page, tag, 'wrap');
@@ -354,6 +404,7 @@ try {
     check(after.landedOn === before.landedOn, `${tag} end: landing restored`, { before: before.landedOn, after: after.landedOn });
     check(Math.abs(after.timeMs - Date.now()) < 180_000 && after.rate === 1 && !after.paused, `${tag} end: the clock is live again`, { timeMs: after.timeMs, rate: after.rate });
     check(after.shipVisible === true && after.labelsShown === true, `${tag} end: the ship and the labels are back`, { ship: after.shipVisible, labels: after.labelsShown });
+    check(after.declutter === false, `${tag} end: the surface declutter is lifted`);
     check((await pressedCount(page)) === 0 && after.spotlight === null, `${tag} end: nothing of the spotlight remains`);
     await context.close();
   }

@@ -1815,6 +1815,11 @@
       #tutorial-spotlight { transition: none; }
       .tutorial-spotlight-ring { animation: none; box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.22); }
     }
+    /* The eclipse's climax: the surface view keeps its headline and its time
+       bar; the field-of-view cluster and the tracking pill step aside for the
+       stop (a tour override, set and cleared with it). */
+    body.tutorial-declutter .shud-br,
+    body.tutorial-declutter #surface-trackpill { display: none !important; }
 
     /* ============================================= */
     /* FIRST-RUN WELCOME                             */

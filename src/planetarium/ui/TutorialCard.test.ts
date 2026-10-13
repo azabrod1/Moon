@@ -52,8 +52,9 @@ describe('tutorialCardModel', () => {
     for (const phase of ['settling', 'ready', 'ending'] as TutorialPhase[]) {
       expect(tutorialBodyFor(saturn, phase)).toBe(saturn.body);
     }
-    // A step without staging copy shows its one body throughout.
-    const plain = TUTORIAL_STEPS.find((s) => !s.bodyDuring && s.stage !== 'none')!;
+    // A step without staging copy (the wrap) shows its one body throughout.
+    const plain = stepById('wrap');
+    expect(plain.bodyDuring).toBeUndefined();
     expect(tutorialBodyFor(plain, 'staging')).toBe(plain.body);
     expect(model('saturn', 'staging').body).toBe(saturn.bodyDuring);
     expect(model('saturn', 'ready').body).toBe(saturn.body);
@@ -77,6 +78,23 @@ describe('tutorialCardModel', () => {
     expect(settled.primary.action).toBe('advance');
     expect(tutorialBodyFor(moon, 'staging', picture)).toBe(picture.body);
     expect(tutorialBodyFor(moon, 'staging', null)).toBe(moon.bodyDuring);
+  });
+
+  it('the eclipse holds as Watching… while it settles, and totality swaps in its own card', () => {
+    const eclipse = stepById('eclipse');
+    const i = indexOf('eclipse');
+    expect(tutorialCardModel(eclipse, i, 'staging').primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
+    const approaching = tutorialCardModel(eclipse, i, 'settling', { kicker: 'From Earth · peak in 1h 12m' });
+    expect(approaching.primary).toEqual({ label: 'Watching…', action: 'advance', disabled: true, busy: true });
+    expect(approaching.body).toBe(eclipse.body);
+    expect(approaching.kicker).toBe('From Earth · peak in 1h 12m');
+    const totality = tutorialCardModel(eclipse, i, 'ready', { totality: true });
+    expect(totality.title).toBe('Totality');
+    expect(totality.kicker).toBe(eclipse.totality!.kicker);
+    expect(totality.body).toBe(eclipse.totality!.body);
+    expect(totality.primary).toEqual({ label: 'Next: wrap up', action: 'advance', disabled: false, busy: false });
+    // A step without a climax ignores the flag.
+    expect(tutorialCardModel(stepById('saturn'), indexOf('saturn'), 'ready', { totality: true }).title).toBe('Teleport');
   });
 
   it('the kicker is the step’s own line unless the host supplies a live one', () => {

@@ -14,6 +14,7 @@ import {
   restoredClockUtcMs,
   TUTORIAL_STOP_COUNT,
   TUTORIAL_PRESS_MS,
+  TUTORIAL_RATE_LADDER,
   tutorialStopNumber,
   tutorialProgress,
   initialBeatRun,
@@ -30,6 +31,7 @@ import type {
 } from './tutorialLogic';
 import { findShadowEvent } from '../astronomy/shadows';
 import { formatTimeRateLabel } from '../astronomy/planetary';
+import { TIME_RATE_PRESETS } from './timeRates';
 
 const MIN = 60_000;
 
@@ -114,10 +116,47 @@ describe('TUTORIAL_STEPS', () => {
     for (const step of TUTORIAL_STEPS) {
       for (const beat of step.beats ?? []) {
         if (beat.press) expect(beat.spotlight).not.toBeNull();
-        // A hold is a minimum readable time; a you-try beat may offer Show me at once.
-        if (!beat.await) expect(beat.minHoldMs).toBeGreaterThan(0);
+        // A ringed control is held long enough to read; a you-try beat may
+        // offer Show me at once, and an arrival or a scene move needs no hold.
+        if (beat.spotlight && !beat.await) expect(beat.minHoldMs).toBeGreaterThan(0);
       }
     }
+  });
+
+  it('Jupiter: an arrival, then the rail ringed while the clock climbs three real detents to 1 hr/s', () => {
+    const jupiter = TUTORIAL_STEPS.find((s) => s.id === 'timelapse')!;
+    expect(jupiter.beats?.map((b) => b.id)).toEqual(['jupiter-arrive', 'time-rail']);
+    const [arrive, rail] = jupiter.beats!;
+    expect(arrive.perform).toEqual({ kind: 'arrive' });
+    expect(arrive.veilNote).toMatch(/Jupiter/);
+    expect(rail.spotlight?.target).toEqual({ kind: 'time-rail' });
+    expect(rail.press).toBe(false);
+    expect(rail.perform).toEqual({ kind: 'rate-ladder', rates: TUTORIAL_RATE_LADDER, stepMs: 700 });
+    expect(TUTORIAL_RATE_LADDER).toEqual([60, 1200, 3600]);
+    for (const rate of TUTORIAL_RATE_LADDER) expect(TIME_RATE_PRESETS).toContain(rate);
+    expect(TUTORIAL_TIMELAPSE_RATE).toBe(3600);
+    expect(jupiter.kicker).toBe('Jupiter · 1 hr/s');
+    expect(jupiter.body).toMatch(/forty-two/);
+  });
+
+  it('the eclipse: land on Earth, press the panel’s next-solar arrow, say what it did, rewind, Look up, then approach; totality gets its own card', () => {
+    const eclipse = TUTORIAL_STEPS.find((s) => s.id === 'eclipse')!;
+    expect(eclipse.beats?.map((b) => b.id)).toEqual(['earth-arrive', 'next-solar', 'jumped', 'rewind', 'look-up', 'approach']);
+    const [arrive, arrow, jumped, rewind, lookUp, approach] = eclipse.beats!;
+    expect(arrive.veilNote).toMatch(/Earth/);
+    expect(arrow.spotlight?.target).toEqual({ kind: 'panel-step', id: 'observatory-next-solar' });
+    expect(arrow.press).toBe(true);
+    expect(arrow.perform).toEqual({ kind: 'jump', type: 'solar-eclipse', direction: 1 });
+    expect(jumped.body).toMatch(/three minutes before the peak/);
+    expect(jumped.minHoldMs).toBeGreaterThanOrEqual(2000);
+    expect(rewind.perform).toEqual({ kind: 'rewind' });
+    expect(lookUp.spotlight?.target).toEqual({ kind: 'panel-window' });
+    expect(lookUp.perform).toEqual({ kind: 'look-up' });
+    expect(approach.perform).toEqual({ kind: 'approach', rate: TUTORIAL_ECLIPSE_APPROACH_RATE });
+    expect(eclipse.busyLabel).toBe('Watching…');
+    expect(eclipse.totality?.title).toBe('Totality');
+    expect(eclipse.totality?.body).toMatch(/corona/);
+    expect(eclipse.body).toMatch(/twenty minutes a second/);
   });
 
   it('every card has complete copy; only the wrap card drops the skip (always taken back)', () => {
@@ -454,7 +493,7 @@ describe('the showcase eclipse', () => {
     // supports: every readout formats the live rate, and the −/+ stepper snaps
     // off-ladder magnitudes back onto the ladder. Pin the labels so neither
     // rate drifts somewhere the formatter renders raggedly.
-    expect(formatTimeRateLabel(TUTORIAL_TIMELAPSE_RATE, false)).toBe('2 hr/s');
+    expect(formatTimeRateLabel(TUTORIAL_TIMELAPSE_RATE, false)).toBe('1 hr/s');
     expect(formatTimeRateLabel(TUTORIAL_ECLIPSE_APPROACH_RATE, false)).toBe('20 min/s');
     const presets = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
     expect(presets).toContain(TUTORIAL_ECLIPSE_APPROACH_RATE);

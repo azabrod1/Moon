@@ -399,9 +399,7 @@ import {
   restorePlan,
   totalitySettleUtcMs,
   TUTORIAL_ECLIPSE,
-  TUTORIAL_ECLIPSE_APPROACH_RATE,
   TUTORIAL_STEPS,
-  TUTORIAL_TIMELAPSE_RATE,
   tutorialTransition,
   initialBeatRun,
   stepBeatRun,
@@ -2525,10 +2523,13 @@ export class PlanetariumMode {
      *  commits, reset on every beat); "Show me" was pressed (one frame). */
     userActed: boolean;
     showMe: boolean;
+    /** The stop's arrival has landed (the 'arrive' perform's guard). */
+    arrived: boolean;
     /** Presentation overrides a stop lays over the preferences (the ship
-     *  model and the world labels out of the picture) — applied per frame,
-     *  never written to the preferences, dropped with the stop. */
-    overrides: { hideShip: boolean; hideLabels: boolean };
+     *  model and the world labels out of the picture, the surface view's
+     *  cluster and pill aside for the climax) — applied per frame, never
+     *  written to the preferences, dropped with the stop. */
+    overrides: { hideShip: boolean; hideLabels: boolean; declutter: boolean };
     /** A live kicker for the card (a distance, a phase); null = the step's own. */
     kicker: string | null;
     /** The composed subject and the free area it was fitted into (the walk's assertion). */
@@ -10658,7 +10659,8 @@ export class PlanetariumMode {
       beatFrameMs: performance.now(),
       userActed: false,
       showMe: false,
-      overrides: { hideShip: false, hideLabels: false },
+      arrived: false,
+      overrides: { hideShip: false, hideLabels: false, declutter: false },
       kicker: null,
       composition: null,
       returnFocus,
@@ -10866,6 +10868,7 @@ export class PlanetariumMode {
     tutorial.beatRun = null;
     tutorial.userActed = false;
     tutorial.showMe = false;
+    tutorial.arrived = false;
     this.tutorialVeilNote = null;
     tutorial.kicker = null;
     tutorial.composition = null;
@@ -10947,6 +10950,7 @@ export class PlanetariumMode {
     generation: number,
     target: NonNullable<LandedTarget>,
     then: () => void,
+    veilNote?: string,
   ): void {
     this.tutorialArriveWhenIdle(generation, target, () => {
       if (this.landedOn) {
@@ -10957,7 +10961,7 @@ export class PlanetariumMode {
         this.enterLandedMode(target);
       }
       then();
-    });
+    }, veilNote);
   }
 
   /** The Saturn stop is its demonstration: ring and press the Teleport chip,
@@ -11097,11 +11101,18 @@ export class PlanetariumMode {
         } else if (perform.kind === 'arrive') {
           // The consequence is the thing to look at from here: no ring over
           // the veil, and the deck goes the way the row's own click takes it.
+          // The run waits on the landing (tutorialPerformed) and goes on.
           this.tutorialSpotlight.hide();
           this.closeDeck();
-          tutorial.beatRun = null;
-          tutorial.beats = null;
           this.performTutorialArrival(generation, effect.beat.veilNote);
+        } else if (perform.kind === 'rate-ladder') {
+          this.tutorialClimbLadder(generation, perform.rates, perform.stepMs, 0);
+        } else if (perform.kind === 'jump') {
+          this.performTutorialJump(perform.type, perform.direction);
+        } else if (perform.kind === 'rewind') {
+          this.performTutorialRewind();
+        } else if (perform.kind === 'approach') {
+          this.performTutorialApproach(perform.rate);
         } else if (perform.kind === 'observe') {
           this.tutorialSpotlight.hide();
           this.performTutorialObserve(generation, perform, effect.beat.veilNote);
@@ -11109,9 +11120,19 @@ export class PlanetariumMode {
           this.openObservatoryPanel();
         } else if (perform.kind === 'look-up') {
           // The window's own action: the surface view, aimed where the
-          // window says (the parent, from a moon with nothing overhead).
+          // window says (the parent from a moon with nothing overhead; the
+          // event when one is on). The eclipse's clock sits at the event's
+          // first contact, where the engine may not yet call it live — then
+          // the view is aimed at the event's sky directly, as a jump does.
           this.tutorialSpotlight.hide();
-          this.toggleSurfaceView();
+          const event = TUTORIAL_STEPS[tutorial.stepIndex].stage === 'eclipse' ? tutorial.eclipse : null;
+          const landedInfo = this.surfaceLandedInfo();
+          if (event && landedInfo && !this.liveShadowEventNow()) {
+            this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', { suppressHint: true });
+            this.dismissSheetAfterDoorEntry();
+          } else {
+            this.toggleSurfaceView();
+          }
         }
         break;
       }
@@ -11138,6 +11159,12 @@ export class PlanetariumMode {
       case 'panel-window':
         el = this.observatoryPanel.isOpen() ? document.getElementById('observatory-lookup') : null;
         break;
+      case 'panel-step':
+        el = this.observatoryPanel.isOpen() ? document.getElementById(ref.id) : null;
+        break;
+      case 'time-rail':
+        el = document.getElementById('time-control');
+        break;
     }
     if (!el) return null;
     const rect = el.getBoundingClientRect();
@@ -11156,9 +11183,10 @@ export class PlanetariumMode {
     );
   }
 
-  /** Whether a beat's perform has landed. An arrival never reports here: its
-   *  own callback marks the step staged and ends the run. */
+  /** Whether a beat's perform has landed. */
   private tutorialPerformed(beat: TutorialBeat): boolean {
+    const tutorial = this.tutorial;
+    if (!tutorial) return false;
     const perform = beat.perform;
     switch (perform.kind) {
       case 'none':
@@ -11166,7 +11194,27 @@ export class PlanetariumMode {
       case 'open-deck':
         return this.isDeckOpen() && this.deckVerb === perform.verb && this.findDeckRow(perform.reveal) !== null;
       case 'arrive':
-        return false;
+        return tutorial.arrived && !this.arrivalInFlight && !this.arrivalVeilUp();
+      case 'rate-ladder': {
+        const top = perform.rates[perform.rates.length - 1];
+        return !this.timeState.paused && Math.abs(this.timeState.rate - top) < 1e-9;
+      }
+      case 'jump': {
+        // The panel's jump parks the clock OBSERVATORY_JUMP_LEAD_MS before
+        // the found event's peak at realtime; the one it found is the stop's.
+        const event = this.lastObservatoryEvent;
+        if (!event || event.spec.kind !== 'shadow-transit' || event.spec.parentPlanet !== 'Earth') return false;
+        const parkedAt = event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS;
+        if (Math.abs(this.timeState.currentUtcMs - parkedAt) > 10 * 60_000) return false;
+        tutorial.eclipse = event;
+        return true;
+      }
+      case 'rewind': {
+        const event = tutorial.eclipse;
+        return event !== null && Math.abs(this.timeState.currentUtcMs - event.startUtcMs) < 5 * 60_000;
+      }
+      case 'approach':
+        return true;
       case 'observe':
         return (
           this.landedOn?.name === perform.name && !this.arrivalInFlight && !this.arrivalVeilUp()
@@ -11233,21 +11281,29 @@ export class PlanetariumMode {
     return `${phase.headline} · ${Math.round(phase.litFraction * 100)}% lit`;
   }
 
-  /** The arrival a stop's last press stands for, by stage. Veil-gated and
+  /** The arrival a stop's 'arrive' beat stands for, by stage. Veil-gated and
    *  retried behind a rival arrival like every tutorial arrival; the veil
-   *  carries the beat's caption from its first frame. */
+   *  carries the beat's caption from its first frame. Each lands by setting
+   *  `arrived`, which the beat's guard reads; the run then goes on. */
   private performTutorialArrival(generation: number, veilNote: string | undefined): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation) return;
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
+    const landed = (then: () => void) => {
+      const live = this.tutorial;
+      if (!live || live.generation !== generation) return;
+      then();
+      live.arrived = true;
+      this.renderTutorialCard();
+    };
     switch (step.stage) {
       case 'saturn': {
         const saturn = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn');
         if (!saturn) {
-          this.markTutorialStaged(generation);
+          tutorial.arrived = true;
           return;
         }
-        this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
+        this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => landed(() => {
           this.setTutorialClockRate(1);
           if (this.landedOn) this.exitLandedMode();
           this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
@@ -11262,14 +11318,99 @@ export class PlanetariumMode {
           this.player.moving = false;
           const live = this.tutorial;
           if (live) live.kicker = this.tutorialPlanetKicker(saturn);
-          this.renderTutorialCard();
-          this.markTutorialStaged(generation);
-        }, veilNote);
+        }), veilNote);
         break;
       }
+      case 'timelapse':
+        // The Jupiter system from the regular landed orbit camera, pulled
+        // back past the default lit-side close-up so Io's whole orbit fits:
+        // the point of this stop is the system moving, not the portrait. The
+        // panel stays closed — the rail is the lesson, and the picture is
+        // the proof.
+        this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => landed(() => {
+          this.closeObservatoryPanel();
+          this.setTutorialClockRate(1);
+          this.setTutorialOverrides({ hideShip: true, hideLabels: true });
+          const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
+          this.camera.position.setLength(
+            Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
+          );
+          this.camera.lookAt(0, 0, 0);
+        }), veilNote);
+        break;
+      case 'eclipse':
+        // Earth, with the clock set to the summer of 2027 under the veil so
+        // the panel's "next solar eclipse" is the showcase one, and the panel
+        // open: its arrow is the next beat's control.
+        this.tutorialLandThen(generation, { type: 'planet', name: 'Earth' }, () => landed(() => {
+          this.setTutorialClockRate(1);
+          this.setCurrentUtcMs(TUTORIAL_ECLIPSE.searchFromUtcMs);
+          // The clock just moved a year ahead: realign the landed scene
+          // before anything frames off its geometry.
+          this.refreshLandedScene();
+          this.setTutorialOverrides({ hideShip: true, hideLabels: true });
+          this.openObservatoryPanel();
+        }), veilNote);
+        break;
       default:
-        this.markTutorialStaged(generation);
+        tutorial.arrived = true;
     }
+  }
+
+  /** Climb the clock one detent at a time, flashing each, so the rail's thumb
+   *  visibly slides up the ladder and lands on a rung the user could tap. */
+  private tutorialClimbLadder(generation: number, rates: readonly number[], stepMs: number, index: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation || index >= rates.length) return;
+    this.setTutorialClockRate(rates[index]);
+    if (index + 1 >= rates.length) return;
+    tutorial.timer = window.setTimeout(() => {
+      const live = this.tutorial;
+      if (!live || live.generation !== generation) return;
+      live.timer = null;
+      this.tutorialClimbLadder(generation, rates, stepMs, index + 1);
+    }, stepMs);
+  }
+
+  /** The panel's own almanac arrow, pressed for real when it is there and
+   *  enabled; its handler otherwise (the same search, the same jump). */
+  private performTutorialJump(type: 'solar-eclipse', direction: 1): void {
+    const arrow = this.observatoryPanel.isOpen()
+      ? (document.getElementById('observatory-next-solar') as HTMLButtonElement | null)
+      : null;
+    if (arrow && !arrow.disabled) {
+      arrow.click();
+      return;
+    }
+    this.handleObservatoryJump(type, direction);
+  }
+
+  /** Back to the jumped-to event's first contact at realtime, in the open:
+   *  the clock reads the earlier time, the panel's now-bar flashes, the
+   *  landed scene realigns to the new instant. */
+  private performTutorialRewind(): void {
+    const tutorial = this.tutorial;
+    const event = tutorial?.eclipse ?? this.lastObservatoryEvent;
+    if (!tutorial || !event) return;
+    this.timeState = { ...this.timeState, rate: 1, paused: false };
+    this.setCurrentUtcMs(event.startUtcMs);
+    this.updateTimeUI({ flash: true });
+    this.observatoryPanel.flashNowBar();
+    this.refreshLandedScene();
+    this.renderObservatoryPanel();
+  }
+
+  /** The climax's approach: the surface view decluttered for the stop (the
+   *  panel away — to peek on a phone — the cluster and the pill aside) and
+   *  the clock running toward totality; updateTutorial drops it to realtime
+   *  just inside. */
+  private performTutorialApproach(rate: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    if (this.observatoryPanel.sheetFormActive()) this.observatoryPanel.collapseSheetToPeek();
+    else this.closeObservatoryPanel();
+    this.setTutorialOverrides({ ...tutorial.overrides, declutter: true });
+    this.setTutorialClockRate(rate);
   }
 
   /** "Saturn · 1.43 billion km from the Sun", from the live ephemeris. */
@@ -11397,19 +11538,22 @@ export class PlanetariumMode {
    *  visibility is re-asserted every frame (updateTutorial) because several
    *  paths write it; the labels go through their container sync. Neither
    *  touches the stored preference. */
-  private setTutorialOverrides(overrides: { hideShip: boolean; hideLabels: boolean }): void {
+  private setTutorialOverrides(overrides: { hideShip: boolean; hideLabels: boolean; declutter?: boolean }): void {
     const tutorial = this.tutorial;
     if (!tutorial) return;
-    tutorial.overrides = overrides;
+    const declutter = overrides.declutter ?? tutorial.overrides.declutter;
+    tutorial.overrides = { hideShip: overrides.hideShip, hideLabels: overrides.hideLabels, declutter };
     this.worldLabelsTourHidden = overrides.hideLabels;
     this.syncWorldLabelContainers();
     this.player.group.visible = this.showShip && !this.landedOn && !overrides.hideShip;
+    document.body.classList.toggle('tutorial-declutter', declutter);
   }
 
   private clearTutorialOverrides(): void {
     const tutorial = this.tutorial;
-    const held = tutorial?.overrides ?? { hideShip: false, hideLabels: this.worldLabelsTourHidden };
-    if (tutorial) tutorial.overrides = { hideShip: false, hideLabels: false };
+    const held = tutorial?.overrides ?? { hideShip: false, hideLabels: this.worldLabelsTourHidden, declutter: false };
+    if (tutorial) tutorial.overrides = { hideShip: false, hideLabels: false, declutter: false };
+    document.body.classList.remove('tutorial-declutter');
     if (!held.hideShip && !held.hideLabels && !this.worldLabelsTourHidden) return;
     this.worldLabelsTourHidden = false;
     this.syncWorldLabelContainers();
@@ -11428,70 +11572,23 @@ export class PlanetariumMode {
     this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
   }
 
-  /**
-   * The Jupiter system at "2 hr/s", watched from the regular landed orbit
-   * camera — the motion showcase: the planet spins through a full day every
-   * ~5 s of wall clock while the Galilean moons wheel around it, crossing
-   * its face and slipping behind it (shadow-transit spots included, they're
-   * always on in the landed system). The camera pulls back past the default
-   * lit-side close-up so Io's whole orbit fits in frame — the point of this
-   * stop is the system moving, not the portrait.
-   */
+  /** Jupiter: the arrival, then the rail ringed while the clock climbs the
+   *  ladder (JUPITER_BEATS). */
   private stageTutorialTimelapse(generation: number): void {
-    this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => {
-      // The panel stays up on purpose: at 2 hr/s its now-bar, phase glyph and
-      // distances visibly run, which is half of what this card teaches. The
-      // open is explicit (not inherited from the Moon stop) so the staging
-      // holds even if the user closed the panel there.
-      this.openObservatoryPanel();
-      const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
-      this.camera.position.setLength(
-        Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
-      );
-      this.camera.lookAt(0, 0, 0);
-      this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
-      this.markTutorialStaged(generation);
-    });
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
   }
 
-  /**
-   * Land on Earth standing in the 2027-08-02 umbral path: the clock jumps to
-   * the eclipse's first contact and runs at "20 min/s", so the Moon bites
-   * into the Sun over a few seconds; updateTutorial drops to realtime just
-   * inside totality. The surface vantage is pinned once at the peak's umbral
-   * ground point (updateSurfaceCamera's stand-still anchor), so realtime
-   * totality plays out overhead while the user lingers.
-   */
+  /** The eclipse: land on Earth in the summer of 2027, press the panel's
+   *  next-solar arrow for real, say what it did, rewind to first contact,
+   *  Look up, then the decluttered approach (ECLIPSE_BEATS); updateTutorial
+   *  drops the clock to realtime just inside totality and the card swaps to
+   *  its climax. */
   private stageTutorialEclipse(generation: number): void {
-    this.tutorialLandThen(generation, { type: 'planet', name: 'Earth' }, () => {
-      const tutorial = this.tutorial;
-      if (!tutorial) return;
-      tutorial.eclipse ??= findShadowEvent(TUTORIAL_ECLIPSE.spec, TUTORIAL_ECLIPSE.searchFromUtcMs, 1);
-      const event = tutorial.eclipse;
-      if (event) {
-        // Stepper/narrative parity with a panel-driven jump to this event.
-        this.lastObservatoryEvent = event;
-        this.timeState = { ...this.timeState, rate: TUTORIAL_ECLIPSE_APPROACH_RATE, paused: false };
-        this.setCurrentUtcMs(event.startUtcMs);
-        // The clock just moved a year ahead: realign the landed scene before
-        // the surface entry fits its FOV off the target geometry.
-        this.refreshLandedScene();
-        const landedInfo = this.surfaceLandedInfo();
-        if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
-      } else {
-        // A null event (engine drift would be caught by the pin tests) still
-        // advances — the card then narrates a plain Earth landing, and there
-        // is no totality to hold Next for.
-        tutorial.totalityReached = true;
-      }
-      // The card teaches the panel as the way to find an eclipse, so it must
-      // be on screen even when the tutorial's arrival was quiet and the panel
-      // never opened (surface entry only keeps a panel that was already open).
-      // On phones show() starts the sheet at peek, clear of the centered Sun,
-      // and the HUD chevron clamps to it.
-      this.openObservatoryPanel();
-      this.markTutorialStaged(generation);
-    });
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
   }
 
   /** A staging's scene work has been applied — begin settling. Generation-
@@ -11559,6 +11656,18 @@ export class PlanetariumMode {
     ) {
       tutorial.totalityReached = true;
       this.setTutorialClockRate(1);
+      // The climax card: its own title, kicker and words (tutorialCardModel).
+      tutorial.kicker = null;
+      this.renderTutorialCard();
+    }
+    // The approach's kicker counts down to the peak, live, from the same
+    // helper the surface HUD uses; re-rendered only as the text changes.
+    if (step.stage === 'eclipse' && tutorial.eclipse && !tutorial.totalityReached && tutorial.phase === 'settling') {
+      const kicker = `From Earth · ${eventCountdownText(this.timeState.currentUtcMs, tutorial.eclipse)}`;
+      if (kicker !== tutorial.kicker) {
+        tutorial.kicker = kicker;
+        this.renderTutorialCard();
+      }
     }
   }
 
@@ -11571,6 +11680,7 @@ export class PlanetariumMode {
       tutorialCardModel(step, tutorial.stepIndex, tutorial.phase, {
         ...(tutorial.kicker === null ? {} : { kicker: tutorial.kicker }),
         beat,
+        totality: tutorial.totalityReached,
       }),
     );
   }
@@ -18247,7 +18357,10 @@ export class PlanetariumMode {
         ? { id: tutorial.beats[tutorial.beatRun.index]?.id ?? null, stage: tutorial.beatRun.stage, index: tutorial.beatRun.index }
         : null,
       userActed: tutorial?.userActed ?? false,
+      arrived: tutorial?.arrived ?? false,
+      declutter: document.body.classList.contains('tutorial-declutter'),
       earthOnScreen: this.devBodyOnScreen('Earth'),
+      sunOnScreen: this.devBodyOnScreen('Sun'),
       spotlight: this.tutorialSpotlight.isVisible() ? this.tutorialSpotlight.measure() : null,
       composition: tutorial?.composition ?? null,
       overrides: tutorial?.overrides ?? null,
@@ -18266,10 +18379,15 @@ export class PlanetariumMode {
   /** Whether a planet's disc is inside the frame right now (the walk's "Earth
    *  overhead" check), through the same lens-aware projection the labels use. */
   private devBodyOnScreen(name: string): boolean | null {
-    const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
-    if (!mesh) return null;
     const width = Math.max(1, this.renderer.domElement.clientWidth);
     const height = Math.max(1, this.renderer.domElement.clientHeight);
+    if (name === 'Sun') {
+      if (!this.solarSystem) return null;
+      const sun = projectSphereToScreen(this.solarSystem.sun.position, SUN_DATA.radiusAU, this.camera, width, height);
+      return sun.footprintKind === 'sampled' && sun.ndcZ < 1 && sun.x >= 0 && sun.x <= width && sun.y >= 0 && sun.y <= height;
+    }
+    const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
+    if (!mesh) return null;
     const proj = projectSphereToScreen(mesh.group.position, mesh.data.radiusAU * mesh.group.scale.x, this.camera, width, height);
     if (proj.footprintKind !== 'sampled') return false;
     return proj.ndcZ < 1 && proj.x >= 0 && proj.x <= width && proj.y >= 0 && proj.y <= height;

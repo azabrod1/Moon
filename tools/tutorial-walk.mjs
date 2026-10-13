@@ -5,6 +5,10 @@
 //   - the Saturn stop composes its subject inside the free area between the
 //     chrome, with the ship model and the world labels out of the picture, a
 //     live kicker on the card and the settled copy once the scene is up;
+//   - the Moon stop waits for the user's own tap on the Moon row with "Show me"
+//     offered (the desktop taps the row, the phone presses Show me), lands
+//     quietly, opens the panel after the picture, presses Look up, and ends in
+//     surface view with Earth on screen and a live phase on the card;
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
@@ -121,13 +125,18 @@ try {
   const resetRecorder = (page) => page.evaluate(() => { window.__walk.veilNotes = []; window.__walk.presses = []; });
 
   /** Wait for the stop to settle, screenshotting each new beat/stage on the way. */
-  const waitReady = async (page, tag, stop, { shots = true } = {}) => {
+  const waitReady = async (page, tag, stop, { shots = true, act = null } = {}) => {
     const started = Date.now();
     await resetRecorder(page);
     let lastBeat = null;
     let beatCount = 0;
+    let acted = false;
     for (;;) {
       const state = await tstate(page);
+      if (state.beat?.stage === 'await' && act && !acted) {
+        acted = true;
+        await act(state);
+      }
       if (!state.active || state.phase === 'ready') {
         const seen = await recorded(page);
         note(`  ${stop}: ready after ${((Date.now() - started) / 1000).toFixed(1)}s phase=${state.phase} landed=${state.landedOn} veil=${JSON.stringify(seen.veilNotes)} presses=${JSON.stringify(seen.presses)}`);
@@ -138,7 +147,10 @@ try {
         lastBeat = key;
         beatCount++;
         if (shots) await shot(page, `${tag}-${stop}-beat-${beatCount}-${state.beat.id}-${state.beat.stage}`);
-        if (state.beat.stage === 'hold') await assertSpotlight(page, tag, stop, state);
+        if (state.beat.stage === 'hold' && state.beat.id !== 'moon-picture') await assertSpotlight(page, tag, stop, state);
+        if (state.beat.id === 'moon-picture') {
+          check(state.landedOn === 'Moon' && !state.panelOpen && !state.surface, `${tag} ${stop}/moon-picture: landed on the Moon with the panel still closed`, { landed: state.landedOn, panel: state.panelOpen });
+        }
       }
       if (Date.now() - started > 420_000) {
         check(false, `${tag} ${stop}: never settled`, state);
@@ -270,14 +282,43 @@ try {
     check((await pressedCount(page)) === 0, `${tag} saturn: no press class left on any control`);
     await shot(page, `${tag}-12-saturn`);
 
-    // The remaining stops, as they stand today (their revamp is the next phase).
+    // The Moon: the chip beat, then the you-try. The desktop user taps the row
+    // themselves; the phone user presses Show me.
     await page.evaluate(() => window.__moon.tutorialNext());
-    await sleep(350);
-    await shot(page, `${tag}-13-moon-theater`);
-    const moon = await waitReady(page, tag, 'moon');
-    check(moon.state.landedOn === 'Moon' && moon.state.panelOpen, `${tag} moon: landed with the panel open`, moon.state);
+    await sleep(150);
     card = await cardText(page);
+    check(/Tap the Moon/.test(card.body) && card.primary === 'Arriving…', `${tag} moon: the staging copy and the held primary`, { body: card.body, primary: card.primary });
+    const moon = await waitReady(page, tag, 'moon', {
+      act: async (state) => {
+        const waiting = await cardText(page);
+        check(waiting.primary === 'Show me' && waiting.primaryDisabled === false, `${tag} moon/moon-row: the primary offers Show me while it waits`, waiting.primary);
+        check(state.spotlight !== null, `${tag} moon/moon-row: the Moon row is ringed while it waits`);
+        await assertSpotlight(page, tag, 'moon', state);
+        await shot(page, `${tag}-moon-await`);
+        if (tag === 'desktop') {
+          await page.click('#deck-list .pk-row[data-name="Moon"]');
+          note('  acted: tapped the Moon row');
+        } else {
+          await page.click('#tutorial-primary');
+          note('  acted: pressed Show me');
+        }
+      },
+    });
+    const m = moon.state;
+    check(m.landedOn === 'Moon' && m.surface && m.panelOpen !== null, `${tag} moon: ends on the Moon in surface view`, { landed: m.landedOn, surface: m.surface });
+    check(m.earthOnScreen === true, `${tag} moon: Earth is on screen after Look up`, m.earthOnScreen);
+    check(m.labelsShown === false, `${tag} moon: the labels stay out of the picture`, m.labelsShown);
+    check(moon.seen.veilNotes.length === 0 || moon.seen.veilNotes.every((n) => /Landing on the Moon/.test(n)), `${tag} moon: the veil caption was the tour's (or no veil was needed)`, moon.seen.veilNotes);
+    if (tag === 'desktop') {
+      check(m.userActed || moon.beatCount >= 3, `${tag} moon: the user's own tap was recognised`, { userActed: m.userActed, beats: moon.beatCount });
+    } else {
+      check(moon.seen.presses.some((p) => /pk-row/.test(p)), `${tag} moon: Show me visibly pressed the row`, moon.seen.presses);
+    }
+    card = await cardText(page);
+    note(`  card ${JSON.stringify(card)}`);
     check(card.dots[0] === 'done' && card.dots[1] === 'current', `${tag} moon: the dots advance`, card.dots);
+    check(/Earth · \d+% lit/.test(card.kicker), `${tag} moon: the kicker is Earth's live phase`, card.kicker);
+    check(card.body === 'Look up, and there is Earth.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
     await shot(page, `${tag}-14-moon`);
     await page.evaluate(() => window.__moon.tutorialNext());
     const timelapse = await waitReady(page, tag, 'timelapse');

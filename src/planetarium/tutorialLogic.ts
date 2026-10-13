@@ -63,14 +63,21 @@ export interface TutorialStep {
 /** A control the spotlight can ring, by what it is rather than by element. */
 export type TutorialTargetRef =
   | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-menu' }
-  | { kind: 'deck-row'; name: string };
+  | { kind: 'deck-row'; name: string }
+  /** The Observatory panel's Look up window. */
+  | { kind: 'panel-window' };
 
 /** The scene work a beat's press stands for. The host performs it and reports
- *  when it has landed (the deck open with the row in view; the arrival done). */
+ *  when it has landed (the deck open with the row in view; the arrival done;
+ *  the panel open; the surface view up). 'arrive' is the tour's own composed
+ *  arrival; 'observe' is the deck row's real commit, the Observatory landing. */
 export type TutorialPerform =
   | { kind: 'none' }
   | { kind: 'open-deck'; verb: 'travel' | 'observe'; reveal: string }
-  | { kind: 'arrive' };
+  | { kind: 'arrive' }
+  | { kind: 'observe'; name: string; parentPlanet?: string }
+  | { kind: 'open-panel' }
+  | { kind: 'look-up' };
 
 export interface TutorialBeat {
   id: string;
@@ -87,6 +94,13 @@ export interface TutorialBeat {
   minHoldMs: number;
   /** Caption on the arrival veil, shown from its first frame, when `perform` raises one. */
   veilNote?: string;
+  /** "You try": after its hold the beat waits, without a deadline, for the
+   *  user's own press on the control (recognised when it starts) — or for
+   *  "Show me", which the card's primary reads meanwhile and which presses
+   *  the control for them. Both end in the same perform and the same guard. */
+  await?: boolean;
+  /** Card copy while this beat is current, over the step's staging copy. */
+  body?: string;
 }
 
 /** The visible press on the real control: scale and the chip's own on-colour. */
@@ -94,6 +108,45 @@ export const TUTORIAL_PRESS_MS = 180;
 
 /** A beat's hold is a minimum readable time, never a deadline. */
 export const TUTORIAL_BEAT_HOLD_MS = 1400;
+
+const MOON_LANDED_BODY =
+  'You’re standing on the Moon. The panel reads this sky: phases, distances, and what happens next.';
+
+const MOON_BEATS: readonly TutorialBeat[] = [
+  {
+    id: 'observatory-chip',
+    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-observatory' }, label: 'Observatory', key: 'O' },
+    press: true,
+    perform: { kind: 'open-deck', verb: 'observe', reveal: 'Moon' },
+    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+  },
+  {
+    id: 'moon-row',
+    spotlight: { target: { kind: 'deck-row', name: 'Moon' }, label: 'Tap the Moon' },
+    press: true,
+    await: true,
+    perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },
+    minHoldMs: 0,
+    veilNote: 'Landing on the Moon…',
+  },
+  // Picture first: two seconds of the Moon from orbit, then the panel.
+  {
+    id: 'moon-picture',
+    spotlight: null,
+    press: false,
+    perform: { kind: 'open-panel' },
+    minHoldMs: 2000,
+    body: MOON_LANDED_BODY,
+  },
+  {
+    id: 'look-up',
+    spotlight: { target: { kind: 'panel-window' }, label: 'Look up' },
+    press: true,
+    perform: { kind: 'look-up' },
+    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    body: MOON_LANDED_BODY,
+  },
+];
 
 const SATURN_BEATS: readonly TutorialBeat[] = [
   {
@@ -119,6 +172,8 @@ const SATURN_BEATS: readonly TutorialBeat[] = [
 export const TUTORIAL_SETTLE_DWELL_MS = 350;
 
 const SCENE_SETTLE: SettleNeeds = { arrival: true, fov: false, totality: false, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
+// A stop that ends in surface view waits out the entry glide too.
+const LOOKUP_SETTLE: SettleNeeds = { arrival: true, fov: true, totality: false, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
 // Surface settle is the eclipse card's: it also holds Next for the totality moment.
 const SURFACE_SETTLE: SettleNeeds = { arrival: true, fov: true, totality: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
 const CARD_ONLY_SETTLE: SettleNeeds = { arrival: false, fov: false, totality: false, dwellMs: 0 };
@@ -140,13 +195,16 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   },
   {
     id: 'moon',
-    title: 'Landed on the Moon',
-    kicker: null,
-    body: 'The {observatory} Observatory button, or O, lands you on a world so you can follow it through space and time, observe its neighbours, read its stats, or see the celestial events coming up. That’s Earth overhead, and the panel follows this sky.',
-    primaryLabel: 'Next: Jupiter',
+    title: 'Stand on a world',
+    kicker: 'The Moon',
+    bodyDuring: 'The {observatory} Observatory lands you on a world. Tap the Moon.',
+    // The kicker is live once the view is up: Earth's phase as the panel reads it.
+    body: 'Look up, and there is Earth.',
+    beats: MOON_BEATS,
+    primaryLabel: 'Next: speed up time',
     ghostLabel: 'Skip tutorial',
     stage: 'moon',
-    settle: SCENE_SETTLE,
+    settle: LOOKUP_SETTLE,
   },
   {
     id: 'timelapse',
@@ -202,10 +260,11 @@ export function tutorialProgress(index: number): { count: number; current: numbe
 
 export interface BeatRunState {
   index: number;
-  /** 'enter' shows the beat's spotlight; 'hold' counts visible time; 'press'
-   *  is the visible press; 'perform' waits for the host's scene work; 'done'
-   *  means the list has finished and the host should mark the step staged. */
-  stage: 'enter' | 'hold' | 'press' | 'perform' | 'done';
+  /** 'enter' shows the beat's spotlight; 'hold' counts visible time; 'await'
+   *  is a you-try beat waiting for the user (no deadline); 'press' is the
+   *  visible press; 'perform' waits for the host's scene work; 'done' means
+   *  the list has finished and the host should mark the step staged. */
+  stage: 'enter' | 'hold' | 'await' | 'press' | 'perform' | 'done';
   heldMs: number;
   pressedMs: number;
 }
@@ -225,6 +284,11 @@ export interface BeatSignals {
   targetPresent: boolean;
   /** The beat's perform has landed. */
   performed: boolean;
+  /** The user pressed the awaited control themselves (their press is the
+   *  perform, already under way). Read on await beats only. */
+  userActed: boolean;
+  /** "Show me" was pressed this frame (one-shot). Read in the await stage only. */
+  showMe: boolean;
 }
 
 export type BeatEffect =
@@ -239,7 +303,10 @@ export type BeatEffect =
  * apply them. A beat ends only when its hold has passed AND its perform has
  * landed, never on the hold alone; a control that is not on screen skips the
  * spotlight and the press but keeps the hold (the card narrates on) and still
- * performs, so a missing element can never strand the stop.
+ * performs, so a missing element can never strand the stop. A you-try beat
+ * waits after its hold for the user's own press (recognised at its start,
+ * even mid-hold) or for "Show me"; both end in the same perform and the same
+ * landed guard.
  */
 export function stepBeatRun(
   beats: readonly TutorialBeat[],
@@ -277,8 +344,28 @@ export function stepBeatRun(
       next.heldMs = 0;
       break;
     case 'hold':
+      if (beat.await && signals.userActed) {
+        // Their press is the perform, already under way: wait for it to land.
+        next.stage = 'perform';
+        break;
+      }
       if (!signals.paused) next.heldMs += signals.dtMs;
       if (next.heldMs >= beat.minHoldMs) {
+        if (beat.await) {
+          next.stage = 'await';
+        } else if (beat.press && beat.spotlight && signals.targetPresent) {
+          next.stage = 'press';
+          next.pressedMs = 0;
+          effects.push({ kind: 'press-down', beat });
+        } else {
+          startPerform();
+        }
+      }
+      break;
+    case 'await':
+      if (signals.userActed) {
+        next.stage = 'perform';
+      } else if (signals.showMe) {
         if (beat.press && beat.spotlight && signals.targetPresent) {
           next.stage = 'press';
           next.pressedMs = 0;

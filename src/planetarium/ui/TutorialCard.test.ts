@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   TUTORIAL_ARRIVING_LABEL,
+  TUTORIAL_SHOW_ME_LABEL,
   tutorialBodyFor,
   tutorialBodySegments,
   tutorialCardModel,
@@ -52,10 +53,30 @@ describe('tutorialCardModel', () => {
       expect(tutorialBodyFor(saturn, phase)).toBe(saturn.body);
     }
     // A step without staging copy shows its one body throughout.
-    const moon = stepById('moon');
-    expect(tutorialBodyFor(moon, 'staging')).toBe(moon.body);
+    const plain = TUTORIAL_STEPS.find((s) => !s.bodyDuring && s.stage !== 'none')!;
+    expect(tutorialBodyFor(plain, 'staging')).toBe(plain.body);
     expect(model('saturn', 'staging').body).toBe(saturn.bodyDuring);
     expect(model('saturn', 'ready').body).toBe(saturn.body);
+  });
+
+  it('a you-try beat makes the primary a live Show me, and a beat with its own copy shows it', () => {
+    const moon = stepById('moon');
+    const [chip, row, picture] = moon.beats!;
+    const waiting = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row });
+    expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false, busy: false });
+    expect(waiting.body).toBe(moon.bodyDuring);
+    const ringing = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
+    expect(ringing.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
+    expect(ringing.primary.disabled).toBe(true);
+    const landed = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: picture });
+    expect(landed.body).toBe(picture.body);
+    expect(landed.primary.busy).toBe(true);
+    // Once settled the beat no longer matters: the lesson and Next.
+    const settled = tutorialCardModel(moon, indexOf('moon'), 'ready', { beat: row });
+    expect(settled.body).toBe(moon.body);
+    expect(settled.primary.action).toBe('advance');
+    expect(tutorialBodyFor(moon, 'staging', picture)).toBe(picture.body);
+    expect(tutorialBodyFor(moon, 'staging', null)).toBe(moon.bodyDuring);
   });
 
   it('the kicker is the step’s own line unless the host supplies a live one', () => {
@@ -123,13 +144,13 @@ describe('tutorialBodySegments', () => {
         .filter((s) => s.kind === 'icon')
         .map((s) => (s.kind === 'icon' ? s.icon : ''));
     expect(icons(stepById('saturn').bodyDuring!)).toEqual(['teleport']);
-    expect(icons(stepById('moon').body)).toEqual(['observatory']);
+    expect(icons(stepById('moon').bodyDuring!)).toEqual(['observatory']);
     expect(icons(stepById('wrap').body)).toEqual(['teleport', 'observatory']);
   });
 
   it('no braces survive in any card text (a typo’d token would render literally)', () => {
     for (const step of TUTORIAL_STEPS) {
-      for (const body of [step.body, step.bodyDuring ?? '']) {
+      for (const body of [step.body, step.bodyDuring ?? '', ...(step.beats ?? []).map((b) => b.body ?? '')]) {
         for (const seg of tutorialBodySegments(body)) {
           if (seg.kind === 'text') expect(seg.text).not.toMatch(/[{}]/);
         }

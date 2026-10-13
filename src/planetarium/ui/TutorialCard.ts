@@ -11,7 +11,7 @@
  */
 import { setText } from '../../shared/dom';
 import { tutorialProgress } from '../tutorialLogic';
-import type { TutorialPhase, TutorialStep } from '../tutorialLogic';
+import type { TutorialBeat, TutorialPhase, TutorialStep } from '../tutorialLogic';
 
 export interface TutorialCardModel {
   /** The stop dots and the counter they stand in for ("Stop 2 of 4" to a screen reader). */
@@ -20,8 +20,10 @@ export interface TutorialCardModel {
   /** Mono line for the place or the date; null hides it. */
   kicker: string | null;
   body: string;
-  /** `busy` is the held state while a stop stages — the label says why Next waits. */
-  primary: { label: string; action: 'advance' | 'return'; disabled: boolean; busy: boolean };
+  /** `busy` is the held state while a stop stages — the label says why Next
+   *  waits. 'show-me' is the you-try beat's offer: live, and it presses the
+   *  awaited control for the user. */
+  primary: { label: string; action: 'advance' | 'return' | 'show-me'; disabled: boolean; busy: boolean };
   /** null hides the ghost button (the wrap card: ending always takes you back). */
   ghost: { label: string; disabled: boolean } | null;
   /** Re-stages the previous stop. null hides it on the first stop, where
@@ -31,6 +33,8 @@ export interface TutorialCardModel {
 
 /** The primary's label while a stop's scene is still on its way. */
 export const TUTORIAL_ARRIVING_LABEL = 'Arriving…';
+/** The primary's label while a you-try beat waits for the user. */
+export const TUTORIAL_SHOW_ME_LABEL = 'Show me';
 
 /** A run of body text, or one of the action-cluster button glyphs inline. */
 export type TutorialBodySegment =
@@ -53,10 +57,12 @@ export function tutorialBodySegments(body: string): TutorialBodySegment[] {
     );
 }
 
-/** The body a step shows in a phase: the staging copy while its beats play
- *  and its arrival is pending, the settled copy from the moment the scene is up. */
-export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase): string {
-  return phase === 'staging' && step.bodyDuring ? step.bodyDuring : step.body;
+/** The body a step shows in a phase: while staging, the current beat's own
+ *  copy if it has one, else the step's staging copy; the settled copy from
+ *  the moment the scene is up. */
+export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase, beat: TutorialBeat | null = null): string {
+  if (phase !== 'staging') return step.body;
+  return beat?.body ?? step.bodyDuring ?? step.body;
 }
 
 /**
@@ -66,27 +72,33 @@ export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase): strin
  * reads "Arriving…" so the wait explains itself; skip stays live mid-flight
  * (stopTutorial absorbs an in-flight arrival), and only the restore actually
  * running ('ending') disables everything. `kicker` overrides the step's own
- * line when the host has a live one (a distance, a phase, a countdown).
+ * line when the host has a live one (a distance, a phase, a countdown);
+ * `beat` is the current beat while staging — its copy, and on a you-try beat
+ * the primary becomes a live "Show me".
  */
 export function tutorialCardModel(
   step: TutorialStep,
   index: number,
   phase: TutorialPhase,
-  opts: { kicker?: string | null } = {},
+  opts: { kicker?: string | null; beat?: TutorialBeat | null } = {},
 ): TutorialCardModel {
   const wrap = step.id === 'wrap';
-  const busy = step.stage !== 'none' && (phase === 'staging' || phase === 'settling');
+  const beat = opts.beat ?? null;
+  const awaiting = phase === 'staging' && beat?.await === true;
+  const busy = !awaiting && step.stage !== 'none' && (phase === 'staging' || phase === 'settling');
   return {
     progress: tutorialProgress(index),
     title: step.title,
     kicker: opts.kicker === undefined ? step.kicker : opts.kicker,
-    body: tutorialBodyFor(step, phase),
-    primary: {
-      label: busy ? TUTORIAL_ARRIVING_LABEL : step.primaryLabel,
-      action: wrap ? 'return' : 'advance',
-      disabled: phase !== 'ready',
-      busy,
-    },
+    body: tutorialBodyFor(step, phase, beat),
+    primary: awaiting
+      ? { label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false, busy: false }
+      : {
+          label: busy ? TUTORIAL_ARRIVING_LABEL : step.primaryLabel,
+          action: wrap ? 'return' : 'advance',
+          disabled: phase !== 'ready',
+          busy,
+        },
     ghost:
       step.ghostLabel === null
         ? null
@@ -117,6 +129,7 @@ export class TutorialCard {
     private onBack: () => void,
     private onSkip: () => void,
     private onReturn: () => void,
+    private onShowMe: () => void,
   ) {}
 
   bind(): void {
@@ -134,7 +147,17 @@ export class TutorialCard {
     this.wired = true;
     this.primaryEl?.addEventListener('click', () => {
       if (!this.model || this.model.primary.disabled) return;
-      (this.model.primary.action === 'return' ? this.onReturn : this.onAdvance)();
+      switch (this.model.primary.action) {
+        case 'return':
+          this.onReturn();
+          break;
+        case 'show-me':
+          this.onShowMe();
+          break;
+        case 'advance':
+          this.onAdvance();
+          break;
+      }
     });
     this.ghostEl?.addEventListener('click', () => {
       if (!this.model?.ghost || this.model.ghost.disabled) return;

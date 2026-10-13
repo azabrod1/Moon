@@ -59,6 +59,27 @@ try {
         if (opts.helpSeen) localStorage.setItem('planetarium-help-seen', '1');
         localStorage.setItem('planetarium-surface-hint-seen', '1');
       } catch {}
+      // Record what the page shows between polls: every veil caption shown,
+      // and every press class put on a control (a press lasts 180 ms of
+      // visible time — one frame under software rendering).
+      window.__walk = { veilNotes: [], presses: [] };
+      const watch = () => {
+        const note = document.getElementById('arrival-veil-note');
+        if (note) {
+          new MutationObserver(() => {
+            if (note.classList.contains('show') && note.textContent) window.__walk.veilNotes.push(note.textContent);
+          }).observe(note, { attributes: true, attributeFilter: ['class'], childList: true, characterData: true, subtree: true });
+        }
+        new MutationObserver((records) => {
+          for (const record of records) {
+            const el = record.target;
+            if (el instanceof Element && el.classList.contains('tutorial-press')) {
+              window.__walk.presses.push(el.id || el.className);
+            }
+          }
+        }).observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true });
+      };
+      if (document.body) watch(); else document.addEventListener('DOMContentLoaded', watch);
     }, { helpSeen });
     return context;
   };
@@ -89,22 +110,21 @@ try {
     };
   });
   const pressedCount = (page) => page.evaluate(() => document.querySelectorAll('.tutorial-press').length);
-  const veilNote = (page) => page.evaluate(() => {
-    const el = document.getElementById('arrival-veil-note');
-    return el ? { text: el.textContent, shown: el.classList.contains('show') } : null;
-  });
+  const recorded = (page) => page.evaluate(() => ({ veilNotes: [...window.__walk.veilNotes], presses: [...window.__walk.presses] }));
+  const resetRecorder = (page) => page.evaluate(() => { window.__walk.veilNotes = []; window.__walk.presses = []; });
 
   /** Wait for the stop to settle, screenshotting each new beat/stage on the way. */
   const waitReady = async (page, tag, stop, { shots = true } = {}) => {
     const started = Date.now();
+    await resetRecorder(page);
     let lastBeat = null;
-    let noteSeen = null;
     let beatCount = 0;
     for (;;) {
       const state = await tstate(page);
       if (!state.active || state.phase === 'ready') {
-        note(`  ${stop}: ready after ${((Date.now() - started) / 1000).toFixed(1)}s phase=${state.phase} landed=${state.landedOn}`);
-        return { state, noteSeen, beatCount, seconds: (Date.now() - started) / 1000 };
+        const seen = await recorded(page);
+        note(`  ${stop}: ready after ${((Date.now() - started) / 1000).toFixed(1)}s phase=${state.phase} landed=${state.landedOn} veil=${JSON.stringify(seen.veilNotes)} presses=${JSON.stringify(seen.presses)}`);
+        return { state, seen, beatCount, seconds: (Date.now() - started) / 1000 };
       }
       const key = state.beat ? `${state.beat.id}:${state.beat.stage}` : null;
       if (key && key !== lastBeat) {
@@ -112,17 +132,10 @@ try {
         beatCount++;
         if (shots) await shot(page, `${tag}-${stop}-beat-${beatCount}-${state.beat.id}-${state.beat.stage}`);
         if (state.beat.stage === 'hold') await assertSpotlight(page, tag, stop, state);
-        if (state.beat.stage === 'press') {
-          check((await pressedCount(page)) >= 1, `${tag} ${stop}: the press shows on a real control`);
-        }
-      }
-      if (state.veilCovering) {
-        const vn = await veilNote(page);
-        if (vn?.shown && vn.text) noteSeen = vn.text;
       }
       if (Date.now() - started > 420_000) {
         check(false, `${tag} ${stop}: never settled`, state);
-        return { state, noteSeen, beatCount, seconds: (Date.now() - started) / 1000 };
+        return { state, seen: await recorded(page), beatCount, seconds: (Date.now() - started) / 1000 };
       }
       await sleep(120);
     }
@@ -167,6 +180,9 @@ try {
     let card = await cardText(page);
     note(`  card ${JSON.stringify(card)}`);
     check(card.dots.length === 4 && !card.dots.includes('current'), `${tag} welcome: four stop dots, none lit`, card.dots);
+    // Under software rendering the card's buttons rasterize a frame or two
+    // after its text; give the capture that frame.
+    await sleep(1500);
     await shot(page, `${tag}-10-welcome`);
 
     // Saturn: the demonstration, beat by beat, then the composed arrival.
@@ -177,7 +193,9 @@ try {
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     const saturn = await waitReady(page, tag, 'saturn');
     check(saturn.beatCount >= 4, `${tag} saturn: the beats played (chip hold, press, row hold, press)`, saturn.beatCount);
-    check(saturn.noteSeen === null || /Saturn/.test(saturn.noteSeen), `${tag} saturn: the veil carried the tour's caption (or no veil was needed)`, saturn.noteSeen);
+    check(saturn.seen.presses.includes('planetarium-btn-travel'), `${tag} saturn: the Teleport chip was visibly pressed`, saturn.seen.presses);
+    check(saturn.seen.presses.some((p) => /pk-row/.test(p)), `${tag} saturn: the Saturn row was visibly pressed`, saturn.seen.presses);
+    check(saturn.seen.veilNotes.length === 0 || saturn.seen.veilNotes.every((n) => /Teleporting to Saturn/.test(n)), `${tag} saturn: every veil caption was the tour's own (or no veil was needed)`, saturn.seen.veilNotes);
     card = await cardText(page);
     note(`  card ${JSON.stringify(card)}`);
     check(card.dots[0] === 'current', `${tag} saturn: the first dot is lit`, card.dots);
@@ -229,8 +247,11 @@ try {
     await shot(page, `${tag}-20-after-end`);
     const after = await tstate(page);
     note(`  end state ${JSON.stringify(after)}`);
+    // The boot ship is under way (a cruise jump always arrives moving), so the
+    // restore puts it back on its course: the same heading, and a position
+    // within the few light-seconds it flies between the two samples.
     const dist = Math.hypot(after.ship.x - before.ship.x, after.ship.y - before.ship.y, after.ship.z - before.ship.z);
-    check(dist < 1e-6, `${tag} end: the ship is back where it was`, { dist });
+    check(dist < 0.02, `${tag} end: the ship is back on its course (AU from the start sample)`, { dist });
     check(Math.abs(after.ship.heading - before.ship.heading) < 1e-6 && Math.abs(after.ship.pitch - before.ship.pitch) < 1e-6, `${tag} end: heading restored`, { before: before.ship, after: after.ship });
     check(after.landedOn === before.landedOn, `${tag} end: landing restored`, { before: before.landedOn, after: after.landedOn });
     check(Math.abs(after.timeMs - Date.now()) < 180_000 && after.rate === 1 && !after.paused, `${tag} end: the clock is live again`, { timeMs: after.timeMs, rate: after.rate });
@@ -259,7 +280,7 @@ try {
     check(!(await page.evaluate(() => document.getElementById('tutorial-spotlight')?.classList.contains('visible'))), 'esc: the layer is hidden');
     check(!(await page.evaluate(() => document.getElementById('deck')?.classList.contains('visible'))), 'esc: the deck is closed');
     const dist = Math.hypot(after.ship.x - before.ship.x, after.ship.y - before.ship.y, after.ship.z - before.ship.z);
-    check(dist < 1e-6, 'esc: the ship never moved (no scene was staged)', { dist });
+    check(dist < 0.02 && after.ship.heading === before.ship.heading, 'esc: the ship kept its own course (no scene was staged)', { dist });
     await shot(page, 'desktop-31-esc-after');
     await context.close();
   }

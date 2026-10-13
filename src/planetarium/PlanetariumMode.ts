@@ -461,6 +461,7 @@ import {
   formatEventRowTime,
   liveEventVerb,
   ObservatoryPanel,
+  observatoryEventsStatus,
   observatoryPhaseText,
   type ObservatoryEventRow,
   type ObservatoryRenderExtras,
@@ -2430,6 +2431,16 @@ export class PlanetariumMode {
   // playback can run the clock behind it, leaving every event in between
   // missing from "Upcoming" — the expiry check restarts off this anchor.
   private observatoryEventAnchorUtcMs: number | null = null;
+  // A listed event has ended since the sweep last started, so its spec is
+  // missing its next one: the next idle moment restarts the sweep.
+  private observatoryEventsStale = false;
+  // The running sweep rolls a populated list forward: its finds are published
+  // together when it completes, never one by one, so the rows on screen hold
+  // still while it works. A sweep filling an empty list publishes as it finds.
+  private observatoryEventSweepQuiet = false;
+  // The events behind the rows on screen, soonest first. A row that ends
+  // leaves this list; a sweep that completes replaces it.
+  private observatoryListedEvents: ShadowEvent[] = [];
   // What a sweep slice found this frame. One array, reused by both callers —
   // they run in the same thread and read it before releasing the frame.
   private eventSearchSlice: ShadowEvent[] = [];
@@ -19290,9 +19301,13 @@ export class PlanetariumMode {
   /**
    * Restart the chunked upcoming-events search from the current clock.
    * Open/jump/date-set restarts clear the old results (the clock may have
-   * moved anywhere); the expiry path keeps still-valid rows on screen and
-   * only drops completed ones, so the list never blanks mid-watch while the
-   * sweep re-fills (fresh finds overwrite per spec key as they arrive).
+   * moved anywhere) and publish as they find, so an empty list fills before
+   * the reader's eyes. The expiry path keeps still-valid rows on screen and
+   * sweeps quietly: the list never blanks mid-watch while the sweep re-fills,
+   * and it never reorders under the reader either, because the quiet sweep's
+   * finds are published together when it completes. Fresh finds still
+   * overwrite per spec key as they arrive, so the window's live-event question
+   * reads them at once.
    */
   private startObservatoryEventSearch(opts?: { preserveValidResults?: boolean }) {
     const parentPlanet = this.observatoryParentPlanetName();
@@ -19301,13 +19316,12 @@ export class PlanetariumMode {
       return;
     }
     if (opts?.preserveValidResults) {
-      const now = this.timeState.currentUtcMs;
-      for (const [key, event] of this.observatoryEventResults) {
-        if (event.endUtcMs <= now) this.observatoryEventResults.delete(key);
-      }
+      this.pruneEndedObservatoryEvents();
     } else {
       this.observatoryEventResults.clear();
     }
+    this.observatoryEventSweepQuiet = this.observatoryEventResults.size > 0;
+    this.observatoryEventsStale = false;
     // A moonless system has no shadow events to search — the shared sweep
     // refuses one, and the panel publishes the empty list instead of ticking a
     // zero-spec search every frame.
@@ -19324,18 +19338,45 @@ export class PlanetariumMode {
     this.observatoryEventResults.clear();
     this.observatoryRowsMinEndUtcMs = null;
     this.observatoryEventAnchorUtcMs = null;
+    this.observatoryEventsStale = false;
+    this.observatoryEventSweepQuiet = false;
+    this.observatoryListedEvents = [];
+  }
+
+  /** Drop every result the clock has passed. Each one leaves its spec without
+   *  a next event, which only a new sweep can supply: the list is stale. */
+  private pruneEndedObservatoryEvents() {
+    const now = this.timeState.currentUtcMs;
+    for (const [key, event] of this.observatoryEventResults) {
+      if (event.endUtcMs > now) continue;
+      this.observatoryEventResults.delete(key);
+      this.observatoryEventsStale = true;
+    }
   }
 
   /**
    * With the clock running (jumps park at T−3 min, 1×), displayed events
-   * complete on their own: once `now` crosses the earliest displayed end,
-   * restart the chunked search so the list and the Earth eclipse metas roll
-   * forward — preserving still-valid rows so the list never blanks. Cheap
-   * 8 Hz check; never fires while a search is in flight (which also bounds
-   * the restart churn at absurd time rates to one sweep per completion).
+   * complete on their own. An ended row leaves the list the moment the clock
+   * passes it — a row reading "ended" is not upcoming. With no sweep in
+   * flight a new one starts at once, preserving the rows still standing, and
+   * its own publish takes the ended row out and moves the next known event
+   * up; the quiet sweep then republishes once, complete, so the list and the
+   * Earth eclipse metas roll forward in one step and the list never blanks.
+   * Mid-sweep the row just leaves, and the sweep's completion refills. Cheap
+   * 8 Hz check; a sweep is never restarted while one is in flight, which
+   * bounds the churn at absurd time rates to one sweep per completion — and
+   * there a completion can itself bring events the clock has already passed,
+   * which publish drops (marking the list stale) and the next check sweeps
+   * again for.
    */
   private invalidateExpiredObservatoryEvents() {
-    if (!this.observatoryPanel.isOpen() || this.observatoryEventSearch) return;
+    if (!this.observatoryPanel.isOpen()) return;
+    const minEnd = this.observatoryRowsMinEndUtcMs;
+    const rowEnded = minEnd !== null && this.timeState.currentUtcMs > minEnd;
+    if (this.observatoryEventSearch) {
+      if (rowEnded) this.dropEndedObservatoryRows();
+      return;
+    }
     // Reverse playback (the transport rail steps below pause into reverse)
     // can run the clock BEHIND the anchor the list was searched forward from:
     // every event between now and the anchor is then missing from "Upcoming",
@@ -19351,8 +19392,7 @@ export class PlanetariumMode {
       this.startObservatoryEventSearch({ preserveValidResults: true });
       return;
     }
-    const minEnd = this.observatoryRowsMinEndUtcMs;
-    if (minEnd === null || this.timeState.currentUtcMs <= minEnd) return;
+    if (!rowEnded && !this.observatoryEventsStale) return;
     this.startObservatoryEventSearch({ preserveValidResults: true });
   }
 
@@ -19379,16 +19419,39 @@ export class PlanetariumMode {
     for (const event of this.eventSearchSlice) {
       this.observatoryEventResults.set(shadowEventSpecKey(event.spec), event);
     }
-    if (this.eventSearchSlice.length > 0 || done) this.publishObservatoryEvents();
+    // A quiet sweep (rolling a populated list forward) shows its finds together
+    // at the end; one filling an empty list shows each as it lands.
+    const publish = done || (this.eventSearchSlice.length > 0 && !this.observatoryEventSweepQuiet);
+    if (publish) this.publishObservatoryEvents();
     if (done) this.observatoryEventSearch = null;
   }
 
-  /** Push the current result set (sorted, capped) + search status into the panel. */
+  /** Push the current result set (sorted, capped) + search status into the
+   *  panel. Results the clock has passed are dropped first — nothing ended is
+   *  ever listed as upcoming, and the drop marks the list stale for the next
+   *  sweep. Idempotent on the DOM: the panel rebuilds only what changed. */
   private publishObservatoryEvents() {
-    const search = this.observatoryEventSearch;
-    const events = [...this.observatoryEventResults.values()]
+    this.pruneEndedObservatoryEvents();
+    this.observatoryListedEvents = [...this.observatoryEventResults.values()]
       .sort((a, b) => a.peakUtcMs - b.peakUtcMs)
       .slice(0, PlanetariumMode.OBSERVATORY_EVENTS_MAX_ROWS);
+    this.renderObservatoryEventRows();
+  }
+
+  /** An ended row leaves the list at once and nothing else moves: the rows
+   *  around it stay where they are, and the running sweep's finds stay
+   *  unpublished until it completes — only then do new rows arrive, together. */
+  private dropEndedObservatoryRows() {
+    this.pruneEndedObservatoryEvents();
+    const now = this.timeState.currentUtcMs;
+    this.observatoryListedEvents = this.observatoryListedEvents.filter((event) => event.endUtcMs > now);
+    this.renderObservatoryEventRows();
+  }
+
+  /** The listed events as rows, plus the search status, into the panel. */
+  private renderObservatoryEventRows() {
+    const search = this.observatoryEventSearch;
+    const events = this.observatoryListedEvents;
     const landedInfo = this.surfaceLandedInfo();
     const rows: ObservatoryEventRow[] = events.map(e => {
       // ∅ of the body this event is *watched* on from here — the surface-
@@ -19413,13 +19476,16 @@ export class PlanetariumMode {
     this.observatoryRowsMinEndUtcMs = events.length
       ? events.reduce((min, e) => Math.min(min, e.endUtcMs), Infinity)
       : null;
+    const status = observatoryEventsStatus({
+      scanning: search && search.index < search.specs.length
+        ? { index: search.index, count: search.specs.length }
+        : null,
+      quiet: this.observatoryEventSweepQuiet,
+      rowCount: rows.length,
+    });
     // Sheet-form panel height follows the row count — the chevron's cached
-    // clamp rect must re-measure.
-    this.panelRectCache = null;
-    const status = search && search.index < search.specs.length
-      ? `Scanning ${search.index + 1}/${search.specs.length}…`
-      : rows.length === 0 ? 'No events in range' : '';
-    this.observatoryPanel.setEvents(rows, status);
+    // clamp rect must re-measure when the list was rebuilt.
+    if (this.observatoryPanel.setEvents(rows, status)) this.panelRectCache = null;
   }
 
   /**

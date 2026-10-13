@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  eventRowsRenderKey,
   formatCountdown,
   liveEventVerb,
+  observatoryEventsStatus,
   observatoryPhaseText,
   observatoryWatchRowState,
   observatoryWindowKey,
@@ -9,6 +11,7 @@ import {
   phaseGlyphLitPath,
   phaseGlyphPaint,
   sheetReleaseTarget,
+  type ObservatoryEventRow,
   type ObservatoryWindowInput,
 } from './ObservatoryPanel';
 import type { ShadowEvent } from '../../astronomy/shadows';
@@ -542,5 +545,84 @@ describe('observatoryWindowKey', () => {
         { visible: false, title: '', meta: '' },
       ),
     );
+  });
+});
+
+// The line under the upcoming-events list. The one thing it must never do is
+// tick under rows the reader is using: a fast clock restarts the sweep every
+// few seconds, and a counter that comes and goes moves the whole sheet.
+describe('observatoryEventsStatus', () => {
+  it('a sweep filling an empty list says how far it has got', () => {
+    expect(observatoryEventsStatus({ scanning: { index: 0, count: 28 }, quiet: false, rowCount: 0 })).toBe('Scanning 1/28…');
+    expect(observatoryEventsStatus({ scanning: { index: 13, count: 28 }, quiet: false, rowCount: 3 })).toBe('Scanning 14/28…');
+  });
+
+  it('a quiet sweep rolling a populated list forward says nothing', () => {
+    expect(observatoryEventsStatus({ scanning: { index: 13, count: 28 }, quiet: true, rowCount: 6 })).toBe('');
+  });
+
+  it('a quiet sweep whose rows have all ended says why the list is empty', () => {
+    expect(observatoryEventsStatus({ scanning: { index: 13, count: 28 }, quiet: true, rowCount: 0 })).toBe('Scanning 14/28…');
+  });
+
+  it('once the sweep is done an empty list says so, a filled one nothing', () => {
+    expect(observatoryEventsStatus({ scanning: null, quiet: false, rowCount: 0 })).toBe('No events in range');
+    expect(observatoryEventsStatus({ scanning: null, quiet: true, rowCount: 0 })).toBe('No events in range');
+    expect(observatoryEventsStatus({ scanning: null, quiet: false, rowCount: 4 })).toBe('');
+  });
+});
+
+// The list is rebuilt only when something it renders changes: the key is the
+// rendered output, so the numbers behind it can drift without moving the DOM.
+describe('eventRowsRenderKey', () => {
+  const HOUR = 3_600_000;
+  const PEAK = Date.UTC(2027, 7, 2, 10, 4, 0);
+  const row = (overrides: Partial<ObservatoryEventRow> & { peakUtcMs?: number } = {}): ObservatoryEventRow => {
+    const peakUtcMs = overrides.peakUtcMs ?? PEAK;
+    return {
+      event: {
+        spec: { kind: 'shadow-transit', moonName: 'Io', parentPlanet: 'Jupiter' },
+        startUtcMs: peakUtcMs - HOUR,
+        peakUtcMs,
+        endUtcMs: peakUtcMs + HOUR,
+        classification: 'total',
+      } as unknown as ShadowEvent,
+      label: "Io's shadow crosses Jupiter",
+      classification: 'total',
+      hint: 'a dark spot crossing the disc',
+      magnitudeText: null,
+      discDeg: 0.52,
+      speck: false,
+      ...overrides,
+    };
+  };
+
+  it('the same rows render the same key, whatever objects carry them', () => {
+    expect(eventRowsRenderKey([row(), row({ label: 'Europa eclipsed by Jupiter' })])).toBe(
+      eventRowsRenderKey([row(), row({ label: 'Europa eclipsed by Jupiter' })]),
+    );
+    expect(eventRowsRenderKey([])).toBe(eventRowsRenderKey([]));
+  });
+
+  it('a re-found event whose contacts moved by seconds is the same row', () => {
+    expect(eventRowsRenderKey([row({ peakUtcMs: PEAK + 20_000 })])).toBe(eventRowsRenderKey([row()]));
+    // A different minute on screen is a different row.
+    expect(eventRowsRenderKey([row({ peakUtcMs: PEAK + 60_000 })])).not.toBe(eventRowsRenderKey([row()]));
+  });
+
+  it('a disc drifting below the precision shown is no change; one that resizes the glyph is', () => {
+    expect(eventRowsRenderKey([row({ discDeg: 0.521 })])).toBe(eventRowsRenderKey([row({ discDeg: 0.52 })]));
+    expect(eventRowsRenderKey([row({ discDeg: 0.52 })])).not.toBe(eventRowsRenderKey([row({ discDeg: 0.03 })]));
+    // The speck ring replaces the sized disc.
+    expect(eventRowsRenderKey([row({ speck: true })])).not.toBe(eventRowsRenderKey([row()]));
+  });
+
+  it('every rendered field counts: label, badge, hint, magnitude, order and count', () => {
+    const base = eventRowsRenderKey([row(), row({ label: 'Europa eclipsed by Jupiter' })]);
+    expect(eventRowsRenderKey([row({ label: 'Europa eclipsed by Jupiter' }), row()])).not.toBe(base);
+    expect(eventRowsRenderKey([row()])).not.toBe(base);
+    expect(eventRowsRenderKey([row({ classification: 'partial' })])).not.toBe(eventRowsRenderKey([row()]));
+    expect(eventRowsRenderKey([row({ hint: 'daylight barely dims' })])).not.toBe(eventRowsRenderKey([row()]));
+    expect(eventRowsRenderKey([row({ magnitudeText: 'mag 1.10' })])).not.toBe(eventRowsRenderKey([row()]));
   });
 });

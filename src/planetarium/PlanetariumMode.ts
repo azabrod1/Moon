@@ -21587,7 +21587,7 @@ export class PlanetariumMode {
     // tutorial has stopped (the mission-start hook stops it first) and before
     // preMissionState is assigned.
     if (this.tutorial) {
-      return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
+      return this.journeyForSave({ ...this.tutorial.snapshot.state, timestamp: Date.now() });
     }
     // While a tool holds the scene, every persistence caller gets
     // the pre-tool snapshot (timestamp refreshed) — the same override the tutorial
@@ -21595,13 +21595,13 @@ export class PlanetariumMode {
     // left, and a reload inside the tool resumes the pre-tool landing rather than
     // the torn-down takeoff. Cleared in activate() on return.
     if (this.preToolState) {
-      return { ...this.preToolState, timestamp: Date.now() };
+      return this.journeyForSave({ ...this.preToolState, timestamp: Date.now() });
     }
     // While a historic mission is staged, every save writes the journey the
     // mission took over, and a reload mid-mission resumes that journey, as a
     // reload mid-tutorial does. The mission's exit reads the field itself.
     if (this.preMissionState) {
-      return { ...this.preMissionState, timestamp: Date.now() };
+      return this.journeyForSave({ ...this.preMissionState, timestamp: Date.now() });
     }
     // The ☰ menu and the help sheet pause a running clock and stop a moving
     // ship while they are up, and put both back when they close. A save made
@@ -21638,10 +21638,19 @@ export class PlanetariumMode {
       // as legacy and re-rotate the ship on every tutorial exit or tool return.
       headingBasis: 'ecliptic',
     };
-    // The ☰ preferences live on their own keys. The journey carries copies
-    // only while a key write is still owed (a private window, a full store),
-    // so the next boot can find them; once every key has taken its value the
-    // save stops carrying them, and nothing can hand a stale copy back.
+    return this.journeyForSave(journey);
+  }
+
+  /**
+   * The journey as a save writes it. The ☰ preferences live on their own
+   * keys: the journey carries copies only while a key write is still owed (a
+   * private window, a full store), so the next boot can find them; once every
+   * key has taken its value the save stops carrying them, and nothing can
+   * hand a stale copy back. Every branch of getState goes through here — a
+   * snapshot served while a tour, a tool or a mission holds the scene was
+   * captured before the write that is owed, so it carries the live values.
+   */
+  private journeyForSave(journey: PlanetariumState): PlanetariumState {
     return this.preferencesPersisted
       ? withoutPreferenceFields(journey)
       : withPreferenceFields(journey, this.livePreferences());
@@ -21700,7 +21709,9 @@ export class PlanetariumMode {
       showBodyMarkers: this.showBodyMarkers,
     };
     return {
-      showShip: chrome.showShip,
+      // A mission forces the ship on; the preference is the value its exit
+      // puts back, which the ☰ toggle keeps current during the mission.
+      showShip: this.preMissionShowShip ?? chrome.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: chrome.showBodyLabels,
       labelDistancesMode: this.labelDistancesMode,

@@ -403,10 +403,23 @@ import {
   TUTORIAL_STEPS,
   TUTORIAL_TIMELAPSE_RATE,
   tutorialTransition,
+  initialBeatRun,
+  stepBeatRun,
   clockWasLive,
   restoredClockUtcMs,
   type TutorialPhase,
+  type BeatEffect,
+  type BeatRunState,
+  type TutorialBeat,
+  type TutorialTargetRef,
 } from './tutorialLogic';
+import {
+  angularErrorRad,
+  distanceForDiameter,
+  largestFreeRect,
+  subjectFrame,
+} from './tutorialSpotlightLogic';
+import type { Rect as ScreenRect } from './tutorialSpotlightLogic';
 import {
   bodyLabelsSetting,
   bodyMarkersSetting,
@@ -458,6 +471,7 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
+import { TutorialSpotlight } from './ui/TutorialSpotlight';
 import {
   MAP_LAYER_DEFAULTS,
   SystemMap,
@@ -941,6 +955,8 @@ export class PlanetariumMode {
   private gestureMultiPointer = false;
   private pointersDown = 0;
   private worldLabelsModalHidden = false;
+  /** A tutorial stop keeping the world labels out of its picture (setTutorialOverrides). */
+  private worldLabelsTourHidden = false;
   // Pooled pick list (references into `bodyPickPool`, exact length each frame)
   // and its projection scratch — zero allocation in steady state.
   private bodyPickPool: PickCandidate[] = [];
@@ -2388,6 +2404,8 @@ export class PlanetariumMode {
     () => this.stopTutorial({ restore: true, toast: 'skip' }),
     () => this.stopTutorial({ restore: true, toast: 'return' }),
   );
+  /** The dimming mask, ring and coach bubble the beats point with. */
+  private tutorialSpotlight = new TutorialSpotlight();
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
   private lastObservatoryEvent: ShadowEvent | null = null;
@@ -2495,6 +2513,23 @@ export class PlanetariumMode {
     timer: number | null;
     generation: number;
     endRequest: { restore: boolean; toast: TutorialEndToast } | null;
+    /** The current stop's demonstration: its beat list and the runner's
+     *  state while it plays, null once it has handed over to the arrival (or
+     *  for a stop that stages in one move). `beatFrameMs` is the last frame
+     *  the runner saw, for its visible-time accounting. */
+    beats: readonly TutorialBeat[] | null;
+    beatRun: BeatRunState | null;
+    beatFrameMs: number;
+    /** Presentation overrides a stop lays over the preferences (the ship
+     *  model and the world labels out of the picture) — applied per frame,
+     *  never written to the preferences, dropped with the stop. */
+    overrides: { hideShip: boolean; hideLabels: boolean };
+    /** A live kicker for the card (a distance, a phase); null = the step's own. */
+    kicker: string | null;
+    /** The composed subject and the free area it was fitted into (the walk's assertion). */
+    composition: { subject: ScreenRect; free: ScreenRect } | null;
+    /** The element that had focus when the tour began: ending hands it back. */
+    returnFocus: Element | null;
   } | null = null;
   /** Every ☰ preference the user holds has landed on its own key, so the
    *  journey save may stop carrying copies of them. False until the
@@ -3212,6 +3247,7 @@ export class PlanetariumMode {
       this.observatoryHud.bind();
       this.surfaceTargetMenu.bind();
       this.tutorialCard.bind();
+      this.tutorialSpotlight.bind();
       this.speedValueEl = document.getElementById('planetarium-speed-value');
       this.speedLabelEl = document.getElementById('planetarium-speed-label');
       this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -7760,6 +7796,7 @@ export class PlanetariumMode {
    *  the rest), fold away in surface view, and honour the modal hide. */
   private syncWorldLabelContainers(): void {
     const show = !this.worldLabelsModalHidden
+      && !this.worldLabelsTourHidden
       && this.landedView !== 'surface'
       // Nothing may re-show world labels over the map: the system-map-active
       // class force-hides the DOM anyway, but a modal closing under the map
@@ -10524,6 +10561,10 @@ export class PlanetariumMode {
 
   /** Entry: the help-modal footer and the ☰ menu item. */
   startTutorial(): void {
+    // Whatever has focus now (the ☰ row, the help's button) is where focus
+    // goes back when the tour ends — read before the entry surfaces close
+    // and drop it.
+    const returnFocus = document.activeElement;
     // Close the entry surfaces before the guard — a refused click must not
     // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
     // below must capture the resumed truth, not the modal freeze.
@@ -10573,6 +10614,13 @@ export class PlanetariumMode {
       timer: null,
       generation: 0,
       endRequest: null,
+      beats: null,
+      beatRun: null,
+      beatFrameMs: performance.now(),
+      overrides: { hideShip: false, hideLabels: false },
+      kicker: null,
+      composition: null,
+      returnFocus,
     };
     // The card narrates from here; stray banners would talk over it (on
     // phones they share the same top strip).
@@ -10616,6 +10664,11 @@ export class PlanetariumMode {
       tutorial.timer = null;
     }
     tutorial.phase = tutorialTransition(tutorial.phase, opts.sync ? 'abort' : 'skip');
+    // The demonstration stops where it is: no ring, no press left on a
+    // control, even while a parked restore waits out an arrival.
+    tutorial.beatRun = null;
+    tutorial.beats = null;
+    this.tutorialSpotlight.clear();
     const toast = opts.toast ?? null;
     if (!opts.sync && this.arrivalInFlight) {
       // Mid-arrival: park the request; updateTutorial executes it on the first
@@ -10631,6 +10684,7 @@ export class PlanetariumMode {
     const tutorial = this.tutorial;
     if (!tutorial) return;
     const snap = tutorial.snapshot;
+    const returnFocus = tutorial.returnFocus;
     // The tutorial owns these while it runs — take them down with it. The card
     // hides now; the scene may still restore behind the veil a beat later.
     // The ☰ menu closes too: Esc can end the tutorial with it open (the Esc
@@ -10639,6 +10693,8 @@ export class PlanetariumMode {
     this.closeSurfaceTargetMenu();
     this.closeMenuPanel();
     this.tutorialCard.hide();
+    this.tutorialSpotlight.clear();
+    this.clearTutorialOverrides();
     const finish = () => {
       // Tail runs only once the restore has actually applied: until here the
       // getState() override keeps serving the snapshot, so a save racing the
@@ -10646,6 +10702,11 @@ export class PlanetariumMode {
       this.tutorial = null;
       this.notification.setMuted(false);
       this.updateSceneStealingMenuItems();
+      // Focus goes back to the control that started the tour, when it is
+      // still there to take it (a ☰ row in a closed menu is not).
+      if (returnFocus instanceof HTMLElement && returnFocus.isConnected) {
+        returnFocus.focus({ preventScroll: true });
+      }
       this.store.saveState(this.getState());
       if (toast === 'skip') {
         this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
@@ -10758,6 +10819,14 @@ export class PlanetariumMode {
       tutorial.timer = null;
     }
     const generation = tutorial.generation;
+    // Everything the previous stop owned goes with it: its demonstration,
+    // its ring, its overrides over the preferences, its live kicker.
+    tutorial.beats = null;
+    tutorial.beatRun = null;
+    tutorial.kicker = null;
+    tutorial.composition = null;
+    this.tutorialSpotlight.clear();
+    this.clearTutorialOverrides();
     // A user-opened deck may hold a search filter that would hide the
     // theater's target row — closing resets it (openDeck clears the query on
     // fresh opens only).
@@ -10766,6 +10835,9 @@ export class PlanetariumMode {
     this.bottomBar.closeStats();
     this.bottomBar.closeTime();
     this.renderTutorialCard();
+    // A new stop announces itself: focus on its title, so Tab lands on its
+    // buttons next and a screen reader hears the headline first.
+    this.tutorialCard.focusTitle();
     const step = TUTORIAL_STEPS[index];
     if (step.stage !== 'none') tutorial.everStaged = true;
     switch (step.stage) {
@@ -10801,6 +10873,7 @@ export class PlanetariumMode {
     generation: number,
     target: NonNullable<LandedTarget>,
     action: () => void,
+    veilNote?: string,
   ): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation) return;
@@ -10809,15 +10882,19 @@ export class PlanetariumMode {
         const live = this.tutorial;
         if (!live || live.generation !== generation) return;
         live.timer = null;
-        this.tutorialArriveWhenIdle(generation, target, action);
+        this.tutorialArriveWhenIdle(generation, target, action, veilNote);
       }, 120);
       return;
     }
-    this.arriveThen(target, () => {
-      const live = this.tutorial;
-      if (!live || live.generation !== generation) return;
-      action();
-    });
+    this.arriveThen(
+      target,
+      () => {
+        const live = this.tutorial;
+        if (!live || live.generation !== generation) return;
+        action();
+      },
+      veilNote === undefined ? {} : { note: veilNote },
+    );
   }
 
   /** Accent pulse on the deck row the theater is about to press. Stale pulses
@@ -10848,37 +10925,325 @@ export class PlanetariumMode {
     });
   }
 
-  /** Deck theater, Teleport tab: open on Saturn's row, pulse it, commit the
-   *  same jump the row's click would — the tutorial demonstrates the deck by
-   *  visibly using it. */
+  /** The Saturn stop is its demonstration: ring and press the Teleport chip,
+   *  ring and press Saturn's row, then the arrival (performTutorialArrival)
+   *  — the tutorial teaches the deck by visibly using it, beat by beat. */
   private stageTutorialSaturn(generation: number): void {
     this.setTutorialClockRate(1);
     this.closeObservatoryPanel();
-    const saturn = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn');
-    if (!saturn) {
-      this.markTutorialStaged(generation);
-      return;
-    }
-    this.openDeck('travel');
-    this.revealDeckRow('Saturn');
-    this.pulseTutorialDeckRow('Saturn');
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
+  }
+
+  // ── Beat runner ──────────────────────────────────────────────────────────
+  // A stop's demonstration plays from updateTutorial, one reducer step per
+  // frame (stepBeatRun in tutorialLogic.ts), in visible wall time: a hidden
+  // tab delivers no frames, so a hold waits for the user to come back, and a
+  // transient overlay (☰, the time panel, stats, Tools, the map) pauses it
+  // rather than fighting the user for the screen. The runner owns every ring,
+  // bubble and press class, and drops them on every stop, skip and re-stage.
+
+  /** A frame longer than this counts for this much: a slow machine still
+   *  shows each beat for several frames instead of one. */
+  private static readonly TUTORIAL_BEAT_FRAME_CAP_MS = 250;
+
+  private startTutorialBeats(beats: readonly TutorialBeat[]): void {
     const tutorial = this.tutorial;
     if (!tutorial) return;
-    tutorial.timer = window.setTimeout(() => {
-      const live = this.tutorial;
-      if (!live || live.generation !== generation) return;
-      live.timer = null;
-      this.closeDeck();
-      this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
-        if (this.landedOn) this.exitLandedMode();
-        this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
-        // Freeze-frame: the card narrates over a parked ship. Left under way
-        // (the arrival default), it would glide from the standoff to Saturn's
-        // collision shell in ~20 s, right under the copy.
-        this.player.moving = false;
+    tutorial.beats = beats;
+    tutorial.beatRun = initialBeatRun();
+    tutorial.beatFrameMs = performance.now();
+  }
+
+  /** One frame of the current stop's demonstration (updateTutorial, while staging). */
+  private runTutorialBeats(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || !tutorial.beats || !tutorial.beatRun) return;
+    const now = performance.now();
+    const dtMs = Math.min(Math.max(0, now - tutorial.beatFrameMs), PlanetariumMode.TUTORIAL_BEAT_FRAME_CAP_MS);
+    tutorial.beatFrameMs = now;
+    const beat = tutorial.beats[tutorial.beatRun.index];
+    const target = beat?.spotlight ? this.resolveTutorialTarget(beat.spotlight.target) : null;
+    const { state, effects } = stepBeatRun(tutorial.beats, tutorial.beatRun, {
+      dtMs,
+      paused: this.tutorialBeatsPaused(),
+      targetPresent: target !== null,
+      performed: beat ? this.tutorialPerformed(beat) : true,
+    });
+    tutorial.beatRun = state;
+    const generation = tutorial.generation;
+    for (const effect of effects) {
+      this.applyTutorialBeatEffect(effect, target, generation);
+      if (this.tutorial !== tutorial || tutorial.generation !== generation) return;
+    }
+  }
+
+  private applyTutorialBeatEffect(effect: BeatEffect, target: Element | null, generation: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    switch (effect.kind) {
+      case 'spotlight':
+        if (effect.present && target && effect.beat.spotlight) {
+          const { label, key } = effect.beat.spotlight;
+          this.tutorialSpotlight.show(target, label, key, this.tutorialAvoidRects());
+        } else {
+          this.tutorialSpotlight.hide();
+        }
+        break;
+      case 'press-down':
+        if (target) this.tutorialSpotlight.press(target);
+        break;
+      case 'press-up':
+        this.tutorialSpotlight.release();
+        break;
+      case 'perform': {
+        const perform = effect.beat.perform;
+        if (perform.kind === 'open-deck') {
+          this.openDeck(perform.verb);
+          this.revealDeckRow(perform.reveal);
+        } else if (perform.kind === 'arrive') {
+          // The consequence is the thing to look at from here: no ring over
+          // the veil, and the deck goes the way the row's own click takes it.
+          this.tutorialSpotlight.hide();
+          this.closeDeck();
+          tutorial.beatRun = null;
+          tutorial.beats = null;
+          this.performTutorialArrival(generation, effect.beat.veilNote);
+        }
+        break;
+      }
+      case 'finish':
+        tutorial.beatRun = null;
+        tutorial.beats = null;
+        this.tutorialSpotlight.hide();
         this.markTutorialStaged(generation);
-      });
-    }, 900);
+        break;
+    }
+  }
+
+  /** The element a beat points at, when it is on screen right now. */
+  private resolveTutorialTarget(ref: TutorialTargetRef): Element | null {
+    let el: Element | null = null;
+    switch (ref.kind) {
+      case 'chip':
+        el = document.getElementById(ref.id);
+        break;
+      case 'deck-row':
+        el = this.isDeckOpen() ? this.findDeckRow(ref.name) : null;
+        break;
+    }
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? el : null;
+  }
+
+  /** A transient overlay has the screen: the hold waits for it to close. */
+  private tutorialBeatsPaused(): boolean {
+    return (
+      this.menuPanel.isOpen() ||
+      this.isHelpOpen() ||
+      this.isToolsMenuOpen() ||
+      this.isMapOpen() ||
+      this.bottomBar.isTimeOpen() ||
+      this.bottomBar.isStatsOpen()
+    );
+  }
+
+  /** Whether a beat's perform has landed. An arrival never reports here: its
+   *  own callback marks the step staged and ends the run. */
+  private tutorialPerformed(beat: TutorialBeat): boolean {
+    const perform = beat.perform;
+    switch (perform.kind) {
+      case 'none':
+        return true;
+      case 'open-deck':
+        return this.isDeckOpen() && this.deckVerb === perform.verb && this.findDeckRow(perform.reveal) !== null;
+      case 'arrive':
+        return false;
+    }
+  }
+
+  /** The arrival a stop's last press stands for, by stage. Veil-gated and
+   *  retried behind a rival arrival like every tutorial arrival; the veil
+   *  carries the beat's caption from its first frame. */
+  private performTutorialArrival(generation: number, veilNote: string | undefined): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    const step = TUTORIAL_STEPS[tutorial.stepIndex];
+    switch (step.stage) {
+      case 'saturn': {
+        const saturn = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn');
+        if (!saturn) {
+          this.markTutorialStaged(generation);
+          return;
+        }
+        this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
+          if (this.landedOn) this.exitLandedMode();
+          this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
+          // The card and the chrome stay where they are; the scene moves:
+          // Saturn and its rings whole inside the free area, the ship model
+          // and the labels out of the picture for the stop.
+          this.setTutorialOverrides({ hideShip: true, hideLabels: true });
+          this.composeTutorialPlanet(saturn);
+          // Freeze-frame: the card narrates over a parked ship. Left under way
+          // (the arrival default), it would glide from the standoff to Saturn's
+          // collision shell in ~20 s, right under the copy.
+          this.player.moving = false;
+          const live = this.tutorial;
+          if (live) live.kicker = this.tutorialPlanetKicker(saturn);
+          this.renderTutorialCard();
+          this.markTutorialStaged(generation);
+        }, veilNote);
+        break;
+      }
+      default:
+        this.markTutorialStaged(generation);
+    }
+  }
+
+  /** "Saturn · 1.43 billion km from the Sun", from the live ephemeris. */
+  private tutorialPlanetKicker(planet: PlanetData): string | null {
+    const pos = this.planetWorldPositions.get(planet.name);
+    if (!pos) return null;
+    const km = Math.hypot(pos.x, pos.y, pos.z) * KM_PER_AU;
+    const distance = km >= 1e9
+      ? `${(km / 1e9).toFixed(2)} billion km`
+      : `${Math.round(km / 1e6)} million km`;
+    return `${bodyDisplayName(planet.name)} · ${distance} from the Sun`;
+  }
+
+  // ── Scene composition ────────────────────────────────────────────────────
+
+  /** Elevation of the tour's planet vantage above the ring plane, toward the
+   *  lit pole: enough to open Saturn's rings (nearly edge-on from the Sun
+   *  for years either side of the 2025 ring-plane crossing) while the globe
+   *  stays almost fully lit. */
+  private static readonly TUTORIAL_POSE_ELEVATION_DEG = 24;
+  /** Margin kept between a composed subject and the chrome around it. */
+  private static readonly TUTORIAL_FREE_MARGIN_PX = 16;
+
+  /**
+   * Pose the parked ship so `planet` — its rings included — sits whole
+   * inside the free area of the screen: the largest rectangle left between
+   * the card, the cluster and the bars. The vantage is the sunward radial
+   * lifted toward the lit pole; the distance and the aim are then measured
+   * through the same lens-aware projection the labels use and corrected a
+   * few rounds, so the fit holds on every window shape. The chase camera is
+   * posed here exactly as the frame will seat it, then reset onto it.
+   * Leaves the postcard pose in place when there is no room to compose into.
+   */
+  private composeTutorialPlanet(planet: PlanetData): void {
+    const tutorial = this.tutorial;
+    const pos = this.planetWorldPositions.get(planet.name);
+    if (!tutorial || !pos) return;
+    const width = Math.max(1, this.renderer.domElement.clientWidth);
+    const height = Math.max(1, this.renderer.domElement.clientHeight);
+    const free = this.tutorialFreeArea(width, height);
+    if (free.w < 120 || free.h < 120) return;
+    const frame = subjectFrame(free);
+    const ring = RING_CONFIGS[planet.name];
+    const subjectRadiusAU = planet.radiusAU * this.planetScale * (ring ? ring.outerFactor : 1);
+    const planetPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+    const sunward = planetPos.clone().multiplyScalar(-1);
+    if (sunward.lengthSq() < 1e-12) sunward.set(-1, 0.25, 0);
+    sunward.normalize();
+    const mesh = this.solarSystem?.planets.find((p) => p.data.name === planet.name);
+    const pole = mesh
+      ? new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.group.quaternion).normalize()
+      : FLIGHT_UP_SCENE.clone();
+    if (pole.dot(sunward) < 0) pole.negate();
+    const lift = pole.clone().addScaledVector(sunward, -pole.dot(sunward));
+    const elevation = THREE.MathUtils.degToRad(PlanetariumMode.TUTORIAL_POSE_ELEVATION_DEG);
+    const viewDir = lift.lengthSq() > 1e-12
+      ? sunward.clone().multiplyScalar(Math.cos(elevation)).addScaledVector(lift.normalize(), Math.sin(elevation)).normalize()
+      : sunward.clone();
+    const fov = displayFovDeg(this.camera);
+    let distance = distanceForDiameter(subjectRadiusAU, frame.diameterPx, fov, height);
+    const forward = viewDir.clone().negate();
+    const shipPos = new THREE.Vector3();
+    const planetScene = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    let subject: ScreenRect = { x: frame.x - frame.diameterPx / 2, y: frame.y - frame.diameterPx / 2, w: frame.diameterPx, h: frame.diameterPx };
+    const place = () => {
+      shipPos.copy(planetPos).addScaledVector(viewDir, distance);
+      this.player.posX = shipPos.x;
+      this.player.posY = shipPos.y;
+      this.player.posZ = shipPos.z;
+      this.player.headTowardPoint(shipPos.x + forward.x, shipPos.y + forward.y, shipPos.z + forward.z);
+      // Pose the camera as the chase will seat it, then measure through the lens.
+      chaseIdealOffset(this.player.getForwardDirection(), FLIGHT_UP_SCENE, this.camera.position);
+      this.camera.up.copy(FLIGHT_UP_SCENE);
+      this.camera.lookAt(0, 0, 0);
+      this.camera.updateMatrixWorld(true);
+      planetScene.copy(planetPos).sub(shipPos);
+      return projectSphereToScreen(planetScene, subjectRadiusAU, this.camera, width, height);
+    };
+    for (let round = 0; round < 8; round++) {
+      const proj = place();
+      if (proj.footprintKind !== 'sampled') break;
+      subject = { x: proj.minX, y: proj.minY, w: proj.maxX - proj.minX, h: proj.maxY - proj.minY };
+      const measuredDiameter = Math.max(subject.w, subject.h);
+      const errX = subject.x + subject.w / 2 - frame.x;
+      const errY = subject.y + subject.h / 2 - frame.y;
+      const scale = measuredDiameter / frame.diameterPx;
+      if (Math.abs(errX) < 1 && Math.abs(errY) < 1 && Math.abs(scale - 1) < 0.01) break;
+      distance *= THREE.MathUtils.clamp(scale, 0.5, 2);
+      // Images move against the camera's turn: a subject right of its mark
+      // asks for a turn to the right, one below it for a turn down.
+      right.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      up.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      forward
+        .addScaledVector(right, Math.tan(angularErrorRad(errX, fov, height)))
+        .addScaledVector(up, -Math.tan(angularErrorRad(errY, fov, height)))
+        .normalize();
+      if (round === 7) place();
+    }
+    this.resetCruiseCamera();
+    tutorial.composition = { subject, free };
+  }
+
+  /** The largest rectangle of the canvas clear of the card, the cluster and
+   *  the bars, in canvas pixels, inset by the composition margin. */
+  private tutorialFreeArea(width: number, height: number): ScreenRect {
+    const canvas = this.renderer.domElement.getBoundingClientRect();
+    const obstacles: ScreenRect[] = [];
+    for (const id of ['tutorial-card', 'planetarium-actions', 'planetarium-bottom-bar', 'top-bar']) {
+      const rect = document.getElementById(id)?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+      obstacles.push({ x: rect.x - canvas.x, y: rect.y - canvas.y, w: rect.width, h: rect.height });
+    }
+    return largestFreeRect({ x: 0, y: 0, w: width, h: height }, obstacles, PlanetariumMode.TUTORIAL_FREE_MARGIN_PX);
+  }
+
+  /** What the coach bubble keeps clear of: the card. */
+  private tutorialAvoidRects(): ScreenRect[] {
+    const rect = this.tutorialCard.rect();
+    return rect ? [{ x: rect.x, y: rect.y, w: rect.width, h: rect.height }] : [];
+  }
+
+  /** A stop's presentation overrides over the preferences. The ship's
+   *  visibility is re-asserted every frame (updateTutorial) because several
+   *  paths write it; the labels go through their container sync. Neither
+   *  touches the stored preference. */
+  private setTutorialOverrides(overrides: { hideShip: boolean; hideLabels: boolean }): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.overrides = overrides;
+    this.worldLabelsTourHidden = overrides.hideLabels;
+    this.syncWorldLabelContainers();
+    this.player.group.visible = this.showShip && !this.landedOn && !overrides.hideShip;
+  }
+
+  private clearTutorialOverrides(): void {
+    const tutorial = this.tutorial;
+    const held = tutorial?.overrides ?? { hideShip: false, hideLabels: this.worldLabelsTourHidden };
+    if (tutorial) tutorial.overrides = { hideShip: false, hideLabels: false };
+    if (!held.hideShip && !held.hideLabels && !this.worldLabelsTourHidden) return;
+    this.worldLabelsTourHidden = false;
+    this.syncWorldLabelContainers();
+    this.player.group.visible = this.showShip && !this.landedOn;
   }
 
   /** Deck theater, Observatory tab: the one-tap-lands-you-there flow, ending
@@ -10995,6 +11360,13 @@ export class PlanetariumMode {
       return;
     }
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
+    if (tutorial.phase === 'staging' && tutorial.beatRun) this.runTutorialBeats();
+    // The runner may have ended the tutorial or re-staged it: read it again.
+    if (this.tutorial !== tutorial) return;
+    // The stop's overrides hold every frame — the ship's visibility has
+    // several writers — and the ring follows its control wherever it goes.
+    if (tutorial.overrides.hideShip) this.player.group.visible = false;
+    if (this.tutorialSpotlight.isVisible()) this.tutorialSpotlight.track(this.tutorialAvoidRects());
     if (tutorial.phase === 'settling') {
       const settled = isStepSettled(
         {
@@ -11035,7 +11407,7 @@ export class PlanetariumMode {
     if (!tutorial) return;
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
     this.tutorialCard.render(
-      tutorialCardModel(step, tutorial.stepIndex, TUTORIAL_STEPS.length, tutorial.phase),
+      tutorialCardModel(step, tutorial.stepIndex, tutorial.phase, tutorial.kicker === null ? {} : { kicker: tutorial.kicker }),
     );
   }
 
@@ -17685,6 +18057,21 @@ export class PlanetariumMode {
       rate: this.timeState.rate,
       paused: this.timeState.paused,
       timeMs: this.timeState.currentUtcMs,
+      beat: tutorial?.beatRun && tutorial.beats
+        ? { id: tutorial.beats[tutorial.beatRun.index]?.id ?? null, stage: tutorial.beatRun.stage, index: tutorial.beatRun.index }
+        : null,
+      spotlight: this.tutorialSpotlight.isVisible() ? this.tutorialSpotlight.measure() : null,
+      composition: tutorial?.composition ?? null,
+      overrides: tutorial?.overrides ?? null,
+      shipVisible: this.player.group.visible,
+      labelsShown: this.planetLabelsContainerEl ? this.planetLabelsContainerEl.style.display !== 'none' : null,
+      ship: {
+        x: this.player.posX,
+        y: this.player.posY,
+        z: this.player.posZ,
+        heading: this.player.heading,
+        pitch: this.player.pitch,
+      },
     };
   }
 
@@ -19428,6 +19815,7 @@ export class PlanetariumMode {
   private arriveThen(
     target: NonNullable<LandedTarget>,
     action: () => void,
+    opts: { note?: string } = {},
   ): void {
     if (this.arrivalInFlight) return;
     const landingUpgrades = this.landingPairUpgrades(target);
@@ -19468,6 +19856,7 @@ export class PlanetariumMode {
       upgradeCover,
       landingUpgrades,
       bodyDisplayName(target.name),
+      opts.note ?? null,
     );
   }
 
@@ -19568,6 +19957,7 @@ export class PlanetariumMode {
     upgradeCover: boolean,
     keepUpgrades: readonly TextureUpgrade[] = [],
     noteLabel: string | null = null,
+    immediateNote: string | null = null,
   ): void {
     if (this.arrivalInFlight) return;
     // A teleport abandons every fetch in flight anywhere in the system except
@@ -19627,10 +20017,14 @@ export class PlanetariumMode {
     // The covering black over mostly-black space reads as a dead screen (and
     // deliberately catches clicks), so a hold that outlives a beat names
     // itself. Instant arrivals — the common warm case — never flash it.
+    // A caller with a caption of its own (the tutorial: "Teleporting to
+    // Saturn…") shows it from the first covered frame: the beat that raised
+    // this veil is the thing being narrated, so the cover is never dead black.
     const note = document.getElementById('arrival-veil-note');
     if (note) {
-      note.textContent = `Preparing ${noteLabel ?? 'the view'}…`;
+      note.textContent = immediateNote ?? `Preparing ${noteLabel ?? 'the view'}…`;
       note.classList.remove('show', 'pulse');
+      if (immediateNote !== null) note.classList.add('show');
     }
     window.clearTimeout(this.arrivalNoteTimer);
     this.arrivalNoteTimer = window.setTimeout(() => {

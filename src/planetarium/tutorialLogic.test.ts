@@ -12,8 +12,22 @@ import {
   canStartTutorial,
   clockWasLive,
   restoredClockUtcMs,
+  TUTORIAL_STOP_COUNT,
+  TUTORIAL_PRESS_MS,
+  tutorialStopNumber,
+  tutorialProgress,
+  initialBeatRun,
+  stepBeatRun,
 } from './tutorialLogic';
-import type { RestoreContext, SettleSignals, TutorialPhase, TutorialTransitionEvent } from './tutorialLogic';
+import type {
+  BeatRunState,
+  BeatSignals,
+  RestoreContext,
+  SettleSignals,
+  TutorialBeat,
+  TutorialPhase,
+  TutorialTransitionEvent,
+} from './tutorialLogic';
 import { findShadowEvent } from '../astronomy/shadows';
 import { formatTimeRateLabel } from '../astronomy/planetary';
 
@@ -62,6 +76,37 @@ describe('TUTORIAL_STEPS', () => {
   it('only the eclipse holds Next for the totality moment', () => {
     for (const step of TUTORIAL_STEPS) {
       expect(step.settle.totality).toBe(step.stage === 'eclipse');
+    }
+  });
+
+  it('the stops are the four scene-staged steps; the bookends count as before and after them', () => {
+    expect(TUTORIAL_STOP_COUNT).toBe(4);
+    expect(TUTORIAL_STEPS.map((_, i) => tutorialStopNumber(i))).toEqual([null, 1, 2, 3, 4, null]);
+    expect(tutorialProgress(0)).toEqual({ count: 4, current: null, done: 0, label: 'Before the first stop' });
+    expect(tutorialProgress(2)).toEqual({ count: 4, current: 2, done: 1, label: 'Stop 2 of 4' });
+    expect(tutorialProgress(5)).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
+  });
+
+  it('Saturn plays its demonstration: ring and press the Teleport chip, then ring and press the Saturn row into the arrival', () => {
+    const saturn = TUTORIAL_STEPS.find((s) => s.id === 'saturn')!;
+    expect(saturn.beats?.map((b) => b.id)).toEqual(['teleport-chip', 'saturn-row']);
+    const [chip, row] = saturn.beats!;
+    expect(chip.spotlight?.target).toEqual({ kind: 'chip', id: 'planetarium-btn-travel' });
+    expect(chip.spotlight?.key).toBe('T');
+    expect(chip.press).toBe(true);
+    expect(chip.perform).toEqual({ kind: 'open-deck', verb: 'travel', reveal: 'Saturn' });
+    expect(row.spotlight?.target).toEqual({ kind: 'deck-row', name: 'Saturn' });
+    expect(row.perform).toEqual({ kind: 'arrive' });
+    expect(row.veilNote).toMatch(/Saturn/);
+    // The copy while the beats play introduces the tour; the settled copy is the lesson.
+    expect(saturn.bodyDuring).toMatch(/Four stops/);
+    expect(saturn.body).not.toMatch(/Four stops/);
+    // A beat that presses must have something to press.
+    for (const step of TUTORIAL_STEPS) {
+      for (const beat of step.beats ?? []) {
+        if (beat.press) expect(beat.spotlight).not.toBeNull();
+        expect(beat.minHoldMs).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -234,6 +279,93 @@ describe('canStartTutorial', () => {
     expect(
       canStartTutorial({ missionActive: false, resumePromptVisible: false, alreadyActive: true }),
     ).toBe(false);
+  });
+});
+
+describe('stepBeatRun', () => {
+  const chip: TutorialBeat = {
+    id: 'chip',
+    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-travel' }, label: 'Teleport' },
+    press: true,
+    perform: { kind: 'open-deck', verb: 'travel', reveal: 'Saturn' },
+    minHoldMs: 1000,
+  };
+  const row: TutorialBeat = {
+    id: 'row',
+    spotlight: { target: { kind: 'deck-row', name: 'Saturn' }, label: 'Tap any planet or moon' },
+    press: true,
+    perform: { kind: 'arrive' },
+    minHoldMs: 1000,
+  };
+  const holdOnly: TutorialBeat = { id: 'hold', spotlight: null, press: false, perform: { kind: 'none' }, minHoldMs: 500 };
+  const beats = [chip, row];
+  const signals = (over: Partial<BeatSignals> = {}): BeatSignals => ({
+    dtMs: 100,
+    paused: false,
+    targetPresent: true,
+    performed: false,
+    ...over,
+  });
+  const run = (list: readonly TutorialBeat[], state: BeatRunState, over: Partial<BeatSignals> = {}) =>
+    stepBeatRun(list, state, signals(over));
+  const kinds = (effects: ReturnType<typeof stepBeatRun>['effects']) => effects.map((e) => e.kind);
+
+  it('entering a beat shows its spotlight, then the hold counts visible time', () => {
+    const first = run(beats, initialBeatRun());
+    expect(kinds(first.effects)).toEqual(['spotlight']);
+    expect(first.state.stage).toBe('hold');
+    const held = run(beats, first.state);
+    expect(held.state.heldMs).toBe(100);
+    expect(held.effects).toEqual([]);
+  });
+
+  it('the hold ends on the minimum, not before, and a paused frame does not count', () => {
+    let state: BeatRunState = { index: 0, stage: 'hold', heldMs: 800, pressedMs: 0 };
+    state = run(beats, state, { paused: true }).state;
+    expect(state.heldMs).toBe(800);
+    state = run(beats, state).state;
+    expect(state).toMatchObject({ stage: 'hold', heldMs: 900 });
+    const pressed = run(beats, state);
+    expect(kinds(pressed.effects)).toEqual(['press-down']);
+    expect(pressed.state.stage).toBe('press');
+  });
+
+  it('the press lasts its 180 ms, then the perform starts and waits for the host', () => {
+    let state: BeatRunState = { index: 0, stage: 'press', heldMs: 1000, pressedMs: 0 };
+    const mid = run(beats, state, { dtMs: TUTORIAL_PRESS_MS - 1 });
+    expect(mid.effects).toEqual([]);
+    const up = run(beats, mid.state, { dtMs: 1 });
+    expect(kinds(up.effects)).toEqual(['press-up', 'perform']);
+    expect(up.state.stage).toBe('perform');
+    state = run(beats, up.state, { performed: false }).state;
+    expect(state.stage).toBe('perform');
+    const next = run(beats, state, { performed: true });
+    expect(next.state).toEqual({ index: 1, stage: 'enter', heldMs: 0, pressedMs: 0 });
+    expect(next.effects).toEqual([]);
+  });
+
+  it('a missing control skips the spotlight and the press but keeps the hold and still performs', () => {
+    const entered = run(beats, initialBeatRun(), { targetPresent: false });
+    expect(entered.effects).toEqual([{ kind: 'spotlight', beat: chip, present: false }]);
+    const state: BeatRunState = { index: 0, stage: 'hold', heldMs: 1000, pressedMs: 0 };
+    const result = run(beats, state, { targetPresent: false });
+    expect(kinds(result.effects)).toEqual(['perform']);
+    expect(result.state.stage).toBe('perform');
+  });
+
+  it('a hold-only beat advances on its own; the last beat finishes the run', () => {
+    const list = [holdOnly, holdOnly];
+    const state: BeatRunState = { index: 1, stage: 'hold', heldMs: 500, pressedMs: 0 };
+    const result = run(list, state, { dtMs: 0 });
+    expect(kinds(result.effects)).toEqual(['finish']);
+    expect(result.state.stage).toBe('done');
+    expect(run(list, result.state).effects).toEqual([]);
+  });
+
+  it('an empty list finishes at once', () => {
+    const result = run([], initialBeatRun());
+    expect(kinds(result.effects)).toEqual(['finish']);
+    expect(result.state.stage).toBe('done');
   });
 });
 

@@ -29,10 +29,19 @@ export interface TutorialStep {
   id: TutorialStepId;
   /** Card headline (the eyebrow is always "Tutorial"). */
   title: string;
+  /** Mono line under the title for the place or the date; null for none. A
+   *  stop that states a fact about the sky overrides it live (PlanetariumMode). */
+  kicker: string | null;
   /** May contain {teleport}/{observatory} tokens — the card renders them as
    *  clones of the live action-button SVGs, so the glyph the copy points at is
    *  the glyph on screen (see tutorialBodySegments in TutorialCard). */
   body: string;
+  /** Copy while the stop is still staging — the beats playing, the arrival
+   *  pending; `body` takes over once the scene has landed. Absent: `body` throughout. */
+  bodyDuring?: string;
+  /** The demonstration played before the arrival (see TutorialBeat); absent
+   *  for a stop that stages in one move. */
+  beats?: readonly TutorialBeat[];
   /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
   /** Ghost skip button; null on the wrap card — ending the tutorial always takes
@@ -41,6 +50,66 @@ export interface TutorialStep {
   stage: TutorialStage;
   settle: SettleNeeds;
 }
+
+// ── Beats ─────────────────────────────────────────────────────────────────────
+// A stop's demonstration is a list of beats: ring a control, hold long enough
+// to read, press it for real, let its consequence land, then the next. The
+// runner (stepBeatRun) is a pure reducer over visible wall time so the holds,
+// the press and the fall-through for a missing control are all testable;
+// PlanetariumMode performs the effects it returns.
+
+/** A control the spotlight can ring, by what it is rather than by element. */
+export type TutorialTargetRef =
+  | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-menu' }
+  | { kind: 'deck-row'; name: string };
+
+/** The scene work a beat's press stands for. The host performs it and reports
+ *  when it has landed (the deck open with the row in view; the arrival done). */
+export type TutorialPerform =
+  | { kind: 'none' }
+  | { kind: 'open-deck'; verb: 'travel' | 'observe'; reveal: string }
+  | { kind: 'arrive' };
+
+export interface TutorialBeat {
+  id: string;
+  /** What the spotlight rings and names while the beat holds; null clears it
+   *  (the consequence on screen is the thing to look at). `key` is the
+   *  keyboard shortcut, shown as a chip on pointer devices only. */
+  spotlight: { target: TutorialTargetRef; label: string; key?: string } | null;
+  /** Press the spotlight's control once the hold has passed (a visible press
+   *  on the real control, then `perform`). */
+  press: boolean;
+  perform: TutorialPerform;
+  /** The least the beat stays on screen before its press, in visible wall
+   *  time — a frame's dt, not a timer, so a hidden tab pauses it. */
+  minHoldMs: number;
+  /** Caption on the arrival veil, shown from its first frame, when `perform` raises one. */
+  veilNote?: string;
+}
+
+/** The visible press on the real control: scale and the chip's own on-colour. */
+export const TUTORIAL_PRESS_MS = 180;
+
+/** A beat's hold is a minimum readable time, never a deadline. */
+export const TUTORIAL_BEAT_HOLD_MS = 1400;
+
+const SATURN_BEATS: readonly TutorialBeat[] = [
+  {
+    id: 'teleport-chip',
+    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-travel' }, label: 'Teleport', key: 'T' },
+    press: true,
+    perform: { kind: 'open-deck', verb: 'travel', reveal: 'Saturn' },
+    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+  },
+  {
+    id: 'saturn-row',
+    spotlight: { target: { kind: 'deck-row', name: 'Saturn' }, label: 'Tap any planet or moon' },
+    press: true,
+    perform: { kind: 'arrive' },
+    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    veilNote: 'Teleporting to Saturn…',
+  },
+];
 
 /** Next stays disabled this long after a scene staging lands, so it can't
  *  enable on the exact frame the veil clears while the scene is still
@@ -56,6 +125,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'welcome',
     title: 'A quick look around',
+    kicker: null,
     body: 'We’ll take four stops to show you how the app works: Saturn, the Moon, Jupiter with time sped up, and a total solar eclipse. The tutorial does the flying and shows you the button behind each move; you can always drag to look around.',
     primaryLabel: 'Start the tutorial',
     ghostLabel: 'Not now',
@@ -65,7 +135,10 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'saturn',
     title: 'Teleport',
-    body: 'The {teleport} Teleport button at the top right, or T, instantly sends you to any planet or moon in the solar system.',
+    kicker: 'Saturn',
+    bodyDuring: 'Four stops, about two minutes. First, {teleport} Teleport: this button jumps you to any planet or moon. We’re going to Saturn.',
+    body: 'One tap, anywhere in the solar system. Drag to look around.',
+    beats: SATURN_BEATS,
     primaryLabel: 'Next: the Moon',
     ghostLabel: 'Skip tutorial',
     stage: 'saturn',
@@ -74,6 +147,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'moon',
     title: 'Landed on the Moon',
+    kicker: null,
     body: 'The {observatory} Observatory button, or O, lands you on a world so you can follow it through space and time, observe its neighbours, read its stats, or see the celestial events coming up. That’s Earth overhead, and the panel follows this sky.',
     primaryLabel: 'Next: Jupiter',
     ghostLabel: 'Skip tutorial',
@@ -83,6 +157,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Jupiter in fast-forward',
+    kicker: null,
     body: 'The clock at the bottom of the screen controls time: tap it to set the speed or jump to a date. It’s running at two hours per second now, so Jupiter spins through a full day in five seconds and Io laps it in about twenty.',
     primaryLabel: 'Next: the eclipse',
     ghostLabel: 'Skip tutorial',
@@ -92,6 +167,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
+    kicker: null,
     body: 'You got here through the Observatory: land on Earth, pick the next Solar Eclipse in the panel, then Look up. You’re standing in the path of the Moon’s shadow — watch the Sun as the Moon crosses it.',
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
@@ -101,6 +177,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'wrap',
     title: 'That’s the tutorial',
+    kicker: null,
     body: '{teleport} Teleport (T) sends you to any planet or moon; {observatory} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
     primaryLabel: 'End tutorial',
     ghostLabel: null,
@@ -108,6 +185,130 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     settle: CARD_ONLY_SETTLE,
   },
 ];
+
+/** The stops the progress dots count: every scene-staged step, in order. */
+export const TUTORIAL_STOP_COUNT = TUTORIAL_STEPS.filter((step) => step.stage !== 'none').length;
+
+/** 1-based number of a step among the stops, or null for a card-only bookend. */
+export function tutorialStopNumber(index: number): number | null {
+  const step = TUTORIAL_STEPS[index];
+  if (!step || step.stage === 'none') return null;
+  return TUTORIAL_STEPS.slice(0, index + 1).filter((s) => s.stage !== 'none').length;
+}
+
+/** Progress for the card's dots and its screen-reader counter. */
+export function tutorialProgress(index: number): { count: number; current: number | null; done: number; label: string } {
+  const current = tutorialStopNumber(index);
+  if (current !== null) {
+    return { count: TUTORIAL_STOP_COUNT, current, done: current - 1, label: `Stop ${current} of ${TUTORIAL_STOP_COUNT}` };
+  }
+  const before = TUTORIAL_STEPS.slice(0, index).filter((s) => s.stage !== 'none').length;
+  return before === 0
+    ? { count: TUTORIAL_STOP_COUNT, current: null, done: 0, label: 'Before the first stop' }
+    : { count: TUTORIAL_STOP_COUNT, current: null, done: before, label: `All ${before} stops seen` };
+}
+
+export interface BeatRunState {
+  index: number;
+  /** 'enter' shows the beat's spotlight; 'hold' counts visible time; 'press'
+   *  is the visible press; 'perform' waits for the host's scene work; 'done'
+   *  means the list has finished and the host should mark the step staged. */
+  stage: 'enter' | 'hold' | 'press' | 'perform' | 'done';
+  heldMs: number;
+  pressedMs: number;
+}
+
+export function initialBeatRun(): BeatRunState {
+  return { index: 0, stage: 'enter', heldMs: 0, pressedMs: 0 };
+}
+
+/** What the host reports each frame. */
+export interface BeatSignals {
+  /** Visible wall time since the last frame (clamped by the host; zero while hidden). */
+  dtMs: number;
+  /** A transient overlay (☰, the time panel, stats, Tools, the map) has the
+   *  screen: the hold waits for it to close rather than fighting the user. */
+  paused: boolean;
+  /** The beat's control exists on screen right now. */
+  targetPresent: boolean;
+  /** The beat's perform has landed. */
+  performed: boolean;
+}
+
+export type BeatEffect =
+  | { kind: 'spotlight'; beat: TutorialBeat; present: boolean }
+  | { kind: 'press-down'; beat: TutorialBeat }
+  | { kind: 'press-up'; beat: TutorialBeat }
+  | { kind: 'perform'; beat: TutorialBeat }
+  | { kind: 'finish' };
+
+/**
+ * One frame of a beat list. Effects are returned in the order the host must
+ * apply them. A beat ends only when its hold has passed AND its perform has
+ * landed, never on the hold alone; a control that is not on screen skips the
+ * spotlight and the press but keeps the hold (the card narrates on) and still
+ * performs, so a missing element can never strand the stop.
+ */
+export function stepBeatRun(
+  beats: readonly TutorialBeat[],
+  state: BeatRunState,
+  signals: BeatSignals,
+): { state: BeatRunState; effects: BeatEffect[] } {
+  const effects: BeatEffect[] = [];
+  let next: BeatRunState = { ...state };
+  if (next.stage === 'done') return { state: next, effects };
+  const beat = beats[next.index];
+  if (!beat) {
+    next.stage = 'done';
+    effects.push({ kind: 'finish' });
+    return { state: next, effects };
+  }
+  const startPerform = () => {
+    if (beat.perform.kind === 'none') {
+      advance();
+      return;
+    }
+    next.stage = 'perform';
+    effects.push({ kind: 'perform', beat });
+  };
+  const advance = () => {
+    next = { index: next.index + 1, stage: 'enter', heldMs: 0, pressedMs: 0 };
+    if (next.index >= beats.length) {
+      next.stage = 'done';
+      effects.push({ kind: 'finish' });
+    }
+  };
+  switch (next.stage) {
+    case 'enter':
+      effects.push({ kind: 'spotlight', beat, present: signals.targetPresent });
+      next.stage = 'hold';
+      next.heldMs = 0;
+      break;
+    case 'hold':
+      if (!signals.paused) next.heldMs += signals.dtMs;
+      if (next.heldMs >= beat.minHoldMs) {
+        if (beat.press && beat.spotlight && signals.targetPresent) {
+          next.stage = 'press';
+          next.pressedMs = 0;
+          effects.push({ kind: 'press-down', beat });
+        } else {
+          startPerform();
+        }
+      }
+      break;
+    case 'press':
+      next.pressedMs += signals.dtMs;
+      if (next.pressedMs >= TUTORIAL_PRESS_MS) {
+        effects.push({ kind: 'press-up', beat });
+        startPerform();
+      }
+      break;
+    case 'perform':
+      if (signals.performed) advance();
+      break;
+  }
+  return { state: next, effects };
+}
 
 /**
  * The tutorial's showcase eclipse: the total solar eclipse of 2027-08-02 —

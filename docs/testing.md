@@ -22,6 +22,7 @@ Each tool's header gives its scenarios, its bars and its control arm. Most take 
 - `interior-sweep`, `interior-open-probe`: Look inside, its races and its opening cost.
 - `mini-size-probe`: the corner chart's size and gestures. `fullscreen-probe`: full screen, the safe-area box, and the tools framed on the canvas's box.
 - `save-probe`: a save writes the journey the user left, never a historic mission's staged scene, and the clock and ship as the user left them, not as ☰ or the help sheet holds them; and the ☰ toggles live on their own keys, so New Journey (from ☰ or from "Welcome back") keeps them and an older journey's copies are migrated once.
+- `tutorial-walk`: the guided tutorial on a desktop window and at phone size, every beat and stop screenshotted: the spotlight rings a control that is on screen with its bubble off the card, the Saturn stop composes its subject inside the free area with the ship model and the labels out of the picture, Next re-enables at every stop, ending restores the ship, the heading, the landing and a live clock, and Esc mid-beat drops the ring at once.
 - `pixel-gate`: did a switch move a pixel. `visual-sweep`: what the surfaces look like. `atmo-shell-qa`: the atmosphere goldens, and with `--set=control` their `?mieexact=0` control set. `sampler-census`: texture units per switch combination.
 
 ## Performance

@@ -1,47 +1,78 @@
 import { describe, expect, it } from 'vitest';
-import { tutorialBodySegments, tutorialCardModel } from './TutorialCard';
+import {
+  TUTORIAL_ARRIVING_LABEL,
+  tutorialBodyFor,
+  tutorialBodySegments,
+  tutorialCardModel,
+} from './TutorialCard';
 import { TUTORIAL_STEPS } from '../tutorialLogic';
 import type { TutorialPhase, TutorialStep } from '../tutorialLogic';
 
 const stepById = (id: TutorialStep['id']): TutorialStep => TUTORIAL_STEPS.find((s) => s.id === id)!;
-const model = (id: TutorialStep['id'], phase: TutorialPhase) =>
-  tutorialCardModel(
-    stepById(id),
-    TUTORIAL_STEPS.findIndex((s) => s.id === id),
-    TUTORIAL_STEPS.length,
-    phase,
-  );
+const indexOf = (id: TutorialStep['id']) => TUTORIAL_STEPS.findIndex((s) => s.id === id);
+const model = (id: TutorialStep['id'], phase: TutorialPhase, kicker?: string | null) =>
+  tutorialCardModel(stepById(id), indexOf(id), phase, kicker === undefined ? {} : { kicker });
 
 describe('tutorialCardModel', () => {
-  it('welcome card: start/not-now labels, counter 1 / 6', () => {
+  it('welcome card: start/not-now labels, no stop lit yet', () => {
     const m = model('welcome', 'ready');
-    expect(m.counter).toBe('1 / 6');
-    expect(m.primary).toEqual({ label: 'Start the tutorial', action: 'advance', disabled: false });
+    expect(m.progress).toEqual({ count: 4, current: null, done: 0, label: 'Before the first stop' });
+    expect(m.primary).toEqual({ label: 'Start the tutorial', action: 'advance', disabled: false, busy: false });
     expect(m.ghost).toEqual({ label: 'Not now', disabled: false });
+    expect(m.kicker).toBeNull();
   });
 
-  it('primary waits for ready; ghost stays live until the restore runs', () => {
+  it('primary waits for ready and says why; ghost stays live until the restore runs', () => {
     for (const phase of ['staging', 'settling'] as TutorialPhase[]) {
       const m = model('saturn', phase);
       expect(m.primary.disabled).toBe(true);
+      expect(m.primary.busy).toBe(true);
+      expect(m.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
       expect(m.ghost?.disabled).toBe(false);
     }
-    expect(model('saturn', 'ready').primary.disabled).toBe(false);
+    const ready = model('saturn', 'ready');
+    expect(ready.primary).toEqual({ label: 'Next: the Moon', action: 'advance', disabled: false, busy: false });
     const ending = model('saturn', 'ending');
     expect(ending.primary.disabled).toBe(true);
+    expect(ending.primary.busy).toBe(false);
+    expect(ending.primary.label).toBe('Next: the Moon');
     expect(ending.ghost?.disabled).toBe(true);
   });
 
-  it('each card shows its own single body', () => {
-    for (const step of TUTORIAL_STEPS) {
-      expect(model(step.id, 'ready').body).toBe(step.body);
+  it('card-only steps are never busy: their label shows at once', () => {
+    for (const id of ['welcome', 'wrap'] as const) {
+      const m = model(id, 'staging');
+      expect(m.primary.busy).toBe(false);
+      expect(m.primary.label).toBe(stepById(id).primaryLabel);
     }
   });
 
-  it('the wrap card always takes you back: primary restores, no skip button', () => {
+  it('the body is the staging copy while the beats play, the settled copy from the arrival on', () => {
+    const saturn = stepById('saturn');
+    expect(tutorialBodyFor(saturn, 'staging')).toBe(saturn.bodyDuring);
+    for (const phase of ['settling', 'ready', 'ending'] as TutorialPhase[]) {
+      expect(tutorialBodyFor(saturn, phase)).toBe(saturn.body);
+    }
+    // A step without staging copy shows its one body throughout.
+    const moon = stepById('moon');
+    expect(tutorialBodyFor(moon, 'staging')).toBe(moon.body);
+    expect(model('saturn', 'staging').body).toBe(saturn.bodyDuring);
+    expect(model('saturn', 'ready').body).toBe(saturn.body);
+  });
+
+  it('the kicker is the step’s own line unless the host supplies a live one', () => {
+    expect(model('saturn', 'ready').kicker).toBe('Saturn');
+    expect(model('saturn', 'ready', 'Saturn · 1.43 billion km from the Sun').kicker).toBe(
+      'Saturn · 1.43 billion km from the Sun',
+    );
+    expect(model('saturn', 'ready', null).kicker).toBeNull();
+  });
+
+  it('the wrap card always takes you back: primary restores, no skip button, every stop done', () => {
     const m = model('wrap', 'ready');
-    expect(m.primary).toEqual({ label: 'End tutorial', action: 'return', disabled: false });
+    expect(m.primary).toEqual({ label: 'End tutorial', action: 'return', disabled: false, busy: false });
     expect(m.ghost).toBeNull();
+    expect(m.progress).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
   });
 
   it('every non-wrap card advances and can skip', () => {
@@ -61,9 +92,15 @@ describe('tutorialCardModel', () => {
     }
   });
 
-  it('counters run 1..6 in step order', () => {
-    TUTORIAL_STEPS.forEach((step, i) => {
-      expect(model(step.id, 'ready').counter).toBe(`${i + 1} / ${TUTORIAL_STEPS.length}`);
+  it('the dots walk the four stops in order', () => {
+    const stops = ['saturn', 'moon', 'timelapse', 'eclipse'] as const;
+    stops.forEach((id, i) => {
+      expect(model(id, 'ready').progress).toEqual({
+        count: 4,
+        current: i + 1,
+        done: i,
+        label: `Stop ${i + 1} of 4`,
+      });
     });
   });
 });
@@ -83,20 +120,22 @@ describe('tutorialBodySegments', () => {
     ]);
   });
 
-  it('the button cards quote their glyphs: Teleport, then Observatory, then both on the wrap', () => {
-    const icons = (id: TutorialStep['id']) =>
-      tutorialBodySegments(stepById(id).body)
+  it('the button cards quote their glyphs: Teleport while Saturn stages, Observatory on the Moon, both on the wrap', () => {
+    const icons = (body: string) =>
+      tutorialBodySegments(body)
         .filter((s) => s.kind === 'icon')
         .map((s) => (s.kind === 'icon' ? s.icon : ''));
-    expect(icons('saturn')).toEqual(['teleport']);
-    expect(icons('moon')).toEqual(['observatory']);
-    expect(icons('wrap')).toEqual(['teleport', 'observatory']);
+    expect(icons(stepById('saturn').bodyDuring!)).toEqual(['teleport']);
+    expect(icons(stepById('moon').body)).toEqual(['observatory']);
+    expect(icons(stepById('wrap').body)).toEqual(['teleport', 'observatory']);
   });
 
   it('no braces survive in any card text (a typo’d token would render literally)', () => {
     for (const step of TUTORIAL_STEPS) {
-      for (const seg of tutorialBodySegments(step.body)) {
-        if (seg.kind === 'text') expect(seg.text).not.toMatch(/[{}]/);
+      for (const body of [step.body, step.bodyDuring ?? '']) {
+        for (const seg of tutorialBodySegments(body)) {
+          if (seg.kind === 'text') expect(seg.text).not.toMatch(/[{}]/);
+        }
       }
     }
   });

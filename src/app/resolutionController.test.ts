@@ -658,6 +658,102 @@ describe('a rung above Medium is held to the display’s own tick', () => {
     expect(rig.rung).toBeLessThan(FULL_LADDER.mediumIndex);
   });
 
+  /** A 120 Hz stream with one frame in `late` taking two ticks. */
+  const oneInLateFast = (late: number) => (_rung: number, i: number): number => ((i + 1) % late === 0 ? 2 * TICK_120 : TICK_120);
+  const TOP_RUNG = FULL_LADDER.rungs.length - 1;
+
+  /** Climbed to the sharpest rung on a clean 120 Hz stream and held there
+   *  past the probation, so a hand-back is a slide and not a probe's revert. */
+  function settledAtTop(): Rig {
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    fastScreen(rig);
+    rig.run(4000, () => TICK_120);
+    expect(rig.rung).toBe(TOP_RUNG);
+    rig.run(Math.ceil(PROBE_HOLD_MS / TICK_120), () => TICK_120);
+    expect(rig.controller.state().probation).toBeNull();
+    return rig;
+  }
+
+  it('holds the sharpest rung on a clean 120 Hz stream for as long as it runs', () => {
+    const rig = settledAtTop();
+    const steps = rig.applied.length;
+    rig.run(Math.ceil(120_000 / TICK_120), () => TICK_120);
+    expect(rig.applied.length).toBe(steps);
+    expect(rig.rung).toBe(TOP_RUNG);
+  });
+
+  it('hands a sharper rung back within a down window when a frame in eight is late — the 1.05 bar, where 1.15 held it', () => {
+    // Measured on a 120 Hz Mac at the sharpest rung near a magnified surface:
+    // the GPU at 86–100 % of the tick, a frame in eight at two ticks, and the
+    // rung held for twenty seconds of visible stutter. The regime's mean sits
+    // between the two bars, which is why the bar had to move.
+    const regimeMs = (7 * TICK_120 + 2 * TICK_120) / 8;
+    expect(regimeMs).toBeLessThan(DOWN_FACTOR * TICK_120);
+    expect(regimeMs).toBeGreaterThan(CLOCK_INTERVAL_DOWN * TICK_120);
+    const rig = settledAtTop();
+    const from = rig.applied.length;
+    const atMs = rig.nowMs;
+    rig.run(600, oneInLateFast(8));
+    const step = rig.applied[from];
+    expect(step).toBeDefined();
+    expect(step.to).toBe(TOP_RUNG - 1);
+    expect(step.reason).toBe('down');
+    // A down window at the 60 fps budget's count, which the fine tick fills in
+    // about three seconds.
+    expect(step.atMs - atMs).toBeLessThanOrEqual(DOWN_WINDOW_COUNTED * regimeMs + 2 * TICK_120);
+    expect(rig.controller.state().lastStep?.windowBy).toBe('count');
+    // The regime going on at the rung below hands that back too — and Medium,
+    // held to the 60 fps budget, keeps it: the frames are 107 fps.
+    rig.run(1200, oneInLateFast(8));
+    expect(rig.applied.slice(from).map((a) => [a.to, a.reason])).toEqual([
+      [TOP_RUNG - 1, 'down'],
+      [FULL_LADDER.mediumIndex, 'down'],
+    ]);
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
+  });
+
+  it('a stream between the climb’s gate and the hold bar neither climbs nor falls', () => {
+    // One frame in twenty at two ticks: a trimmed down window of 8.68 ms
+    // under the 8.75 hold bar, a trimmed up window of 8.71 over the 8.50
+    // climb gate.
+    const rig = settledAtTop();
+    rig.run(1200, oneInLateFast(8));
+    expect(rig.rung).toBe(FULL_LADDER.mediumIndex);
+    rig.run(Math.ceil(PROBE_WAIT_MS / TICK_120) + 1, () => TICK_120);
+    const steps = rig.applied.length;
+    const rung = rig.rung;
+    rig.run(Math.ceil(40_000 / TICK_120), oneInLateFast(20));
+    expect(rig.applied.length).toBe(steps);
+    expect(rig.rung).toBe(rung);
+  });
+
+  it('a three-second burst of a frame in twelve late — tiles arriving — costs one hand-back, and the sharper rung is probed again after its ceiling', () => {
+    // The Mars approach as measured: Dynamic reached the sharpest rung on the
+    // way in, and at 1.2 radii about thirty frames in three seconds went to
+    // two ticks as sectors streamed in. Inside the probation the hand-back is
+    // the probe failing: one rung, the wait doubled, the rung ceilinged.
+    const rig = new Rig(new ResolutionController(FULL_LADDER));
+    fastScreen(rig);
+    rig.run(4000, () => TICK_120);
+    expect(rig.rung).toBe(TOP_RUNG);
+    expect(rig.controller.state().probation).not.toBeNull();
+    const from = rig.applied.length;
+    rig.run(360, oneInLateFast(12));
+    // Clean again: the burst's tail at the rung below does not hand it back.
+    rig.run(Math.ceil(10_000 / TICK_120), () => TICK_120);
+    expect(rig.applied.slice(from).map((a) => [a.to, a.reason])).toEqual([[TOP_RUNG - 1, 'revert']]);
+    expect(rig.controller.state().ceiling).toMatchObject({ rung: TOP_RUNG, escalation: 1 });
+    expect(rig.controller.state().probeWaitMs).toBe(2 * PROBE_WAIT_MS);
+    // Past the ceiling's minute the sharpest rung is probed again on the
+    // clean stream, verified, and held.
+    rig.run(Math.ceil((CEILING_HOLD_MS[0] + 10_000) / TICK_120), () => TICK_120);
+    expect(rig.applied.slice(from).map((a) => [a.to, a.reason])).toEqual([
+      [TOP_RUNG - 1, 'revert'],
+      [TOP_RUNG, 'up'],
+    ]);
+    expect(rig.rung).toBe(TOP_RUNG);
+  });
+
   it('a row’s target is defended with pixels in both directions', () => {
     // The 60 fps row on any display: the user asked for 60, so the picture is
     // as sharp as 60 allows, which is the rule the default used to have.

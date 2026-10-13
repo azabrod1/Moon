@@ -6,9 +6,12 @@
  * later the rail and the panel windows), never at the scene: the beat runner
  * hides it the moment the press's consequence is the thing to look at. The
  * geometry is tutorialSpotlightLogic's; this class measures and draws. The
- * target is re-measured every frame while the layer is up (track), so a
+ * target is re-measured every frame while a target is held (track), so a
  * scrolling deck list, a dragged phone sheet or a resize cannot leave the
- * ring behind. Decorative throughout (aria-hidden): the card's live body
+ * ring behind; a control scrolled out of its list — which still reports its
+ * full size from the DOM — takes the layer down until it shows again, so
+ * the ring can never point at chrome the control is not under. Decorative
+ * throughout (aria-hidden): the card's live body
  * carries the words. Sits at z 29 in #planetarium-ui — above the cluster
  * (28), the deck (27) and the panel (21), below the card (30) and the veil
  * (50) — and never takes pointer events, so the user can still tap the
@@ -16,8 +19,10 @@
  */
 import {
   SPOTLIGHT_CUTOUT_RADIUS_PX,
+  SPOTLIGHT_MIN_VISIBLE_FRACTION,
   placeBubble,
   spotlightCutout,
+  visibleFraction,
 } from '../tutorialSpotlightLogic';
 import type { BubbleSide, Rect } from '../tutorialSpotlightLogic';
 
@@ -38,6 +43,8 @@ export class TutorialSpotlight {
   private bubbleTextEl: HTMLElement | null = null;
   private bubbleKeyEl: HTMLElement | null = null;
   private target: Element | null = null;
+  /** The target's scrolling ancestors, found once at show(): what can clip it. */
+  private clipAncestors: Element[] = [];
   private pressed: Element | null = null;
   private lastMeasure: SpotlightMeasure | null = null;
 
@@ -54,6 +61,11 @@ export class TutorialSpotlight {
    *  layer never shows a frame with the ring at its last position. */
   show(target: Element, label: string, key: string | undefined, avoid: readonly Rect[]): void {
     this.target = target;
+    this.clipAncestors = [];
+    for (let el = target.parentElement; el && el !== document.body; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      if (style.overflowX !== 'visible' || style.overflowY !== 'visible') this.clipAncestors.push(el);
+    }
     if (this.bubbleTextEl) this.bubbleTextEl.textContent = label;
     if (this.bubbleKeyEl) {
       this.bubbleKeyEl.textContent = key ?? '';
@@ -64,12 +76,19 @@ export class TutorialSpotlight {
 
   hide(): void {
     this.target = null;
+    this.clipAncestors = [];
     this.lastMeasure = null;
     this.rootEl?.classList.remove('visible');
   }
 
+  /** The layer is drawn right now (a held target can be clipped out of sight). */
   isVisible(): boolean {
     return this.rootEl?.classList.contains('visible') ?? false;
+  }
+
+  /** A control is being tracked, shown or not; the host keeps tracking it. */
+  hasTarget(): boolean {
+    return this.target !== null;
   }
 
   /** The current target, for the host to check it is still the element it rang. */
@@ -85,8 +104,10 @@ export class TutorialSpotlight {
   /**
    * Re-measure the target and lay the cutout, the ring and the bubble out
    * around it, keeping the bubble off every `avoid` rectangle (the card).
-   * Returns null — and hides the layer — when the target has left the
-   * document or has no size (a closed deck's row, a hidden chip).
+   * Returns null — and drops the target — when it has left the document or
+   * has no size (a closed deck's row, a hidden chip). A target mostly
+   * scrolled out of sight is kept but the layer comes down for the frame,
+   * and comes back when it shows again.
    */
   track(avoid: readonly Rect[]): SpotlightMeasure | null {
     const root = this.rootEl;
@@ -108,6 +129,13 @@ export class TutorialSpotlight {
       w: rect.width,
       h: rect.height,
     });
+    const clips = [viewport, ...this.clipAncestors.map((el) => local(el.getBoundingClientRect()))];
+    if (visibleFraction(local(targetRect), clips) < SPOTLIGHT_MIN_VISIBLE_FRACTION) {
+      this.lastMeasure = null;
+      root.classList.remove('visible');
+      return null;
+    }
+    root.classList.add('visible');
     const cutout = spotlightCutout(local(targetRect), viewport);
     if (this.maskPathEl) {
       this.maskPathEl.setAttribute('d', maskPath(viewport, cutout, SPOTLIGHT_CUTOUT_RADIUS_PX));

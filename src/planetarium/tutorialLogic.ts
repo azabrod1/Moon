@@ -525,6 +525,29 @@ export function totalitySettleUtcMs(peakUtcMs: number): number {
   return peakUtcMs - TUTORIAL_TOTALITY_SETTLE_LEAD_MS;
 }
 
+/** A clock run back this far before the event's first contact still counts
+ *  as approaching it (a reverse step from the rewind instant). */
+export const TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS = 60 * 60_000;
+
+/**
+ * Where the eclipse stop's clock stands against its event, since the time
+ * controls stay live while the card reads "Watching…": 'approach' from a
+ * little before first contact up to the settle instant, 'totality' from
+ * there to the event's end, and 'away' once the clock has been moved
+ * before the approach or past the event by hand — a Now press, a date, a
+ * reverse run. Away, the stop stops waiting for a totality that may never
+ * come; it never shows the climax over the wrong sky.
+ */
+export function eclipseClockPhase(
+  nowUtcMs: number,
+  event: { startUtcMs: number; peakUtcMs: number; endUtcMs: number },
+): 'approach' | 'totality' | 'away' {
+  const settle = totalitySettleUtcMs(event.peakUtcMs);
+  if (nowUtcMs >= settle && nowUtcMs <= event.endUtcMs) return 'totality';
+  if (nowUtcMs >= event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS && nowUtcMs < settle) return 'approach';
+  return 'away';
+}
+
 /**
  * Per-step phase machine. 'staging' = scene work requested (theater playing,
  * arrival pending); 'settling' = staged, waiting for the busy signals to

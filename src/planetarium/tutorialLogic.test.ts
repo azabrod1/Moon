@@ -6,6 +6,8 @@ import {
   TUTORIAL_ECLIPSE_APPROACH_RATE,
   TUTORIAL_SETTLE_DWELL_MS,
   totalitySettleUtcMs,
+  eclipseClockPhase,
+  TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS,
   tutorialTransition,
   isStepSettled,
   restorePlan,
@@ -508,6 +510,31 @@ describe('the showcase eclipse', () => {
     expect(formatTimeRateLabel(TUTORIAL_ECLIPSE_APPROACH_RATE, false)).toBe('20 min/s');
     const presets = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
     expect(presets).toContain(TUTORIAL_ECLIPSE_APPROACH_RATE);
+  });
+});
+
+describe('eclipseClockPhase', () => {
+  const peak = Date.parse('2027-08-02T10:06:41Z');
+  const event = { startUtcMs: peak - 150 * MIN, peakUtcMs: peak, endUtcMs: peak + 150 * MIN };
+  const settle = totalitySettleUtcMs(peak);
+
+  it('approaches from first contact (and a little before) up to the settle instant', () => {
+    expect(eclipseClockPhase(event.startUtcMs, event)).toBe('approach');
+    expect(eclipseClockPhase(event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS, event)).toBe('approach');
+    expect(eclipseClockPhase(settle - 1, event)).toBe('approach');
+  });
+
+  it('is totality from the settle instant to the event’s end', () => {
+    expect(eclipseClockPhase(settle, event)).toBe('totality');
+    expect(eclipseClockPhase(peak, event)).toBe('totality');
+    expect(eclipseClockPhase(event.endUtcMs, event)).toBe('totality');
+  });
+
+  it('is away before the approach and after the event: a Now press, a date in 2028, a reverse run', () => {
+    expect(eclipseClockPhase(Date.parse('2026-10-13T12:00:00Z'), event)).toBe('away');
+    expect(eclipseClockPhase(Date.parse('2028-01-26T12:00:00Z'), event)).toBe('away');
+    expect(eclipseClockPhase(event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS - 1, event)).toBe('away');
+    expect(eclipseClockPhase(event.endUtcMs + 1, event)).toBe('away');
   });
 });
 

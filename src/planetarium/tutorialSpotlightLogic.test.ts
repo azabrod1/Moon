@@ -12,6 +12,7 @@ import {
   rectsOverlap,
   spotlightCutout,
   subjectFrame,
+  visibleFraction,
 } from './tutorialSpotlightLogic';
 import type { Rect } from './tutorialSpotlightLogic';
 
@@ -116,6 +117,26 @@ describe('placeBubble', () => {
     });
     expect(placed.x).toBe(BUBBLE_MARGIN_PX);
     expect(placed.side).toBe('below');
+  });
+});
+
+describe('visibleFraction', () => {
+  const row = { x: 20, y: 300, w: 300, h: 30 };
+  it('is 1 inside every clip and 0 when any clip excludes it', () => {
+    expect(visibleFraction(row, [DESKTOP, { x: 0, y: 200, w: 400, h: 400 }])).toBe(1);
+    expect(visibleFraction(row, [DESKTOP, { x: 0, y: 400, w: 400, h: 400 }])).toBe(0);
+    expect(visibleFraction(row, [])).toBe(1);
+  });
+
+  it('a row half scrolled out of its list shows half', () => {
+    // The list's box ends 15 px into the row.
+    expect(visibleFraction(row, [DESKTOP, { x: 0, y: 100, w: 400, h: 215 }])).toBeCloseTo(0.5);
+    // Clipped on the left by a third.
+    expect(visibleFraction(row, [{ x: 120, y: 0, w: 1000, h: 900 }])).toBeCloseTo(2 / 3);
+  });
+
+  it('a sizeless target shows nothing', () => {
+    expect(visibleFraction({ x: 0, y: 0, w: 0, h: 10 }, [DESKTOP])).toBe(0);
   });
 });
 

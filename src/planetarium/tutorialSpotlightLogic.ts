@@ -161,6 +161,32 @@ function clampArrow(along: number, extent: number): number {
  * as a disc, so a long thin strip is worth less than a squarer area. Area
  * breaks ties. Obstacles with no size are ignored.
  */
+/**
+ * How much of `target` is actually visible once every clipping rectangle
+ * (the viewport, a scrolling list, a panel body) has had its say: the area
+ * of the intersection over the target's own area, 0 when nothing shows. A
+ * clipped element still reports its full size from the DOM, so this is how
+ * the spotlight knows a row has been scrolled out of its list.
+ */
+export function visibleFraction(target: Rect, clips: readonly Rect[]): number {
+  if (target.w <= 0 || target.h <= 0) return 0;
+  let x0 = target.x;
+  let y0 = target.y;
+  let x1 = target.x + target.w;
+  let y1 = target.y + target.h;
+  for (const clip of clips) {
+    x0 = Math.max(x0, clip.x);
+    y0 = Math.max(y0, clip.y);
+    x1 = Math.min(x1, clip.x + clip.w);
+    y1 = Math.min(y1, clip.y + clip.h);
+    if (x1 <= x0 || y1 <= y0) return 0;
+  }
+  return ((x1 - x0) * (y1 - y0)) / (target.w * target.h);
+}
+
+/** Below this share of a control showing, the spotlight does not ring it. */
+export const SPOTLIGHT_MIN_VISIBLE_FRACTION = 0.5;
+
 export function largestFreeRect(viewport: Rect, obstacles: readonly Rect[], margin = 0): Rect {
   const blocks = obstacles.filter((rect) => rect.w > 0 && rect.h > 0 && rectsOverlap(rect, viewport));
   const xs = new Set<number>([viewport.x, viewport.x + viewport.w]);

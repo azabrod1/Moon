@@ -397,10 +397,10 @@ import {
   canStartTutorial,
   isStepSettled,
   restorePlan,
-  totalitySettleUtcMs,
   TUTORIAL_ECLIPSE,
   TUTORIAL_STEPS,
   tutorialTransition,
+  eclipseClockPhase,
   initialBeatRun,
   stepBeatRun,
   clockWasLive,
@@ -2507,6 +2507,10 @@ export class PlanetariumMode {
     snapshot: TutorialSnapshot;
     eclipse: ShadowEvent | null;
     totalityReached: boolean;
+    /** The eclipse's hold for totality was given up: the clock was moved by
+     *  hand out of the approach (eclipseClockPhase 'away'), so Next frees
+     *  without the climax card. */
+    totalityWaived: boolean;
     /** A scene step actually staged. False while only card-only steps ran —
      *  ending then has nothing to put back (see executeTutorialStop). */
     everStaged: boolean;
@@ -10656,6 +10660,7 @@ export class PlanetariumMode {
       snapshot,
       eclipse: null,
       totalityReached: false,
+      totalityWaived: false,
       everStaged: false,
       stagedAtMs: performance.now(),
       timer: null,
@@ -10887,6 +10892,7 @@ export class PlanetariumMode {
     tutorial.stepIndex = index;
     tutorial.phase = 'staging';
     tutorial.totalityReached = false;
+    tutorial.totalityWaived = false;
     // The furthest stop reached outlives the tour and the journey: a skip
     // mid-way is remembered, and the entries can say the tour was finished.
     this.store.writeTourProgress({ stopReached: index });
@@ -11771,7 +11777,9 @@ export class PlanetariumMode {
     // The stop's overrides hold every frame — the ship's visibility has
     // several writers — and the ring follows its control wherever it goes.
     if (tutorial.overrides.hideShip) this.player.group.visible = false;
-    if (this.tutorialSpotlight.isVisible()) this.tutorialSpotlight.track(this.tutorialAvoidRects());
+    // Tracked while a control is held, shown or not: a row scrolled out of
+    // its list takes the layer down and brings it back when it shows again.
+    if (this.tutorialSpotlight.hasTarget()) this.tutorialSpotlight.track(this.tutorialAvoidRects());
     this.updateTutorialPan();
     if (tutorial.phase === 'settling') {
       const settled = isStepSettled(
@@ -11780,7 +11788,7 @@ export class PlanetariumMode {
           veilCovering:
             document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
           fovAnimating: this.surfaceFovAnim !== null,
-          totalityReached: tutorial.totalityReached,
+          totalityReached: tutorial.totalityReached || tutorial.totalityWaived,
           sinceStagedMs: performance.now() - tutorial.stagedAtMs,
         },
         step.settle,
@@ -11795,23 +11803,39 @@ export class PlanetariumMode {
     // settling→ready transition next frame reads totalityReached and re-renders
     // the card). One-shot — a user who scrubs the rate afterwards is left
     // alone. Gated past 'staging' so a pre-stage clock already sitting in 2027+
-    // can't trip it before the staging has even set the time.
+    // can't trip it before the staging has even set the time. The time
+    // controls stay live under "Watching…": a clock moved by hand out of
+    // the approach (Now, a date, a reverse run) frees Next without the
+    // climax — totality is read only inside this event's own window, so the
+    // climax card never shows over another sky.
     if (
       !tutorial.totalityReached &&
       step.stage === 'eclipse' &&
       tutorial.eclipse !== null &&
-      (tutorial.phase === 'settling' || tutorial.phase === 'ready') &&
-      this.timeState.currentUtcMs >= totalitySettleUtcMs(tutorial.eclipse.peakUtcMs)
+      (tutorial.phase === 'settling' || tutorial.phase === 'ready')
     ) {
-      tutorial.totalityReached = true;
-      this.setTutorialClockRate(1);
-      // The climax card: its own title, kicker and words (tutorialCardModel).
-      tutorial.kicker = null;
-      this.renderTutorialCard();
+      const clockPhase = eclipseClockPhase(this.timeState.currentUtcMs, tutorial.eclipse);
+      if (clockPhase === 'totality') {
+        tutorial.totalityReached = true;
+        this.setTutorialClockRate(1);
+        // The climax card: its own title, kicker and words (tutorialCardModel).
+        tutorial.kicker = null;
+        this.renderTutorialCard();
+      } else if (clockPhase === 'away' && !tutorial.totalityWaived) {
+        tutorial.totalityWaived = true;
+        this.renderTutorialCard();
+      }
     }
     // The approach's kicker counts down to the peak, live, from the same
-    // helper the surface HUD uses; re-rendered only as the text changes.
-    if (step.stage === 'eclipse' && tutorial.eclipse && !tutorial.totalityReached && tutorial.phase === 'settling') {
+    // helper the surface HUD uses; re-rendered only as the text changes. It
+    // keeps reading the clock after a waiver too ("ended 2h ago"), so the
+    // card stays honest about a sky the user moved to.
+    if (
+      step.stage === 'eclipse' &&
+      tutorial.eclipse &&
+      !tutorial.totalityReached &&
+      (tutorial.phase === 'settling' || tutorial.phase === 'ready')
+    ) {
       const kicker = `From Earth · ${eventCountdownText(this.timeState.currentUtcMs, tutorial.eclipse)}`;
       if (kicker !== tutorial.kicker) {
         tutorial.kicker = kicker;

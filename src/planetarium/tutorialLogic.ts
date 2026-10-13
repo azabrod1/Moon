@@ -181,7 +181,7 @@ const JUPITER_BEATS: readonly TutorialBeat[] = [
   },
 ];
 
-const ECLIPSE_REWIND_BODY = 'Let’s rewind two hours and watch it begin.';
+const ECLIPSE_REWIND_BODY = 'Let’s rewind to first contact and watch it begin.';
 
 const ECLIPSE_BEATS: readonly TutorialBeat[] = [
   { id: 'earth-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Earth…' },

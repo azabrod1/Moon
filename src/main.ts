@@ -3820,6 +3820,7 @@ function installDevHooks() {
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),
     openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
+    setSheetPark: (park: string) => planetariumMode?.devSetSheetPark(park as never),
     swapVantage: () => planetariumMode?.devSwapVantage() ?? false,
     jumpEvent: (type: string, direction?: 1 | -1) =>
       planetariumMode?.devJumpEvent(type as never, direction ?? 1) ?? false,

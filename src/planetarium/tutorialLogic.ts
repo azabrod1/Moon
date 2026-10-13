@@ -641,6 +641,32 @@ export function restorePlan(ctx: RestoreContext): RestorePlan {
 }
 
 /**
+ * What a stop before the tour staged anything still has to put back. The
+ * start itself makes one move — it leaves a surface view, because the
+ * stagings need the orbit view — and a Skip or Esc during the first stop's
+ * beats walks back into it: only while the ground is the same (an arrival
+ * of the user's own is theirs to keep) and the user has not entered a
+ * surface view of their own meanwhile. Everything else they did under the
+ * card is theirs, and a lifecycle abort has no time for the entry glide.
+ */
+export function earlyRestorePlan(ctx: {
+  snapshotLandedOn: string | null;
+  snapshotSurfaceView: boolean;
+  inSurfaceView: boolean;
+  landedOn: string | null;
+  lifecycleAbort: boolean;
+}): { reenterSurfaceView: boolean } {
+  return {
+    reenterSurfaceView:
+      !ctx.lifecycleAbort &&
+      ctx.snapshotSurfaceView &&
+      !ctx.inSurfaceView &&
+      ctx.landedOn !== null &&
+      ctx.landedOn === ctx.snapshotLandedOn,
+  };
+}
+
+/**
  * Whether the clock the tour is about to take over was running at now: 1×,
  * not paused, within the live window of the wall clock. Recorded at entry,
  * because by the time the tour ends the snapshot's instant is minutes stale

@@ -397,6 +397,7 @@ import {
   canStartTutorial,
   isStepSettled,
   restorePlan,
+  earlyRestorePlan,
   TUTORIAL_ECLIPSE,
   TUTORIAL_STEPS,
   tutorialTransition,
@@ -428,6 +429,7 @@ import {
   miniChartSetting,
   miniChartSizeSetting,
   orbitLinesSetting,
+  persistPreference,
   resolvePreferences,
   showShipSetting,
   skyPanelOnArrivalSetting,
@@ -3318,8 +3320,12 @@ export class PlanetariumMode {
       buildingSolarSystem = !this.solarSystem;
       const initialDefaultState = savedState ? null : createDefaultPlanetariumState();
       if (initialDefaultState) {
-        // Persist a starter journey immediately so slow mobile loads can still resume.
-        this.store.saveState(initialDefaultState);
+        // Persist a starter journey immediately so slow mobile loads can still
+        // resume — without the preference copies: the keys hold the
+        // preferences, and a save that carried the defaults would be read
+        // back as choices by the migration if the session ended before the
+        // first stripped save replaced it.
+        this.store.saveState(withoutPreferenceFields(initialDefaultState));
       }
       const shouldPromptForResume = !this.solarSystem && !!savedState;
       reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
@@ -9981,7 +9987,10 @@ export class PlanetariumMode {
     // A held ship (paused clock) is inert the same way — and the key set
     // keeps tracking the physical keys through both, so what resumes on
     // unpause is exactly what the hands are doing at that moment.
-    if (this.isMapOpen() || this.player.held) {
+    // A reading surface has the screen the same way: Help pauses the clock
+    // as well, the first-run welcome sits over the live sky, and neither lets
+    // a held key steer the ship behind a dialog.
+    if (this.isMapOpen() || this.player.held || this.isHelpOpen()) {
       this.player.yawInput = 0;
       this.player.pitchInput = 0;
       return;
@@ -10815,10 +10824,23 @@ export class PlanetariumMode {
       return;
     }
     if (!tutorial.everStaged) {
-      // Skip or Esc before the tour moved anything (during the first stop's
-      // beats, with the deck open and the ship where it was): nothing to put
-      // back — a restore here would only jump-cut a landed user's own camera
-      // framing to the default. Whatever they did under the card is theirs.
+      // Skip or Esc before the tour moved the scene (during the first stop's
+      // beats, with the deck open and the ship where it was): a restore here
+      // would only jump-cut a landed user's own camera framing to the
+      // default, and whatever they did under the card is theirs. The one
+      // move the start itself made — leaving a surface view for the
+      // stagings' orbit view — is walked back into, sheet park and all.
+      const early = earlyRestorePlan({
+        snapshotLandedOn: snap.state.landedOn?.name ?? null,
+        snapshotSurfaceView: snap.view.landedView === 'surface',
+        inSurfaceView: this.landedView === 'surface',
+        landedOn: this.landedOn?.name ?? null,
+        lifecycleAbort: sync,
+      });
+      if (early.reenterSurfaceView) {
+        this.restoreTutorialView(snap.view, true);
+        if (this.observatoryPanel.isOpen()) this.observatoryPanel.setSheetPark(snap.view.sheetPark);
+      }
       finish();
       return;
     }
@@ -10853,11 +10875,12 @@ export class PlanetariumMode {
       }); // re-lands when the snapshot was landed
       this.observatoryExcursion = snap.excursion;
       this.lastObservatoryEvent = snap.lastObservatoryEvent;
-      if (plan.reopenPanel && this.landedOn) {
-        this.openObservatoryPanel();
-        this.observatoryPanel.setSheetPark(snap.view.sheetPark);
-      }
+      if (plan.reopenPanel && this.landedOn) this.openObservatoryPanel();
       this.restoreTutorialView(snap.view, plan.reenterSurfaceView);
+      // After the surface re-entry, which shows the open panel again and so
+      // parks the sheet at peek as every show does: the park the snapshot
+      // held is the last word.
+      if (plan.reopenPanel && this.landedOn) this.observatoryPanel.setSheetPark(snap.view.sheetPark);
       finish();
     };
     if (plan.veilGate && snap.state.landedOn) {
@@ -12502,6 +12525,10 @@ export class PlanetariumMode {
     document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
       this.showShip = !this.showShip;
       this.savePreference(showShipSetting, this.showShip);
+      // A mission forces the ship on and puts the user's preference back when
+      // it ends — the preference as it stands then, so a toggle made during
+      // the mission is kept rather than reverted while its key says otherwise.
+      if (this.preMissionShowShip !== null) this.preMissionShowShip = this.showShip;
       this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
@@ -18460,6 +18487,11 @@ export class PlanetariumMode {
     return true;
   }
 
+  /** Headless support: park the Observatory sheet (phone form) by hand. */
+  devSetSheetPark(park: SheetPark): void {
+    this.observatoryPanel.setSheetPark(park);
+  }
+
   /** Headless support: trigger the Observatory vantage swap ("Switch to …"). */
   devSwapVantage(): boolean {
     if (!this.landedOn || !this.swapCompanionTarget()) return false;
@@ -18538,6 +18570,9 @@ export class PlanetariumMode {
   devTutorialStage(index: number): boolean {
     const tutorial = this.tutorial;
     if (!tutorial || index < 0 || index >= TUTORIAL_STEPS.length) return false;
+    // A real tour reaches any later stop through Saturn's arrival, which
+    // moves the scene: ending from a staged stop restores the way it would.
+    if (index > 0) tutorial.everStaged = true;
     this.stageTutorialStep(index);
     return true;
   }
@@ -18557,6 +18592,7 @@ export class PlanetariumMode {
       landedOn: this.landedOn?.name ?? null,
       surface: this.landedView === 'surface',
       panelOpen: this.observatoryPanel.isOpen(),
+      sheetPark: this.observatoryPanel.getSheetPark(),
       rate: this.timeState.rate,
       paused: this.timeState.paused,
       timeMs: this.timeState.currentUtcMs,
@@ -21679,9 +21715,10 @@ export class PlanetariumMode {
 
   /** Write one preference to its key. A refused write (private mode, a full
    *  store) puts the journey back to carrying the preferences, so nothing is
-   *  lost for the session. */
+   *  lost for the session, and clears the key, so a stale value under it
+   *  cannot outrank the journey's copy at the next boot. */
   private savePreference<T>(setting: StoredSetting<T>, value: T): void {
-    if (!setting.write(value)) this.preferencesPersisted = false;
+    if (!persistPreference(setting, value)) this.preferencesPersisted = false;
   }
 
   private restoreState(saved: PlanetariumState) {

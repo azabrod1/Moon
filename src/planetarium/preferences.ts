@@ -123,6 +123,23 @@ export function resolvePreferences(
   return resolved as unknown as PlanetariumPreferences;
 }
 
+/**
+ * Write one preference to its key, or make sure the key cannot lie. A key
+ * always outranks the journey's copy at boot (resolvePreferences), so when
+ * the write is refused — a full store, with an older value still under the
+ * key — the key is cleared: the journey carries the new value until a write
+ * lands, and nothing stale can outrank it. Returns whether the write landed.
+ */
+export function persistPreference<T>(
+  setting: StoredSetting<T>,
+  value: T,
+  storage: QualityStorage | null = null,
+): boolean {
+  if (setting.write(value, storage)) return true;
+  setting.clear(storage);
+  return false;
+}
+
 export interface PreferenceMigration {
   /** The keys written from the journey's copies. */
   written: string[];

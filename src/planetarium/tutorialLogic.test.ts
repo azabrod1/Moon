@@ -11,6 +11,7 @@ import {
   tutorialTransition,
   isStepSettled,
   restorePlan,
+  earlyRestorePlan,
   canStartTutorial,
   clockWasLive,
   restoredClockUtcMs,
@@ -264,6 +265,22 @@ describe('isStepSettled', () => {
       sinceStagedMs: 0,
     };
     expect(isStepSettled(busy, { arrival: false, fov: false, totality: false, dwellMs: 0 })).toBe(true);
+  });
+});
+
+describe('earlyRestorePlan', () => {
+  const BASE = { snapshotLandedOn: 'Moon', snapshotSurfaceView: true, inSurfaceView: false, landedOn: 'Moon', lifecycleAbort: false };
+
+  it('walks back into the surface view the start left, on the same ground', () => {
+    expect(earlyRestorePlan(BASE)).toEqual({ reenterSurfaceView: true });
+  });
+
+  it('leaves everything else alone: an orbit snapshot, a surface view the user entered since, other ground, no ground, a lifecycle abort', () => {
+    expect(earlyRestorePlan({ ...BASE, snapshotSurfaceView: false }).reenterSurfaceView).toBe(false);
+    expect(earlyRestorePlan({ ...BASE, inSurfaceView: true }).reenterSurfaceView).toBe(false);
+    expect(earlyRestorePlan({ ...BASE, landedOn: 'Earth' }).reenterSurfaceView).toBe(false);
+    expect(earlyRestorePlan({ ...BASE, landedOn: null, snapshotLandedOn: null }).reenterSurfaceView).toBe(false);
+    expect(earlyRestorePlan({ ...BASE, lifecycleAbort: true }).reenterSurfaceView).toBe(false);
   });
 });
 

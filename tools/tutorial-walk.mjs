@@ -17,11 +17,15 @@
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
-//   - Esc in the middle of a beat drops the ring and the press at once;
+//   - Esc in the middle of a beat drops the ring and the press at once, and
+//     from a surface view the start had to leave it walks back in;
+//   - on the phone, Back where I was from a surface view with the sheet
+//     parked full brings the surface view and the park back;
 //   - the wrap's three chips each restore the journey and then do what they
 //     say: a teleport to Mars, the Moon landing with Earth overhead, the
 //     Voyager 1 mission;
-//   - the first run opens on the welcome, whose three ways out all mark it
+//   - the first run opens on the welcome, under which a held flight key does
+//     not steer the ship, and whose three ways out all mark it
 //     seen, and the ☰ row reads "Take the tour" until the tour has been
 //     completed once, then "Replay the tour".
 // Software rendering (the lab box has no GPU): frames take seconds, so every
@@ -209,6 +213,15 @@ try {
     check(hero.tour >= 44 && hero.explore >= 44 && Math.abs(hero.tour - hero.explore) < 1, `${tag} firstrun: two choices of equal size`, { tour: hero.tour, explore: hero.explore });
     await shot(page, `${tag}-00-firstrun-welcome`);
     if (tag === 'desktop') {
+      // The welcome sits over the live sky, so the clock runs under it — but a
+      // held flight key must not steer the ship behind a modal dialog.
+      const course = (await tstate(page)).ship;
+      await page.keyboard.down('a');
+      await sleep(700);
+      await page.keyboard.up('a');
+      await sleep(200);
+      const steered = (await tstate(page)).ship;
+      check(steered.heading === course.heading && steered.pitch === course.pitch, `${tag} firstrun: a held flight key does not steer the ship under the welcome`, { before: course.heading, after: steered.heading });
       await page.click('#tutorial-hero-explore');
       await sleep(300);
       hero = await heroState(page);
@@ -438,6 +451,68 @@ try {
     const dist = Math.hypot(after.ship.x - before.ship.x, after.ship.y - before.ship.y, after.ship.z - before.ship.z);
     check(dist < 0.02 && after.ship.heading === before.ship.heading, 'esc: the ship kept its own course (no scene was staged)', { dist });
     await shot(page, 'desktop-31-esc-after');
+    await context.close();
+  }
+
+  // Esc during the first beat from a surface view: the start left it for the
+  // orbit view the stagings need, and the early stop must walk back in.
+  if (!ONLY || ONLY === 'desktop') {
+    note('[esc from surface view desktop]');
+    const context = await fresh(DESKTOP);
+    const page = await boot(context);
+    await page.evaluate(() => window.__moon.land('Moon'));
+    await page.waitForFunction(() => window.__moon.tutorialState().landedOn === 'Moon', null, { timeout: 300_000 });
+    await sleep(2000);
+    await page.evaluate(() => window.__moon.openObservatory());
+    await page.evaluate(() => window.__moon.lookUp());
+    await page.waitForFunction(() => window.__moon.tutorialState().surface, null, { timeout: 120_000 });
+    await sleep(1500);
+    const before = await page.evaluate(() => window.__moon.probeLanded());
+    await page.evaluate(() => window.__moon.tutorialStart());
+    await page.waitForFunction(() => window.__moon.tutorialState().spotlight !== null, null, { timeout: 60_000 });
+    const during = await tstate(page);
+    check(!during.surface && during.landedOn === 'Moon', 'esc from surface: the start left the surface view for the stagings', { surface: during.surface, landed: during.landedOn });
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 60_000 });
+    await sleep(1500);
+    const after = await page.evaluate(() => window.__moon.probeLanded());
+    const state = await tstate(page);
+    check(state.landedOn === 'Moon' && state.surface, 'esc from surface: back in the surface view on the same ground', { landed: state.landedOn, surface: state.surface });
+    check(after.subjectName === before.subjectName, 'esc from surface: watching what it watched before', { before: before.subjectName, after: after.subjectName });
+    check(state.panelOpen === true, 'esc from surface: the panel is still open', { panel: state.panelOpen });
+    await shot(page, 'desktop-32-esc-from-surface');
+    await context.close();
+  }
+
+  // Back where I was from a surface view with the sheet parked full: the
+  // surface re-entry shows the panel again, which parks every sheet at peek,
+  // and the snapshot's park must have the last word.
+  if (!ONLY || ONLY === 'phone') {
+    note('[return to surface sheet phone]');
+    const context = await fresh(PHONE, { touch: true });
+    const page = await boot(context);
+    await page.evaluate(() => window.__moon.land('Moon'));
+    await page.waitForFunction(() => window.__moon.tutorialState().landedOn === 'Moon', null, { timeout: 300_000 });
+    await sleep(2000);
+    await page.evaluate(() => window.__moon.openObservatory());
+    await page.evaluate(() => window.__moon.lookUp());
+    await page.waitForFunction(() => window.__moon.tutorialState().surface, null, { timeout: 120_000 });
+    await page.evaluate(() => window.__moon.setSheetPark('full'));
+    await sleep(1000);
+    const before = await tstate(page);
+    check(before.sheetPark === 'full' && before.panelOpen && before.surface, 'return sheet: starting in surface view with the sheet parked full', { park: before.sheetPark, panel: before.panelOpen, surface: before.surface });
+    await page.evaluate(() => window.__moon.tutorialStart());
+    await page.waitForFunction(() => window.__moon.tutorialState().active, null, { timeout: 60_000 });
+    const staged = await page.evaluate(() => window.__moon.tutorialStage(4));
+    await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'wrap' && window.__moon.tutorialState().phase === 'ready', null, { timeout: 120_000 });
+    check(staged, 'return sheet: the wrap card staged directly');
+    await page.click('#tutorial-primary');
+    await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
+    await sleep(3000);
+    const after = await tstate(page);
+    check(after.landedOn === 'Moon' && after.surface && after.panelOpen, 'return sheet: back on the Moon in surface view with the panel open', { landed: after.landedOn, surface: after.surface, panel: after.panelOpen });
+    check(after.sheetPark === 'full', 'return sheet: the sheet is parked full again', { park: after.sheetPark });
+    await shot(page, 'phone-32-return-sheet');
     await context.close();
   }
 

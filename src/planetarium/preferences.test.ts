@@ -5,6 +5,7 @@ import {
   migratePreferencesFromJourney,
   miniChartSizeSetting,
   orbitLinesSetting,
+  persistPreference,
   resolvePreferences,
   showShipSetting,
   skyPanelOnArrivalSetting,
@@ -33,6 +34,17 @@ function readOnlyStorage(seed: Record<string, string> = {}): QualityStorage {
     getItem: (key) => map.get(key) ?? null,
     setItem() { throw new Error('denied'); },
     removeItem() { throw new Error('denied'); },
+  };
+}
+
+/** A store full to the byte: it still reads and forgets, but takes nothing new. */
+function fullStorage(seed: Record<string, string> = {}): QualityStorage & { map: Map<string, string> } {
+  const map = new Map(Object.entries(seed));
+  return {
+    map,
+    getItem: (key) => map.get(key) ?? null,
+    setItem() { throw new Error('QuotaExceededError'); },
+    removeItem: (key) => { map.delete(key); },
   };
 }
 
@@ -94,6 +106,27 @@ describe('resolvePreferences', () => {
     expect(prefs.skyPref).toBeNull();
     expect(prefs.miniChartPref).toBeNull();
     expect(prefs.miniChartSizePref).toBeNull();
+  });
+});
+
+describe('persistPreference', () => {
+  it('writes the key and reports that it landed', () => {
+    const store = fakeStorage();
+    expect(persistPreference(showShipSetting, false, store)).toBe(true);
+    expect(showShipSetting.read(store)).toBe(false);
+  });
+
+  it('clears a stale key when the write is refused, so the journey\'s copy wins at the next boot', () => {
+    const store = fullStorage({ [showShipSetting.key]: 'true' });
+    expect(persistPreference(showShipSetting, false, store)).toBe(false);
+    expect(showShipSetting.read(store)).toBeNull();
+    const journey = { ...createDefaultPlanetariumState(), showShip: false } as PlanetariumState;
+    expect(resolvePreferences(journey, store).showShip).toBe(false);
+  });
+
+  it('reports a refused write where the key cannot be cleared either', () => {
+    const store = readOnlyStorage({ [showShipSetting.key]: 'true' });
+    expect(persistPreference(showShipSetting, false, store)).toBe(false);
   });
 });
 

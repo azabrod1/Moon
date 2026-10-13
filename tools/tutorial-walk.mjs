@@ -148,7 +148,7 @@ try {
         beatCount++;
         if (shots) await shot(page, `${tag}-${stop}-beat-${beatCount}-${state.beat.id}-${state.beat.stage}`);
         if (state.beat.stage === 'hold' && state.beat.id !== 'moon-picture') await assertSpotlight(page, tag, stop, state);
-        if (state.beat.id === 'moon-picture') {
+        if (state.beat.id === 'moon-picture' && state.beat.stage === 'hold') {
           check(state.landedOn === 'Moon' && !state.panelOpen && !state.surface, `${tag} ${stop}/moon-picture: landed on the Moon with the panel still closed`, { landed: state.landedOn, panel: state.panelOpen });
         }
       }

@@ -96,7 +96,7 @@ import { devAlbedoGrade } from './planetarium/world/albedoGrade';
 import { highlightMeterEnabled, parseGlintMeterParam, setHighlightMeterEnabled } from './planetarium/highlightMeter';
 import { parseNightExposureParam, setDevNightExposure, type NightExposureOverride } from './planetarium/world/nightExposure';
 import { DepthDiscardPass } from './app/DepthDiscardPass';
-import { BloomChainPass, FusedOutputPass, parseFusedParam } from './app/FusedOutputPass';
+import { BloomChainPass, FusedOutputPass, parseFusedDownParam, parseFusedParam } from './app/FusedOutputPass';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
   seaWindTexture, seaWindTextureFrom, setSeaWindMips,
@@ -319,6 +319,17 @@ const fixedSceneAllocation = parseAllocParam(location.search);
  * harmless and is the param winning.
  */
 const fusedFinalParam = parseFusedParam(location.search);
+/**
+ * Whether a frame drawn larger than the canvas is averaged down inside the
+ * finishing pass (app/FusedOutputPass.ts, the supersample's box) or by the
+ * downsample pass after it. `?fuseddown=0` on any build is the old path and is
+ * fixed for the session: the finishing pass's text then carries no box at all.
+ * In DEV the registry's `fused-downsample` flips the choice live — a uniform
+ * and a pass's enabled flag, nothing rebuilt — so its A/B comes out of one
+ * page. The `?fused=0` chain has no finishing pass to fold into and keeps the
+ * downsample whatever this says.
+ */
+const fusedDownParam = parseFusedDownParam(location.search);
 // The output dither's switch, read once: every pass that can draw the canvas
 // reads its one uniform (app/outputDither.ts).
 setOutputDither(parseDitherParam(location.search));
@@ -389,6 +400,9 @@ if (import.meta.env.DEV) {
 }
 function fusedFinalOn(): boolean {
   return fusedFinalParam && (import.meta.env.DEV ? perfSwitchOn('fused-final') : true);
+}
+function fusedDownsampleOn(): boolean {
+  return fusedDownParam && (import.meta.env.DEV ? perfSwitchOn('fused-downsample') : true);
 }
 
 // ================================================================
@@ -1434,11 +1448,16 @@ function buildComposer(
   // OutputPass did; enabled (applyUpscalePasses, from the live state) they
   // take the frame from its own target across to the canvas. Never more than
   // one direction at a time, which is why the downsample can sit last: three
-  // gives the canvas to the last ENABLED pass every render.
+  // gives the canvas to the last ENABLED pass every render. On the
+  // planetarium's fused chain the finishing pass also carries the
+  // supersample's box, so a frame drawn larger than the canvas is averaged
+  // there and the downsample stays off, unless `?fuseddown=0` asked for the
+  // old path.
   outputTargetPass = fused
     ? new FusedOutputPass({
       bloom: bloomPass ? (bloomPass as BloomChainPass) : null,
       lens: composerLens,
+      box: cam === planetariumCamera && fusedDownParam,
     })
     : new OutputTargetPass();
   composer.addPass(outputTargetPass);
@@ -1501,8 +1520,11 @@ function upscaleSharpenStopsLive(): number | null {
  * below the output ratio and the filter is EASU — the bilinear control arm is
  * no pass at all, the finishing pass drawing the smaller buffer straight to
  * the canvas through the composer target's own linear filter — RCAS after it
- * unless the stops are null, and the downsample alone when the scene is above
- * the output ratio (never RCAS: a shrink does not need its edges put back).
+ * unless the stops are null, and when the scene is above the output ratio the
+ * finishing pass's own box (app/FusedOutputPass.ts), or the downsample alone
+ * where the box is off (never RCAS: a shrink does not need its edges put
+ * back). The box is a uniform: with the downsample disabled the finishing
+ * pass is the last enabled pass, which three hands the canvas.
  *
  * Enable and disable only. No pass is added or removed, no material is rebuilt
  * and the raw shaders ignore the destination's colour space, so nothing
@@ -1518,8 +1540,13 @@ function applyUpscalePasses(): void {
     sharpenPass.enabled = easu && stops !== null;
     sharpenPass.setSharpness(stops ?? RCAS_DEFAULT_STOPS);
   }
+  const fold = mode === 'supersample'
+    && outputTargetPass instanceof FusedOutputPass
+    && outputTargetPass.variant.box === true
+    && fusedDownsampleOn();
+  if (outputTargetPass instanceof FusedOutputPass) outputTargetPass.setBox(fold, downsampleFilter);
   if (downsamplePass) {
-    downsamplePass.enabled = mode === 'supersample';
+    downsamplePass.enabled = mode === 'supersample' && !fold;
     downsamplePass.setFilter(downsampleFilter);
   }
   // Said through debugLog, so a phone's ?debug=1 overlay answers which of the
@@ -2145,6 +2172,8 @@ function upscaleState() {
       easu: upscalePass?.enabled ?? false,
       rcas: sharpenPass?.enabled ?? false,
       box: downsamplePass?.enabled ?? false,
+      // The same average inside the finishing pass instead (app/FusedOutputPass.ts).
+      finishingBox: outputTargetPass instanceof FusedOutputPass && outputTargetPass.boxOn,
     },
   };
 }
@@ -2174,6 +2203,10 @@ buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
 if (import.meta.env.DEV) {
   onPerfSwitch('bloom-nodepth', (on) => setBloomInternalDepth(bloomPass, !on));
   onPerfSwitch('depth-discard', (on) => { if (depthDiscardPass) depthDiscardPass.enabled = on; });
+  // The supersample's box inside the finishing pass, against the downsample
+  // pass after it: a uniform and an enabled flag, so it flips live and the
+  // pixel gate can capture both out of one page.
+  onPerfSwitch('fused-downsample', () => applyUpscalePasses());
   // The fused pass is a different chain, not a flag inside one, so this switch
   // is the one that has to rebuild — which is why the sweep may not hold it
   // inside a measured block, and why the pixel gate takes it across two boots.

@@ -46,7 +46,9 @@
  * (shared/math/lensProjection.ts lensSourceUv) applies the scale and the clamp
  * inside itself — so such a site scales exactly once, in the warp, and the
  * function's text is put in beside the two declarations rather than being
- * copied into each shader.
+ * copied into each shader. The finishing pass's supersample box
+ * (app/FusedOutputPass.ts) takes the same map before its clamp, with its
+ * derivative, and clamps each of its taps to `uUvMax` instead.
  *
  * **The multisampled resolve.** three resolves a multisampled target with
  * `blitFramebuffer(0, 0, width, height, …)` over the whole allocation at the

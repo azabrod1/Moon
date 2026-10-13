@@ -10534,11 +10534,7 @@ export class PlanetariumMode {
       this.bodyCap = initialBodyCapState();
     }
 
-    if (this.speedLabelEl) {
-      this.speedLabelEl.textContent = this.inSystemMode
-        ? (this.nearestSystemPlanet ?? 'System')
-        : 'Space';
-    }
+    this.updateSpeedLabel();
 
     // Visual feedback for override state
     if (this.speedCenterEl) {
@@ -10567,6 +10563,19 @@ export class PlanetariumMode {
         }
       }
     }
+  }
+
+  /** The bar's place name. On the ground it is the ground: the cruise
+   *  throttle, whose nearest system the label otherwise reads, stops with the
+   *  landing and would leave the last system crossed on the bar. In cruise it
+   *  is the system whose throttle holds the ship, else open space. */
+  private updateSpeedLabel() {
+    if (!this.speedLabelEl) return;
+    this.speedLabelEl.textContent = this.landedOn
+      ? bodyDisplayName(this.landedOn.name).replace(/^the /, '')
+      : this.inSystemMode
+        ? (this.nearestSystemPlanet ?? 'System')
+        : 'Space';
   }
 
   isMissionActive(): boolean {
@@ -21571,6 +21580,7 @@ export class PlanetariumMode {
       this.invalidateExpiredObservatoryEvents();
       this.updateStatsUI();
       this.updateTimeUI();
+      this.updateSpeedLabel();
       this.renderObservatoryPanel();
       if (this.landedView === 'surface') this.renderSurfaceHud();
     }

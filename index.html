@@ -1371,7 +1371,20 @@
     #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
     /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
     #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
-    .shud-bl { position: absolute; left: calc(24px + env(safe-area-inset-left, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); max-width: 46vw; }
+    /* The bottom band: the narrative at the left, the field-of-view block at
+       the right, on one baseline above the time pill. One flex row, so neither
+       can run under the other — the narrative wraps in what the block leaves.
+       With the Observatory panel open the band ends at the panel's edge, so
+       the block never sits under the panel's lower reach. */
+    .shud-bottom {
+      position: absolute;
+      left: calc(24px + env(safe-area-inset-left, 0px));
+      right: calc(24px + env(safe-area-inset-right, 0px));
+      bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+      display: flex; justify-content: space-between; align-items: flex-end; gap: 24px;
+    }
+    body.observatory-sheet-open .shud-bottom { right: calc(12px + 334px + 20px + env(safe-area-inset-right, 0px)); }
+    .shud-bl { max-width: 46vw; flex: 0 1 auto; min-width: 0; }
     .shud-eyebrow {
       font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
       color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
@@ -1409,7 +1422,7 @@
     /* Paused clock (incl. the silent park when stepping down through 1×):
        hollow the dot, same idiom as the bottom bar's paused rail thumb. */
     .shud-timebar.paused .shud-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--obs-t3); }
-    .shud-br { position: absolute; right: calc(24px + env(safe-area-inset-right, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); text-align: right; }
+    .shud-br { flex: none; text-align: right; }
     .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
     .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
     .shud-fovmark {
@@ -1422,10 +1435,17 @@
     .shud-hint { margin-top: 22px; font-size: 10.5px; color: var(--obs-t3); }
     @media (max-width: 640px) {
       .shud-bl h1 { font-size: 24px; }
-      /* The HUD corners join the one bottom-inset exclusion zone: a jump
-         parks the sheet at peek, and the narrative must not sit under it. */
-      .shud-bl { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); max-width: 60vw; }
-      .shud-br { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); }
+      /* The band joins the one bottom-inset exclusion zone: a jump parks the
+         sheet at peek, and the narrative must not sit under it. The panel is
+         that sheet here, not a side panel, so the band keeps the full width;
+         the field-of-view block narrows to a fixed lane with its hint
+         wrapping inside it, and the narrative takes the rest. */
+      .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); gap: 16px; }
+      body.observatory-sheet-open .shud-bottom { right: calc(24px + env(safe-area-inset-right, 0px)); }
+      .shud-bl { max-width: none; flex: 1 1 auto; }
+      .shud-br { width: 120px; }
+      .shud-fovscale { width: 120px; }
+      .shud-hint { line-height: 1.4; }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
@@ -5157,16 +5177,18 @@
           <button class="shud-chip" id="surface-swap" style="display:none"><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
           <button class="shud-chip" id="surface-exit">&#x2715; Exit surface view</button>
         </div>
-        <div class="shud-bl">
-          <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
-          <h1 id="surface-headline">--</h1>
-          <div class="shud-sub" id="surface-sub"></div>
-        </div>
-        <div class="shud-br">
-          <div class="shud-eyebrow">Field of view</div>
-          <div class="shud-fov" id="surface-fov">10&deg;</div>
-          <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
-          <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+        <div class="shud-bottom">
+          <div class="shud-bl">
+            <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
+            <h1 id="surface-headline">--</h1>
+            <div class="shud-sub" id="surface-sub"></div>
+          </div>
+          <div class="shud-br">
+            <div class="shud-eyebrow">Field of view</div>
+            <div class="shud-fov" id="surface-fov">10&deg;</div>
+            <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
+            <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+          </div>
         </div>
         <div class="shud-timebar" id="surface-timebar">
           <div class="shud-when">

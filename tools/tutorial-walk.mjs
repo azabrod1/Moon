@@ -351,6 +351,8 @@ try {
     const j = timelapse.state;
     check(j.landedOn === 'Jupiter' && !j.panelOpen && !j.surface, `${tag} timelapse: on Jupiter from orbit with the panel closed`, { landed: j.landedOn, panel: j.panelOpen });
     check(j.rate === 3600 && !j.paused, `${tag} timelapse: the clock landed on the 1 hr/s detent`, { rate: j.rate, paused: j.paused });
+    const ground = await page.evaluate(() => document.getElementById('planetarium-speed-label')?.textContent ?? '');
+    check(ground === 'Jupiter', `${tag} timelapse: the bottom bar names the ground, not the last system cruised`, ground);
     check(timelapse.seen.veilNotes.length === 0 || timelapse.seen.veilNotes.every((n) => /Landing on Jupiter/.test(n)), `${tag} timelapse: the veil caption was the tour's`, timelapse.seen.veilNotes);
     card = await cardText(page);
     check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });

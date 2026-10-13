@@ -27,7 +27,7 @@
 // Software rendering (the lab box has no GPU): frames take seconds, so every
 // wait is state-driven and the time bounds are loose. Takes the browser lock.
 // Usage: node tools/tutorial-walk.mjs [--url=http://127.0.0.1:5174] [--label=tutorial]
-//        [--only=desktop|phone] [--out=/tmp/moon-tutorial-walk]
+//        [--only=desktop|phone|chips] [--out=/tmp/moon-tutorial-walk]
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { takeBrowserLock } from './browserLock.mjs';
@@ -392,7 +392,8 @@ try {
     const chips = await page.evaluate(() => Array.from(document.querySelectorAll('#tutorial-chips .tutorial-chip')).map((b) => [b.textContent, b.getBoundingClientRect().height]));
     check(chips.map((c) => c[0]).join('|') === 'Visit Mars|Earth from the Moon|Follow Voyager 1', `${tag} wrap: the three doors`, chips);
     if (tag === 'phone') check(chips.every((c) => c[1] >= 44), `${tag} wrap: the chips are 44 px targets`, chips);
-    check(card.primary === 'Back where I was' && card.ghost === '', `${tag} wrap: Back where I was, no skip`, { primary: card.primary, ghost: card.ghost });
+    const ghostShown = await page.evaluate(() => (document.getElementById('tutorial-ghost')?.offsetParent ?? null) !== null);
+    check(card.primary === 'Back where I was' && !ghostShown, `${tag} wrap: Back where I was, no skip`, { primary: card.primary, ghostShown });
     await shot(page, `${tag}-19-wrap`);
     await page.click('#tutorial-primary');
     await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
@@ -443,7 +444,7 @@ try {
   // The wrap's chips, each from a fresh boot: the wrap card is staged
   // directly (the dev bridge), the chip ends the tour as completed, and its
   // action follows once the restore has cleared.
-  if (!ONLY || ONLY === 'desktop') {
+  if (!ONLY || ONLY === 'desktop' || ONLY === 'chips') {
     const speedLabel = (page) => page.evaluate(() => document.getElementById('planetarium-speed-label')?.textContent ?? '');
     for (const [chip, expect] of [
       ['visit-mars', async (page) => {
@@ -474,9 +475,10 @@ try {
       await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
       check(!(await tstate(page)).active, `chip ${chip}: the tour ended`);
       await expect(page);
-      await page.click('#planetarium-btn-menu'); await sleep(400);
-      check((await page.evaluate(() => document.getElementById('planetarium-btn-tutorial')?.textContent)) === 'Replay the tour', `chip ${chip}: counts as completing the tour`);
-      await page.click('#planetarium-btn-menu'); await sleep(300);
+      // The ☰ button is away in surface view and during a mission: read the
+      // tour record the ☰ row and Help would read.
+      const record = await page.evaluate(() => { try { return JSON.parse(localStorage.getItem('planetarium-tour') ?? 'null'); } catch { return null; } });
+      check(record?.completed === true, `chip ${chip}: counts as completing the tour`, record);
       await shot(page, `desktop-40-chip-${chip}`);
       await context.close();
     }

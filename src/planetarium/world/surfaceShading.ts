@@ -1608,15 +1608,33 @@ export const SYNTH_STACK_TAPER = 0.6;
  *  fixed, and the tapered stack's length converges to this. */
 export const SYNTH_STACK_GAIN = 1 / Math.sqrt(1 - SYNTH_STACK_TAPER * SYNTH_STACK_TAPER);
 
+/** DEV `?synthdepth=<1..8>`: the depth the shader is built with this boot
+ *  instead of `SYNTH_STACK_DEPTH`, for the eye and the profiler — each rung
+ *  is a full set of reads, and a shallower stack lets go of the coarsest
+ *  rungs sooner. A reload, not live: the number is in the shader text.
+ *  Without it the text is byte-identical to the shipped one. */
+export function parseSynthDepthParam(search: string): number | null {
+  if (!import.meta.env.DEV) return null;
+  const raw = new URLSearchParams(search).get('synthdepth');
+  if (raw === null) return null;
+  const depth = Number(raw);
+  return Number.isInteger(depth) && depth >= 1 && depth <= 8 ? depth : null;
+}
+
+/** The stack depth this boot's shader is built with. */
+export const SYNTH_STACK_DEPTH_BUILT =
+  (typeof location === 'undefined' ? null : parseSynthDepthParam(location.search)) ?? SYNTH_STACK_DEPTH;
+
 /** The rungs a fragment's stack reads and their weights, as the shader
  *  builds them: the fraction of the wanted rung at the rung above it, what
  *  is left of a rung sliding out at the bottom, the taper below the finest;
- *  normalised in length and lifted by the gain. */
-export function surfaceStackWeights(wanted: number): { rung: number; weight: number }[] {
-  const coarse = wanted - (SYNTH_STACK_DEPTH - 1);
+ *  normalised in length and lifted by the gain. `depth` is the shader's
+ *  `SYNTH_STACK_DEPTH`, or the DEV knob's. */
+export function surfaceStackWeights(wanted: number, depth: number = SYNTH_STACK_DEPTH): { rung: number; weight: number }[] {
+  const coarse = wanted - (depth - 1);
   const lo = Math.max(Math.floor(coarse), 0);
   const raw: { rung: number; weight: number }[] = [];
-  for (let k = 0; k <= SYNTH_STACK_DEPTH; k++) {
+  for (let k = 0; k <= depth; k++) {
     const rung = lo + k;
     if (rung > wanted + 1) break;
     let weight = Math.min(1, Math.max(0, Math.min(wanted - rung + 1, rung - coarse + 1)));
@@ -1628,7 +1646,11 @@ export function surfaceStackWeights(wanted: number): { rung: number; weight: num
   return raw.map((r) => ({ rung: r.rung, weight: (r.weight / norm) * SYNTH_STACK_GAIN }));
 }
 
-const SURFACE_DETAIL_GLSL = /* glsl */ `
+/** The close-range detail synthesis, with its rung stack `depth` deep: the
+ *  shipped text is this at `SYNTH_STACK_DEPTH`, and only the DEV knob builds
+ *  it at another. */
+export function surfaceDetailGlsl(depth: number): string {
+  return /* glsl */ `
 uniform sampler2D uSynthDetail;
 uniform float uSynthGrain;
 uniform float uSynthRelief;
@@ -1800,11 +1822,11 @@ vec3 synthTile(vec2 uv, vec2 dx, vec2 dy, uint salt) {
 // unscaled derivative is what turns them into a slope.
 vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float wanted) {
   // The rung below which the stack lets go, continuous in the wanted rung.
-  float coarse = wanted - ${(SYNTH_STACK_DEPTH - 1).toFixed(1)};
+  float coarse = wanted - ${(depth - 1).toFixed(1)};
   float lo = max(floor(coarse), 0.0);
   vec3 f = vec3(0.0);
   float norm = 0.0;
-  for (int k = 0; k <= ${SYNTH_STACK_DEPTH}; k++) {
+  for (int k = 0; k <= ${depth}; k++) {
     float rung = lo + float(k);
     if (rung > wanted + 1.0) break;
     // One inside the stack; the fraction of the wanted rung at the rung above
@@ -1825,6 +1847,9 @@ vec3 synthChart(vec2 c, vec2 cx, vec2 cy, vec2 seed, float wanted) {
   return vec3(f.x, dot(f.yz, cx), dot(f.yz, cy));
 }
 `;
+}
+
+const SURFACE_DETAIL_GLSL = surfaceDetailGlsl(SYNTH_STACK_DEPTH_BUILT);
 
 const SURFACE_DETAIL_BODY = /* glsl */ `
 #ifdef USE_MAP

@@ -4,9 +4,10 @@
  * stay in lock-step with the mode's real arrival semantics.
  */
 
-/** Internal commit ids (unchanged from the deck); the card paints the shipped
- *  user-facing verbs — Teleport / Observatory / Autopilot / Leave. */
-export type MapVerb = 'travel' | 'observe' | 'pilot';
+/** Internal commit ids; the card paints the shipped user-facing verbs —
+ *  Teleport / Observatory / Autopilot / Leave. The deck's tabs speak the first
+ *  three; 'leave' is the card's own, for the body the player stands on. */
+export type MapVerb = 'travel' | 'observe' | 'pilot' | 'leave';
 
 /**
  * A card button. The kinds are deliberately different types rather than one
@@ -38,10 +39,14 @@ export type MapBodyRef =
  * | Sun                     | Teleport · Autopilot · Focus (no surface, no interior)   |
  * | The current landed body | Leave · Observatory · Focus · Look inside                |
  *
- * "Leave" is verb 'travel' whose sameBody path is a take-off; "Observatory" on
- * the landed body is verb 'observe' whose sameBody path reopens the panel.
- * Autopilot is withheld on the landed body — its sameBody branch would lift off
- * and park rather than engage. Focus is on every card: it flies the map camera
+ * "Leave" is its own verb — a take-off, never a teleport. It is NOT 'travel'
+ * on the landed body: that one is a real teleport to the body's flyby pose
+ * (the deck's Teleport tab lists the body you stand on, and a Teleport that
+ * silently took off instead sent an Observatory excursion back to wherever
+ * the ship was before it). "Observatory" on the landed body is verb 'observe'
+ * whose sameBody path reopens the panel. Autopilot is withheld on the landed
+ * body — lifting off beside it only to park there again is what Leave does.
+ * Focus is on every card: it flies the map camera
  * and nothing else, so no target can refuse it. Look inside is on every body
  * with an interior to show — every planet and moon; the Sun waits for its
  * own model — and opens the Look-inside tool on it, committing no arrival.
@@ -56,7 +61,7 @@ export function mapCardActions(
     !!landedOn && landedOn.type === target.type && landedOn.name === target.name;
   if (sameBody) {
     return [
-      { kind: 'commit', verb: 'travel', label: 'Leave' },
+      { kind: 'commit', verb: 'leave', label: 'Leave' },
       { kind: 'commit', verb: 'observe', label: 'Observatory' },
       focus,
       inside,
@@ -99,9 +104,10 @@ export type CommitOutcome = 'accepted' | 'refused' | 'busy';
  * The refusal decision shared by every body commit (deck row, map card,
  * bridge). Refused outright during a mission. "Busy" when a Teleport/Observatory
  * commit would be silently dropped by an in-flight arrival — those route through
- * the arrival veil, which ignores a rival while one is covering. A same-body
- * Leave / Observatory-reopen never touches the veil, and Autopilot engages
- * without it, so neither is ever busy.
+ * the arrival veil, which ignores a rival while one is covering. A Teleport is
+ * busy even on the body the player stands on: it is a real jump through the
+ * veil like any other. Leave and a same-body Observatory-reopen never touch
+ * the veil, and Autopilot engages without it, so none of those is ever busy.
  */
 export function commitBodyPickOutcome(input: {
   missionActive: boolean;
@@ -111,8 +117,7 @@ export function commitBodyPickOutcome(input: {
 }): CommitOutcome {
   if (input.missionActive) return 'refused';
   if (
-    !input.sameBody &&
-    (input.verb === 'travel' || input.verb === 'observe') &&
+    (input.verb === 'travel' || (input.verb === 'observe' && !input.sameBody)) &&
     input.arrivalInFlight
   ) {
     return 'busy';

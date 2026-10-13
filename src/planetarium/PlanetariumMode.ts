@@ -2527,6 +2527,8 @@ export class PlanetariumMode {
     showMe: boolean;
     /** The stop's arrival has landed (the 'arrive' perform's guard). */
     arrived: boolean;
+    /** The rate ladder has been climbed, or left where the user put the clock. */
+    ladderDone: boolean;
     /** Presentation overrides a stop lays over the preferences (the ship
      *  model and the world labels out of the picture, the surface view's
      *  cluster and pill aside for the climax) — applied per frame, never
@@ -10665,6 +10667,7 @@ export class PlanetariumMode {
       userActed: false,
       showMe: false,
       arrived: false,
+      ladderDone: false,
       overrides: { hideShip: false, hideLabels: false, declutter: false },
       kicker: null,
       composition: null,
@@ -10759,6 +10762,7 @@ export class PlanetariumMode {
     this.tutorialCard.hide();
     this.tutorialSpotlight.clear();
     this.clearTutorialOverrides();
+    this.tutorialVeilNote = null;
     const finish = () => {
       // Tail runs only once the restore has actually applied: until here the
       // getState() override keeps serving the snapshot, so a save racing the
@@ -10766,10 +10770,15 @@ export class PlanetariumMode {
       this.tutorial = null;
       this.notification.setMuted(false);
       this.updateSceneStealingMenuItems();
-      // Focus goes back to the control that started the tour, when it is
-      // still there to take it (a ☰ row in a closed menu is not).
-      if (returnFocus instanceof HTMLElement && returnFocus.isConnected) {
-        returnFocus.focus({ preventScroll: true });
+      // Focus goes back to the control that started the tour when it can
+      // take it; a ☰ row in a closed menu or Help's button cannot, and then
+      // the ☰ button, the nearest standing control, takes it.
+      const focusable = (el: Element | null): el is HTMLElement =>
+        el instanceof HTMLElement && el.isConnected && el.offsetParent !== null;
+      if (focusable(returnFocus)) returnFocus.focus({ preventScroll: true });
+      else {
+        const menuButton = document.getElementById('planetarium-btn-menu');
+        if (focusable(menuButton)) menuButton.focus({ preventScroll: true });
       }
       this.store.saveState(this.getState());
       if (completed) {
@@ -10894,6 +10903,7 @@ export class PlanetariumMode {
     tutorial.userActed = false;
     tutorial.showMe = false;
     tutorial.arrived = false;
+    tutorial.ladderDone = false;
     this.tutorialVeilNote = null;
     tutorial.kicker = null;
     tutorial.composition = null;
@@ -10994,9 +11004,13 @@ export class PlanetariumMode {
    *  ring and press Saturn's row, then the arrival (performTutorialArrival)
    *  — the tutorial teaches the deck by visibly using it, beat by beat. */
   private stageTutorialSaturn(generation: number): void {
-    this.closeObservatoryPanel();
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation) return;
+    // Back from the Moon's surface view: the chip to ring sits in the
+    // cluster, which the surface view hides. (A fresh start left the surface
+    // view at entry; the panel closes with the arrival, so a skip during the
+    // first ring leaves a landed user's panel as it was.)
+    if (this.landedView === 'surface') this.exitSurfaceView(true);
     this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
   }
 
@@ -11141,7 +11155,9 @@ export class PlanetariumMode {
     if (!tutorial) return;
     switch (effect.kind) {
       case 'spotlight':
-        if (effect.present && target && effect.beat.spotlight) {
+        // A control whose work is already done (the user got there first)
+        // gets no ring: the hold still runs and the card narrates on.
+        if (effect.present && target && effect.beat.spotlight && !this.tutorialPerformed(effect.beat)) {
           // A control below the fold comes into view first: the panel's
           // window sits in its scrolling body, and on a phone the sheet
           // opens at peek with the window under the fold.
@@ -11163,6 +11179,11 @@ export class PlanetariumMode {
         break;
       case 'perform': {
         const perform = effect.beat.perform;
+        // Every perform is idempotent: when its outcome already holds — the
+        // user pressed the arrow, looked up, or landed before the tour did —
+        // nothing is done again, and the guard advances the run next frame.
+        // A second press would undo a toggle or jump past the found event.
+        if (this.tutorialPerformed(effect.beat)) break;
         if (perform.kind === 'open-deck') {
           this.openDeck(perform.verb);
           this.revealDeckRow(perform.reveal);
@@ -11222,7 +11243,9 @@ export class PlanetariumMode {
         el = document.getElementById(ref.id);
         break;
       case 'deck-row':
-        el = this.isDeckOpen() ? this.findDeckRow(ref.name) : null;
+        // The row on the other tab is a different control: a travel commit
+        // where a landing was meant would park the ship and strand the stop.
+        el = this.isDeckOpen() && this.deckVerb === ref.verb ? this.findDeckRow(ref.name) : null;
         break;
       case 'panel-window':
         el = this.observatoryPanel.isOpen() ? document.getElementById('observatory-lookup') : null;
@@ -11263,15 +11286,17 @@ export class PlanetariumMode {
         return this.isDeckOpen() && this.deckVerb === perform.verb && this.findDeckRow(perform.reveal) !== null;
       case 'arrive':
         return tutorial.arrived && !this.arrivalInFlight && !this.arrivalVeilUp();
-      case 'rate-ladder': {
-        const top = perform.rates[perform.rates.length - 1];
-        return !this.timeState.paused && Math.abs(this.timeState.rate - top) < 1e-9;
-      }
+      case 'rate-ladder':
+        return tutorial.ladderDone;
       case 'jump': {
         // The panel's jump parks the clock OBSERVATORY_JUMP_LEAD_MS before
-        // the found event's peak at realtime; the one it found is the stop's.
+        // the found event's peak at realtime. Only the showcase eclipse
+        // counts — the first solar eclipse after the staged clock — so a
+        // jump past it (a second press) is not taken for it.
         const event = this.lastObservatoryEvent;
         if (!event || event.spec.kind !== 'shadow-transit' || event.spec.parentPlanet !== 'Earth') return false;
+        const from = TUTORIAL_ECLIPSE.searchFromUtcMs;
+        if (event.peakUtcMs < from || event.peakUtcMs > from + 60 * 24 * 60 * 60_000) return false;
         const parkedAt = event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS;
         if (Math.abs(this.timeState.currentUtcMs - parkedAt) > 10 * 60_000) return false;
         tutorial.eclipse = event;
@@ -11282,7 +11307,9 @@ export class PlanetariumMode {
         return event !== null && Math.abs(this.timeState.currentUtcMs - event.startUtcMs) < 5 * 60_000;
       }
       case 'approach':
-        return true;
+        return (
+          tutorial.overrides.declutter && !this.timeState.paused && Math.abs(this.timeState.rate - perform.rate) < 1e-9
+        );
       case 'observe':
         return (
           this.landedOn?.name === perform.name && !this.arrivalInFlight && !this.arrivalVeilUp()
@@ -11360,9 +11387,14 @@ export class PlanetariumMode {
     const landed = (then: () => void) => {
       const live = this.tutorial;
       if (!live || live.generation !== generation) return;
-      then();
-      live.arrived = true;
-      this.renderTutorialCard();
+      try {
+        then();
+      } finally {
+        // Landed even if the scene work threw (arriveAtSystem logs it): the
+        // stop falls through to its card rather than holding "Arriving…".
+        live.arrived = true;
+        this.renderTutorialCard();
+      }
     };
     switch (step.stage) {
       case 'saturn': {
@@ -11373,6 +11405,7 @@ export class PlanetariumMode {
         }
         this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => landed(() => {
           this.setTutorialClockRate(1);
+          this.closeObservatoryPanel();
           if (this.landedOn) this.exitLandedMode();
           this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
           // The card and the chrome stay where they are; the scene moves:
@@ -11461,8 +11494,17 @@ export class PlanetariumMode {
   private tutorialClimbLadder(generation: number, rates: readonly number[], stepMs: number, index: number): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation || index >= rates.length) return;
+    // A rate the user set by hand mid-climb is theirs: the climb stops where
+    // they put it, and the stop goes on from there.
+    if (index > 0 && (this.timeState.paused || Math.abs(this.timeState.rate - rates[index - 1]) > 1e-9)) {
+      tutorial.ladderDone = true;
+      return;
+    }
     this.setTutorialClockRate(rates[index]);
-    if (index + 1 >= rates.length) return;
+    if (index + 1 >= rates.length) {
+      tutorial.ladderDone = true;
+      return;
+    }
     tutorial.timer = window.setTimeout(() => {
       const live = this.tutorial;
       if (!live || live.generation !== generation) return;
@@ -11664,8 +11706,8 @@ export class PlanetariumMode {
    *  landing, two seconds of the picture, the panel, and the Look up window
    *  pressed into the surface view with Earth overhead. */
   private stageTutorialMoon(generation: number): void {
-    // The panel opens as its own beat, after the picture has had its moment.
-    this.closeObservatoryPanel();
+    // The panel opens as its own beat, after the picture has had its moment;
+    // the quiet landing closes whatever is open then.
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation) return;
     this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
@@ -11780,6 +11822,7 @@ export class PlanetariumMode {
       tutorialCardModel(step, tutorial.stepIndex, tutorial.phase, {
         ...(tutorial.kicker === null ? {} : { kicker: tutorial.kicker }),
         beat,
+        beatStage: tutorial.beatRun?.stage ?? null,
         totality: tutorial.totalityReached,
       }),
     );
@@ -12277,9 +12320,22 @@ export class PlanetariumMode {
       this.showHelp();
     });
     // The first-run welcome's three ways out. All three mark it seen.
-    document.getElementById('tutorial-hero-tour')?.addEventListener('click', () => {
-      this.hideWelcome();
-      this.startTutorial();
+    // startTutorial closes the welcome itself, after reading where focus was.
+    document.getElementById('tutorial-hero-tour')?.addEventListener('click', () => this.startTutorial());
+    // A modal dialog: Tab cycles its own controls, never the chrome behind
+    // the backdrop. (Esc is the cascade's first rung: Explore on my own.)
+    document.getElementById('tutorial-hero')?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const stops = Array.from(
+        document.querySelectorAll<HTMLElement>('#tutorial-hero button'),
+      ).filter((el) => el.offsetParent !== null);
+      if (stops.length === 0) return;
+      const index = stops.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey
+        ? (index <= 0 ? stops[stops.length - 1] : stops[index - 1])
+        : (index < 0 || index >= stops.length - 1 ? stops[0] : stops[index + 1]);
+      e.preventDefault();
+      next.focus({ preventScroll: true });
     });
     document.getElementById('tutorial-hero-explore')?.addEventListener('click', () => this.hideWelcome());
     document.getElementById('tutorial-hero-guide')?.addEventListener('click', () => {
@@ -18463,7 +18519,12 @@ export class PlanetariumMode {
       paused: this.timeState.paused,
       timeMs: this.timeState.currentUtcMs,
       beat: tutorial?.beatRun && tutorial.beats
-        ? { id: tutorial.beats[tutorial.beatRun.index]?.id ?? null, stage: tutorial.beatRun.stage, index: tutorial.beatRun.index }
+        ? {
+            id: tutorial.beats[tutorial.beatRun.index]?.id ?? null,
+            stage: tutorial.beatRun.stage,
+            index: tutorial.beatRun.index,
+            hasSpotlight: tutorial.beats[tutorial.beatRun.index]?.spotlight != null,
+          }
         : null,
       userActed: tutorial?.userActed ?? false,
       arrived: tutorial?.arrived ?? false,

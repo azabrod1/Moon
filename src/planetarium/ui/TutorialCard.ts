@@ -11,7 +11,14 @@
  */
 import { setText } from '../../shared/dom';
 import { tutorialProgress } from '../tutorialLogic';
-import type { TutorialBeat, TutorialChip, TutorialChipId, TutorialPhase, TutorialStep } from '../tutorialLogic';
+import type {
+  BeatRunState,
+  TutorialBeat,
+  TutorialChip,
+  TutorialChipId,
+  TutorialPhase,
+  TutorialStep,
+} from '../tutorialLogic';
 
 export interface TutorialCardModel {
   /** The stop dots and the counter they stand in for ("Stop 2 of 4" to a screen reader). */
@@ -76,20 +83,28 @@ export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase, beat: 
  * running ('ending') disables everything. `kicker` overrides the step's own
  * line when the host has a live one (a distance, a phase, a countdown);
  * `beat` is the current beat while staging — its copy, and on a you-try beat
- * the primary becomes a live "Show me"; `totality` swaps in the eclipse's
- * climax card. The held label while settling is the step's own busyLabel
- * (the eclipse's "Watching…"), else "Arriving…".
+ * the primary becomes a live "Show me" while the beat still waits
+ * (`beatStage` before the press or the perform); `totality` swaps in the
+ * eclipse's climax card. The held label while settling is the step's own
+ * busyLabel (the eclipse's "Watching…"), else "Arriving…".
  */
 export function tutorialCardModel(
   step: TutorialStep,
   index: number,
   phase: TutorialPhase,
-  opts: { kicker?: string | null; beat?: TutorialBeat | null; totality?: boolean } = {},
+  opts: {
+    kicker?: string | null;
+    beat?: TutorialBeat | null;
+    beatStage?: BeatRunState['stage'] | null;
+    totality?: boolean;
+  } = {},
 ): TutorialCardModel {
   const wrap = step.id === 'wrap';
   const beat = opts.beat ?? null;
   const climax = opts.totality === true && step.totality ? step.totality : null;
-  const awaiting = phase === 'staging' && beat?.await === true;
+  const stage = opts.beatStage ?? 'await';
+  const awaiting =
+    phase === 'staging' && beat?.await === true && (stage === 'enter' || stage === 'hold' || stage === 'await');
   const busy = !awaiting && step.stage !== 'none' && (phase === 'staging' || phase === 'settling');
   const busyLabel = phase === 'settling' && step.busyLabel ? step.busyLabel : TUTORIAL_ARRIVING_LABEL;
   return {

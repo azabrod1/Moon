@@ -208,17 +208,23 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     astroTimePaused: typeof record.astroTimePaused === 'boolean'
       ? record.astroTimePaused
       : defaults.astroTimePaused,
-    showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
-    showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
-    showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
+    // The ☰ preferences: a save carries one only when its user held it —
+    // never filled with a default here, because the migration copies what
+    // the save carries onto the preference's own key, and a default copied
+    // that way would pin today's default as a choice the user never made.
+    // An absent preference stays absent; its default applies at read
+    // (preferences.ts).
+    showShip: typeof record.showShip === 'boolean' ? record.showShip : undefined,
+    showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : undefined,
+    showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : undefined,
     // Only the two literals survive. A legacy boolean `showBodyLabelDistances`
     // (either value) is deliberately dropped: both collapse to hover-reveal, so
     // the resting screen is quiet regardless of the old opt-out.
     labelDistancesMode: record.labelDistancesMode === 'always' || record.labelDistancesMode === 'hover'
       ? record.labelDistancesMode
-      : defaults.labelDistancesMode,
-    showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
-    showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
+      : undefined,
+    showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : undefined,
+    showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : undefined,
     // No default, like skyPref below: only a save whose user actually pressed
     // the toggle carries an opinion about the corner chart.
     miniChartPref: typeof record.miniChartPref === 'boolean' ? record.miniChartPref : undefined,
@@ -232,7 +238,7 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(SYSTEM_SPEED_MAX, record.systemSpeed))
       : defaults.systemSpeed,
-    systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : defaults.systemSlowdown,
+    systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : undefined,
     autopilotTarget: sanitizeLandedOn(record.autopilotTarget),
     autopilotUserEngaged:
       typeof record.autopilotUserEngaged === 'boolean'

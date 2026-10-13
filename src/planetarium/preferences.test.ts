@@ -132,9 +132,15 @@ describe('migratePreferencesFromJourney', () => {
     expect(result.written).toEqual([]);
   });
 
-  it('has nothing to do, and is complete, for a journey without copies', () => {
-    const result = migratePreferencesFromJourney(withoutPreferenceFields(legacyJourney()), fakeStorage());
-    expect(result).toEqual({ written: [], complete: true });
+  it('has nothing to do, and is complete, for a journey without copies — as the app reads it, through the sanitiser', () => {
+    const store = fakeStorage();
+    const stripped = withoutPreferenceFields(legacyJourney());
+    expect(migratePreferencesFromJourney(stripped, store)).toEqual({ written: [], complete: true });
+    // The sanitiser must not hand the migration defaults to copy: a stripped
+    // save read on the next boot writes no key the user never chose.
+    const reread = sanitizePlanetariumState(JSON.parse(JSON.stringify(stripped)));
+    expect(migratePreferencesFromJourney(reread, store)).toEqual({ written: [], complete: true });
+    expect(store.map.size).toBe(0);
   });
 });
 
@@ -145,10 +151,12 @@ describe('the journey record', () => {
     expect('labelDistancesMode' in stripped).toBe(false);
     expect('miniChartSizePref' in stripped).toBe(false);
     expect(stripped.positionAU).toEqual(createDefaultPlanetariumState().positionAU);
-    // What the sanitiser makes of it is a valid journey with the defaults.
+    // What the sanitiser makes of it is a valid journey carrying no
+    // preference at all; the defaults apply at read, never from the save.
     const parsed = sanitizePlanetariumState(JSON.parse(JSON.stringify(stripped)));
     expect(parsed).not.toBeNull();
-    expect(parsed?.showShip).toBe(true);
+    expect(parsed?.showShip).toBeUndefined();
+    expect(resolvePreferences(parsed, fakeStorage())).toEqual(DEFAULT_PREFERENCES);
   });
 
   it('carries the live preferences while the keys are not confirmed, nulls left out', () => {

@@ -78,7 +78,8 @@ export interface TutorialStep {
 /** A control the spotlight can ring, by what it is rather than by element. */
 export type TutorialTargetRef =
   | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-menu' }
-  | { kind: 'deck-row'; name: string }
+  /** A deck row, on the tab the beat means: the same row on another tab is a different control. */
+  | { kind: 'deck-row'; name: string; verb: 'travel' | 'observe' }
   /** The Observatory panel's Look up window. */
   | { kind: 'panel-window' }
   /** One of the panel's almanac arrows, by its element id. */
@@ -149,7 +150,7 @@ const MOON_BEATS: readonly TutorialBeat[] = [
   },
   {
     id: 'moon-row',
-    spotlight: { target: { kind: 'deck-row', name: 'Moon' }, label: 'Tap the Moon' },
+    spotlight: { target: { kind: 'deck-row', name: 'Moon', verb: 'observe' }, label: 'Tap the Moon' },
     press: true,
     await: true,
     perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },
@@ -232,7 +233,7 @@ const SATURN_BEATS: readonly TutorialBeat[] = [
   },
   {
     id: 'saturn-row',
-    spotlight: { target: { kind: 'deck-row', name: 'Saturn' }, label: 'Tap any planet or moon' },
+    spotlight: { target: { kind: 'deck-row', name: 'Saturn', verb: 'travel' }, label: 'Tap any planet or moon' },
     press: true,
     perform: { kind: 'arrive' },
     minHoldMs: TUTORIAL_BEAT_HOLD_MS,

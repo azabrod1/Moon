@@ -106,7 +106,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(chip.spotlight?.key).toBe('T');
     expect(chip.press).toBe(true);
     expect(chip.perform).toEqual({ kind: 'open-deck', verb: 'travel', reveal: 'Saturn' });
-    expect(row.spotlight?.target).toEqual({ kind: 'deck-row', name: 'Saturn' });
+    expect(row.spotlight?.target).toEqual({ kind: 'deck-row', name: 'Saturn', verb: 'travel' });
     expect(row.perform).toEqual({ kind: 'arrive' });
     expect(row.veilNote).toMatch(/Saturn/);
     // The copy while the beats play introduces the tour; the settled copy is the lesson.
@@ -352,7 +352,7 @@ describe('stepBeatRun', () => {
   };
   const row: TutorialBeat = {
     id: 'row',
-    spotlight: { target: { kind: 'deck-row', name: 'Saturn' }, label: 'Tap any planet or moon' },
+    spotlight: { target: { kind: 'deck-row', name: 'Saturn', verb: 'travel' }, label: 'Tap any planet or moon' },
     press: true,
     perform: { kind: 'arrive' },
     minHoldMs: 1000,
@@ -361,7 +361,7 @@ describe('stepBeatRun', () => {
   const beats = [chip, row];
   const tryIt: TutorialBeat = {
     id: 'try',
-    spotlight: { target: { kind: 'deck-row', name: 'Moon' }, label: 'Tap the Moon' },
+    spotlight: { target: { kind: 'deck-row', name: 'Moon', verb: 'observe' }, label: 'Tap the Moon' },
     press: true,
     await: true,
     perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },

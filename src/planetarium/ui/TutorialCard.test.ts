@@ -66,6 +66,15 @@ describe('tutorialCardModel', () => {
     const waiting = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row });
     expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false, busy: false });
     expect(waiting.body).toBe(moon.bodyDuring);
+    for (const beatStage of ['enter', 'hold', 'await'] as const) {
+      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage }).primary.action).toBe('show-me');
+    }
+    // Once the press or the landing is under way, Show me has nothing left to offer.
+    for (const beatStage of ['press', 'perform'] as const) {
+      const pressed = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage });
+      expect(pressed.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
+      expect(pressed.primary.disabled).toBe(true);
+    }
     const ringing = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
     expect(ringing.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
     expect(ringing.primary.disabled).toBe(true);

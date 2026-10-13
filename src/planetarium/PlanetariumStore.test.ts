@@ -100,9 +100,9 @@ describe('headingBasis — the flight-frame migration flag', () => {
   });
 });
 
-describe('showBodyMarkers is a plain boolean (default true)', () => {
-  it('defaults to true when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBe(true);
+describe('showBodyMarkers is a plain boolean (default true, applied at read)', () => {
+  it('stays absent when the field is absent from the save: the default is the preference’s, never the save’s', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBeUndefined();
     expect(createDefaultPlanetariumState().showBodyMarkers).toBe(true);
   });
 
@@ -110,15 +110,28 @@ describe('showBodyMarkers is a plain boolean (default true)', () => {
     expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: false }))?.showBodyMarkers).toBe(false);
   });
 
-  it('non-boolean garbage falls back to the default', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 'no' }))?.showBodyMarkers).toBe(true);
-    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 1 }))?.showBodyMarkers).toBe(true);
+  it('non-boolean garbage is dropped, not defaulted', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 'no' }))?.showBodyMarkers).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 1 }))?.showBodyMarkers).toBeUndefined();
+  });
+
+  it('every ☰ preference is carried only when the save held it', () => {
+    const fields = ['showShip', 'showConstellations', 'showBodyLabels', 'labelDistancesMode', 'showBodyMarkers', 'showOrbitLines', 'systemSlowdown'] as const;
+    // A save written after the keys took the preferences carries none of them.
+    const stripped = rawSave({}) as Record<string, unknown>;
+    for (const field of fields) delete stripped[field];
+    const parsed = sanitizePlanetariumState(stripped)!;
+    for (const field of fields) expect(parsed[field]).toBeUndefined();
+    const held = sanitizePlanetariumState(rawSave({ showShip: false, showConstellations: true, systemSlowdown: false }))!;
+    expect(held.showShip).toBe(false);
+    expect(held.showConstellations).toBe(true);
+    expect(held.systemSlowdown).toBe(false);
   });
 });
 
-describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
-  it('defaults to hover when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBe('hover');
+describe('labelDistancesMode (default hover, applied at read; legacy boolean dropped)', () => {
+  it('stays absent when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBeUndefined();
     expect(createDefaultPlanetariumState().labelDistancesMode).toBe('hover');
   });
 
@@ -127,17 +140,17 @@ describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
     expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'hover' }))?.labelDistancesMode).toBe('hover');
   });
 
-  it('drops the legacy showBodyLabelDistances boolean (both values → hover)', () => {
+  it('drops the legacy showBodyLabelDistances boolean (both values → absent, read as hover)', () => {
     const optIn = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: true }));
-    expect(optIn?.labelDistancesMode).toBe('hover');
+    expect(optIn?.labelDistancesMode).toBeUndefined();
     expect('showBodyLabelDistances' in JSON.parse(JSON.stringify(optIn))).toBe(false);
     const optOut = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }));
-    expect(optOut?.labelDistancesMode).toBe('hover');
+    expect(optOut?.labelDistancesMode).toBeUndefined();
   });
 
-  it('garbage (or an unknown literal) falls back to hover', () => {
-    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBe('hover');
-    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBe('hover');
+  it('garbage (or an unknown literal) is dropped, not defaulted', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBeUndefined();
   });
 });
 
@@ -357,10 +370,13 @@ describe('the tour record (planetarium-tour)', () => {
       expect(done).toEqual({ completed: true, stopReached: 2, completedAt: 1_700_000_000_000 });
       expect(store.writeTourProgress({ stopReached: 0 })).toEqual(done);
       expect(store.readTourProgress()).toEqual(done);
+      // Not inside the journey save: New Journey clears that key, not this one.
+      await store.saveState(createDefaultPlanetariumState());
+      expect(local.getItem(STORAGE_KEY)).not.toBeNull();
+      store.clearState();
+      expect(local.getItem(STORAGE_KEY)).toBeNull();
+      expect(store.readTourProgress()).toEqual(done);
     });
-    // Not inside the journey save: New Journey clears that key, not this one.
-    expect(local.getItem(STORAGE_KEY)).toBeNull();
-    expect(local.getItem('planetarium-tour')).not.toBeNull();
   });
 
   it('sanitises a hand-edited record', () => {

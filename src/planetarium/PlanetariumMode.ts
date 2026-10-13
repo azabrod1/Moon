@@ -11159,14 +11159,21 @@ export class PlanetariumMode {
         // gets no ring: the hold still runs and the card narrates on.
         if (effect.present && target && effect.beat.spotlight && !this.tutorialPerformed(effect.beat)) {
           // A control below the fold comes into view first: the panel's
-          // window sits in its scrolling body, and on a phone the sheet
-          // opens at peek with the window under the fold.
-          if (effect.beat.spotlight.target.kind === 'panel-window' && this.observatoryPanel.sheetFormActive()) {
+          // window and its almanac arrows sit in its scrolling body, and on
+          // a phone the sheet opens at peek with them under the fold. One
+          // that still cannot be brought on screen gets no ring (the press
+          // and the perform still happen; the card narrates on).
+          const kind = effect.beat.spotlight.target.kind;
+          if ((kind === 'panel-window' || kind === 'panel-step') && this.observatoryPanel.sheetFormActive()) {
             this.observatoryPanel.setSheetPark('full');
           }
           target.scrollIntoView?.({ block: 'nearest' });
+          const rect = target.getBoundingClientRect();
+          const onScreen =
+            rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
           const { label, key } = effect.beat.spotlight;
-          this.tutorialSpotlight.show(target, label, key, this.tutorialAvoidRects());
+          if (onScreen) this.tutorialSpotlight.show(target, label, key, this.tutorialAvoidRects());
+          else this.tutorialSpotlight.hide();
         } else {
           this.tutorialSpotlight.hide();
         }

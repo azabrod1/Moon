@@ -45,7 +45,7 @@ export type MapBodyRef =
  * silently took off instead sent an Observatory excursion back to wherever
  * the ship was before it). "Observatory" on the landed body is verb 'observe'
  * whose sameBody path reopens the panel. Autopilot is withheld on the landed
- * body — its sameBody branch would lift off and park rather than engage.
+ * body — lifting off beside it only to park there again is what Leave does.
  * Focus is on every card: it flies the map camera
  * and nothing else, so no target can refuse it. Look inside is on every body
  * with an interior to show — every planet and moon; the Sun waits for its

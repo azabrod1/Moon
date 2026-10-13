@@ -14335,15 +14335,12 @@ export class PlanetariumMode {
       this.exitLandedMode();
       return true;
     }
-    if (sameBody && verb === 'pilot') {
-      // Your own row on Autopilot: lift off and park nearby. Travel is NOT
-      // short-circuited the same way: the Teleport tab lists the body you
-      // stand on, and a pick there is a real jump to its flyby pose below —
-      // a take-off instead used to drop an Observatory excursion back at
-      // wherever the ship was before the Observatory grabbed it.
-      this.exitLandedMode();
-      return true;
-    }
+    // No same-body shortcut past this point. The Teleport and Autopilot tabs
+    // list the body the player stands on, and a pick there means what the tab
+    // says — a jump to its flyby pose, or the pilot flying there — exactly as
+    // for any other body. A bare take-off instead (the old shortcut) dropped
+    // an Observatory excursion back at wherever the ship was before the
+    // Observatory grabbed it, an AU or more from the body just picked.
     if (verb === 'travel') {
       this.arriveThen(target, () => {
         if (this.landedOn) this.exitLandedMode();
@@ -14359,6 +14356,10 @@ export class PlanetariumMode {
       });
       return true;
     }
+    // Autopilot: from the body's own row the take-off puts the ship beside it
+    // (a classic landing) and the pilot parks on the spot, or, after an
+    // Observatory excursion, back at the stashed cruise pose, and the pilot
+    // flies it to the body from there.
     if (this.landedOn) this.exitLandedMode();
     this.engageAutopilot(target);
     return true;

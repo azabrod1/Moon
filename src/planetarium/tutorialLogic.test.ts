@@ -34,26 +34,12 @@ import { formatTimeRateLabel } from '../astronomy/planetary';
 const MIN = 60_000;
 
 describe('TUTORIAL_STEPS', () => {
-  it('is the six-card deck in order, ids unique', () => {
-    expect(TUTORIAL_STEPS.map((s) => s.id)).toEqual([
-      'welcome',
-      'saturn',
-      'moon',
-      'timelapse',
-      'eclipse',
-      'wrap',
-    ]);
+  it('is the four stops and the wrap in order, ids unique — no welcome card, the first stop stages at once', () => {
+    expect(TUTORIAL_STEPS.map((s) => s.id)).toEqual(['saturn', 'moon', 'timelapse', 'eclipse', 'wrap']);
   });
 
-  it('stages match the cards: bookends card-only, the middle four scene-staged', () => {
-    expect(TUTORIAL_STEPS.map((s) => s.stage)).toEqual([
-      'none',
-      'saturn',
-      'moon',
-      'timelapse',
-      'eclipse',
-      'none',
-    ]);
+  it('stages match the cards: the four stops scene-staged, the wrap card-only', () => {
+    expect(TUTORIAL_STEPS.map((s) => s.stage)).toEqual(['saturn', 'moon', 'timelapse', 'eclipse', 'none']);
   });
 
   it('card-only steps settle instantly; staged steps wait out arrivals and dwell', () => {
@@ -79,12 +65,12 @@ describe('TUTORIAL_STEPS', () => {
     }
   });
 
-  it('the stops are the four scene-staged steps; the bookends count as before and after them', () => {
+  it('the stops are the four scene-staged steps; the wrap counts as after them', () => {
     expect(TUTORIAL_STOP_COUNT).toBe(4);
-    expect(TUTORIAL_STEPS.map((_, i) => tutorialStopNumber(i))).toEqual([null, 1, 2, 3, 4, null]);
-    expect(tutorialProgress(0)).toEqual({ count: 4, current: null, done: 0, label: 'Before the first stop' });
-    expect(tutorialProgress(2)).toEqual({ count: 4, current: 2, done: 1, label: 'Stop 2 of 4' });
-    expect(tutorialProgress(5)).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
+    expect(TUTORIAL_STEPS.map((_, i) => tutorialStopNumber(i))).toEqual([1, 2, 3, 4, null]);
+    expect(tutorialProgress(0)).toEqual({ count: 4, current: 1, done: 0, label: 'Stop 1 of 4' });
+    expect(tutorialProgress(1)).toEqual({ count: 4, current: 2, done: 1, label: 'Stop 2 of 4' });
+    expect(tutorialProgress(4)).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
   });
 
   it('Saturn plays its demonstration: ring and press the Teleport chip, then ring and press the Saturn row into the arrival', () => {

@@ -8,7 +8,10 @@
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
-//   - Esc in the middle of a beat drops the ring and the press at once.
+//   - Esc in the middle of a beat drops the ring and the press at once;
+//   - the first run opens on the welcome, whose three ways out all mark it
+//     seen, and the ☰ row reads "Take the tour" until the tour has been
+//     completed once, then "Replay the tour".
 // Software rendering (the lab box has no GPU): frames take seconds, so every
 // wait is state-driven and the time bounds are loose. Takes the browser lock.
 // Usage: node tools/tutorial-walk.mjs [--url=http://127.0.0.1:5174] [--label=tutorial]
@@ -55,9 +58,13 @@ try {
     });
     await context.addInitScript((opts) => {
       try {
-        localStorage.clear(); sessionStorage.clear(); indexedDB.deleteDatabase('orbital-sim-storage');
-        if (opts.helpSeen) localStorage.setItem('planetarium-help-seen', '1');
-        localStorage.setItem('planetarium-surface-hint-seen', '1');
+        // A fresh slate once per tab: a reload must keep what the page wrote.
+        if (!sessionStorage.getItem('walk-cleared')) {
+          localStorage.clear(); indexedDB.deleteDatabase('orbital-sim-storage');
+          if (opts.helpSeen) localStorage.setItem('planetarium-help-seen', '1');
+          localStorage.setItem('planetarium-surface-hint-seen', '1');
+          sessionStorage.setItem('walk-cleared', '1');
+        }
       } catch {}
       // Record what the page shows between polls: every veil caption shown,
       // and every press class put on a control (a press lasts 180 ms of
@@ -86,7 +93,7 @@ try {
   const boot = async (context) => {
     const page = await context.newPage();
     page.on('pageerror', (e) => { note(`[pageerror] ${e.message}`); failures.push(`pageerror ${e.message}`); });
-    await page.goto(`${URL}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${URL}/?auto=planetarium`, { waitUntil: 'domcontentloaded', timeout: 120_000 });
     await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 300_000 });
     await page.waitForFunction(() => {
       const screen = document.getElementById('loading-screen');
@@ -155,13 +162,66 @@ try {
     check(spot.cutout.w > 20 && spot.cutout.h > 20, `${tag} ${stop}/${beat}: the cutout has a control's size`, spot.cutout);
   };
 
-  // First-run help modal (the tutorial's front door) on both sizes.
+  // The first run: the welcome over the live scene, on both sizes. On the
+  // desktop "Explore on my own" marks it seen (a reload shows nothing); on the
+  // phone "Take the tour" goes straight to Saturn.
+  const heroState = (page) => page.evaluate(() => {
+    const hero = document.getElementById('tutorial-hero');
+    return {
+      open: hero?.classList.contains('visible') ?? false,
+      focused: document.activeElement?.id ?? null,
+      seen: localStorage.getItem('planetarium-help-seen'),
+      helpOpen: document.getElementById('planetarium-help')?.classList.contains('visible') ?? false,
+      tour: document.getElementById('tutorial-hero-tour')?.getBoundingClientRect().height ?? 0,
+      explore: document.getElementById('tutorial-hero-explore')?.getBoundingClientRect().height ?? 0,
+    };
+  });
   for (const [tag, vp, touch] of SIZES) {
     note(`[firstrun ${tag}]`);
     const context = await fresh(vp, { touch, helpSeen: false });
     const page = await boot(context);
     await sleep(800);
-    await shot(page, `${tag}-00-firstrun-help`);
+    let hero = await heroState(page);
+    check(hero.open && !hero.helpOpen, `${tag} firstrun: the welcome is up, not the guide`, hero);
+    check(hero.focused === 'tutorial-hero-title', `${tag} firstrun: focus starts on the heading`, hero.focused);
+    check(hero.tour >= 44 && hero.explore >= 44 && Math.abs(hero.tour - hero.explore) < 1, `${tag} firstrun: two choices of equal size`, { tour: hero.tour, explore: hero.explore });
+    await shot(page, `${tag}-00-firstrun-welcome`);
+    if (tag === 'desktop') {
+      await page.click('#tutorial-hero-explore');
+      await sleep(300);
+      hero = await heroState(page);
+      check(!hero.open && hero.seen === '1', `${tag} firstrun: Explore closes the welcome and marks it seen`, hero);
+      check(!(await tstate(page)).active, `${tag} firstrun: no tour started`);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+      await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 300_000 });
+      await sleep(1500);
+      hero = await heroState(page);
+      check(!hero.open, `${tag} firstrun: the welcome never comes back`, hero);
+      await context.close();
+      // The guide link: the welcome closes and Help opens, with a single tour button.
+      const guide = await fresh(vp, { touch, helpSeen: false });
+      const guidePage = await boot(guide);
+      await sleep(800);
+      await guidePage.click('#tutorial-hero-guide');
+      await sleep(300);
+      hero = await heroState(guidePage);
+      const footer = await guidePage.evaluate(() => ({
+        title: document.querySelector('#planetarium-help h3')?.textContent,
+        buttons: Array.from(document.querySelectorAll('.help-tutorial-row button')).map((b) => b.textContent),
+      }));
+      check(!hero.open && hero.helpOpen && hero.seen === '1', `${tag} firstrun: Read the guide opens Help and marks the welcome seen`, hero);
+      check(footer.title === 'Help' && footer.buttons.length === 1 && footer.buttons[0] === 'Take the tour', `${tag} firstrun: Help has one tour button in its footer`, footer);
+      await shot(guidePage, `${tag}-00b-firstrun-guide`);
+      await guide.close();
+      continue;
+    } else {
+      await page.click('#tutorial-hero-tour');
+      await sleep(300);
+      hero = await heroState(page);
+      const state = await tstate(page);
+      check(!hero.open && hero.seen === '1' && state.active && state.stepId === 'saturn', `${tag} firstrun: Take the tour closes the welcome and stages Saturn at once`, { hero, stepId: state.stepId });
+      await shot(page, `${tag}-00b-firstrun-tour-started`);
+    }
     await context.close();
   }
 
@@ -171,24 +231,18 @@ try {
     const page = await boot(context);
     const before = await tstate(page);
     await shot(page, `${tag}-01-before`);
+    const menuRow = (page) => page.evaluate(() => document.getElementById('planetarium-btn-tutorial')?.textContent);
     await page.click('#planetarium-btn-menu'); await sleep(500);
+    check((await menuRow(page)) === 'Take the tour', `${tag}: the ☰ row offers the tour`, await menuRow(page));
     await shot(page, `${tag}-02-menu`);
     await page.click('#planetarium-btn-menu'); await sleep(400);
     const started = await page.evaluate(() => window.__moon.tutorialStart());
     check(started, `${tag}: the tour starts from idle`);
-    await waitReady(page, tag, 'welcome');
-    let card = await cardText(page);
-    note(`  card ${JSON.stringify(card)}`);
-    check(card.dots.length === 4 && !card.dots.includes('current'), `${tag} welcome: four stop dots, none lit`, card.dots);
-    // Under software rendering the card's buttons rasterize a frame or two
-    // after its text; give the capture that frame.
-    await sleep(1500);
-    await shot(page, `${tag}-10-welcome`);
-
-    // Saturn: the demonstration, beat by beat, then the composed arrival.
-    await page.evaluate(() => window.__moon.tutorialNext());
     await sleep(150);
-    card = await cardText(page);
+
+    // Saturn stages at once: the demonstration, beat by beat, then the composed arrival.
+    let card = await cardText(page);
+    check(card.dots.length === 4 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
     check(card.busy && card.primary === 'Arriving…', `${tag} saturn: the primary says why it waits`, { primary: card.primary, busy: card.busy });
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     const saturn = await waitReady(page, tag, 'saturn');
@@ -245,6 +299,9 @@ try {
     await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
     await sleep(2500);
     await shot(page, `${tag}-20-after-end`);
+    await page.click('#planetarium-btn-menu'); await sleep(400);
+    check((await menuRow(page)) === 'Replay the tour', `${tag} end: the ☰ row now offers a replay`, await menuRow(page));
+    await page.click('#planetarium-btn-menu'); await sleep(300);
     const after = await tstate(page);
     note(`  end state ${JSON.stringify(after)}`);
     // The boot ship is under way (a cruise jump always arrives moving), so the
@@ -267,8 +324,6 @@ try {
     const page = await boot(context);
     const before = await tstate(page);
     await page.evaluate(() => window.__moon.tutorialStart());
-    await page.waitForFunction(() => window.__moon.tutorialState().phase === 'ready', null, { timeout: 60_000 });
-    await page.evaluate(() => window.__moon.tutorialNext());
     await page.waitForFunction(() => window.__moon.tutorialState().spotlight !== null, null, { timeout: 60_000 });
     await shot(page, 'desktop-30-esc-before');
     await page.keyboard.press('Escape');

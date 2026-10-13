@@ -2548,21 +2548,15 @@ export class PlanetariumMode {
     this.resumeTimeAfterMenu = false;
   }
 
+  /** Help or the first-run welcome: the entry surfaces, for every predicate
+   *  that asks whether a reading surface has the screen. */
   private isHelpOpen(): boolean {
-    return this.helpModal.isOpen();
+    return this.helpModal.isOpen() || this.isWelcomeOpen();
   }
 
   private showHelp() {
     if (this.helpModal.isOpen()) return;
-    // The action bar recommends the tutorial only on the first-run showing
-    // (hasSeenHelp flips when this modal first closes). A Help revisit gets a
-    // plain button, and no "Explore on my own" choice — the visitor already is.
-    const firstRun = !this.store.hasSeenHelp();
-    const takeTutorial = document.getElementById('help-take-tutorial');
-    takeTutorial?.classList.toggle('tutorial-btn-primary', firstRun);
-    takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
-    const explore = document.getElementById('help-explore');
-    if (explore) explore.style.display = firstRun ? '' : 'none';
+    this.refreshTourEntries();
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -2585,6 +2579,41 @@ export class PlanetariumMode {
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
     if (opts.markSeen) this.store.markHelpSeen();
+  }
+
+  // ── The first-run welcome ──────────────────────────────────────────────
+  // One choice over the live scene: the tour or your own way, two buttons of
+  // equal weight, nothing to read first. Either marks the welcome seen (the
+  // same flag the guide used to set), so it never comes back; the tour stays
+  // in ☰ and at the foot of Help, and that is the whole of the encouragement.
+
+  private isWelcomeOpen(): boolean {
+    return document.getElementById('tutorial-hero')?.classList.contains('visible') ?? false;
+  }
+
+  private showWelcome(): void {
+    const hero = document.getElementById('tutorial-hero');
+    if (!hero || hero.classList.contains('visible')) return;
+    hero.classList.add('visible');
+    // Focus starts on the heading, so neither choice is pre-chosen and Tab
+    // reaches them in order.
+    document.getElementById('tutorial-hero-title')?.focus({ preventScroll: true });
+  }
+
+  /** Close the welcome; it counts as seen whichever way it was closed. */
+  private hideWelcome(): void {
+    const hero = document.getElementById('tutorial-hero');
+    if (!hero?.classList.contains('visible')) return;
+    hero.classList.remove('visible');
+    this.store.markHelpSeen();
+  }
+
+  /** The tour's two standing entries read "Take the tour" until the tour has
+   *  been completed once, then "Replay the tour" (the record outlives the journey). */
+  private refreshTourEntries(): void {
+    const label = this.store.readTourProgress().completed ? 'Replay the tour' : 'Take the tour';
+    setText('planetarium-btn-tutorial', label);
+    setText('help-take-tutorial', label);
   }
 
   /** A short notice in the mode's own toast (mode switching lives in main.ts,
@@ -10037,6 +10066,7 @@ export class PlanetariumMode {
       // veil, "Departing" toast and all. Swallow the press for the ~1 s the
       // veil owns the screen; the ceremony ends with everything dismissable.
       if (this.arrivalVeilUp()) return;
+      if (this.isWelcomeOpen()) { this.hideWelcome(); return; }
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       // One Esc, one meaning while tutorialing: end the tutorial. Above the deck rung
       // on purpose — during the deck theater the open deck is tutorial-owned, and
@@ -10373,7 +10403,7 @@ export class PlanetariumMode {
   private showIntroText() {
     if (this.store.hasSeenHelp()) return;
     if (this.resumePrompt.isVisible()) return;
-    this.showHelp();
+    this.showWelcome();
   }
 
   private updateStatsUI() {
@@ -10569,6 +10599,7 @@ export class PlanetariumMode {
     // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
     // below must capture the resumed truth, not the modal freeze.
     this.hideHelp(); // the tour was chosen from inside the help: that is the user closing it
+    this.hideWelcome();
     this.closeMenuPanel();
     if (
       !canStartTutorial({
@@ -10638,12 +10669,11 @@ export class PlanetariumMode {
   }
 
   /** Back re-stages the previous stop (stagings are absolute, so this is just
-   *  the index math). The card hides Back below index 2 — see tutorialCardModel
-   *  — but guard here too: a stale click must not stage the welcome card's
-   *  nothing over a live scene. */
+   *  the index math). The card hides Back on the first stop — see
+   *  tutorialCardModel — but guard here too against a stale click. */
   private backTutorial(): void {
     const tutorial = this.tutorial;
-    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 2) return;
+    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 1) return;
     this.stageTutorialStep(tutorial.stepIndex - 1);
   }
 
@@ -10713,6 +10743,7 @@ export class PlanetariumMode {
       } else if (toast === 'return') {
         // The wrap card's primary: the tour was seen through to its end.
         this.store.writeTourProgress({ completed: true, completedAt: Date.now() });
+        this.refreshTourEntries();
         this.notification.show('Back where you started.', { force: true });
       }
     };
@@ -10722,10 +10753,10 @@ export class PlanetariumMode {
       return;
     }
     if (!tutorial.everStaged) {
-      // "Not now" / Esc on the welcome card: no scene ever staged, so there is
-      // nothing to put back — a restore here would only jump-cut a landed
-      // user's own camera framing to the default. Whatever they did under the
-      // card is theirs to keep.
+      // Skip or Esc before the tour moved anything (during the first stop's
+      // beats, with the deck open and the ship where it was): nothing to put
+      // back — a restore here would only jump-cut a landed user's own camera
+      // framing to the default. Whatever they did under the card is theirs.
       finish();
       return;
     }
@@ -10839,11 +10870,9 @@ export class PlanetariumMode {
     // buttons next and a screen reader hears the headline first.
     this.tutorialCard.focusTitle();
     const step = TUTORIAL_STEPS[index];
-    if (step.stage !== 'none') tutorial.everStaged = true;
     switch (step.stage) {
       case 'none':
-        // Card-only: welcome narrates over the user's own scene (clock
-        // included), wrap over the eclipse the previous step set up.
+        // Card-only: the wrap narrates over the eclipse the previous step set up.
         this.markTutorialStaged(generation);
         break;
       case 'saturn':
@@ -10891,6 +10920,8 @@ export class PlanetariumMode {
       () => {
         const live = this.tutorial;
         if (!live || live.generation !== generation) return;
+        // From here the tour has moved the scene: ending it means restoring.
+        live.everStaged = true;
         action();
       },
       veilNote === undefined ? {} : { note: veilNote },
@@ -10929,7 +10960,6 @@ export class PlanetariumMode {
    *  ring and press Saturn's row, then the arrival (performTutorialArrival)
    *  — the tutorial teaches the deck by visibly using it, beat by beat. */
   private stageTutorialSaturn(generation: number): void {
-    this.setTutorialClockRate(1);
     this.closeObservatoryPanel();
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.generation !== generation) return;
@@ -11079,6 +11109,7 @@ export class PlanetariumMode {
           return;
         }
         this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
+          this.setTutorialClockRate(1);
           if (this.landedOn) this.exitLandedMode();
           this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
           // The card and the chrome stay where they are; the scene moves:
@@ -11414,6 +11445,9 @@ export class PlanetariumMode {
   /** The tutorial drives the same clock the transport strip does. The unpause is
    *  deliberate: a clock paused before the tutorial would freeze every staged sky. */
   private setTutorialClockRate(rate: number): void {
+    // The clock is the user's scene too: once the tour touches it, ending
+    // the tour means restoring.
+    if (this.tutorial) this.tutorial.everStaged = true;
     this.timeState = { ...this.timeState, rate, paused: false };
     // Flash the unit over the clock — the staged rate change is exactly the
     // feedback the time-lapse stops narrate.
@@ -11891,11 +11925,22 @@ export class PlanetariumMode {
         this.player.moving = false;
         this.timeState.paused = true;
         this.updateTimeUI();
+        this.refreshTourEntries();
         this.menuPanel.show();
       }
     });
     document.getElementById('planetarium-btn-help')?.addEventListener('click', () => {
       this.closeMenuPanel();
+      this.showHelp();
+    });
+    // The first-run welcome's three ways out. All three mark it seen.
+    document.getElementById('tutorial-hero-tour')?.addEventListener('click', () => {
+      this.hideWelcome();
+      this.startTutorial();
+    });
+    document.getElementById('tutorial-hero-explore')?.addEventListener('click', () => this.hideWelcome());
+    document.getElementById('tutorial-hero-guide')?.addEventListener('click', () => {
+      this.hideWelcome();
       this.showHelp();
     });
     // Tutorial entries: the help-modal footer pair and the ☰ item. startTutorial
@@ -11914,7 +11959,6 @@ export class PlanetariumMode {
     this.bindMapZoomButton('map-zoom-in', 1);
     this.bindMapZoomButton('map-zoom-out', -1);
     document.getElementById('help-take-tutorial')?.addEventListener('click', () => this.startTutorial());
-    document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 

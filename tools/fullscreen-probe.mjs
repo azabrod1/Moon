@@ -598,6 +598,9 @@ try {
       await openMenu(page);
       await page.click('#planetarium-btn-tutorial');
       await page.waitForFunction(() => document.getElementById('tutorial-card')?.classList.contains('visible'), null, { timeout: 30_000 });
+      // The tour stages its first stop at once; Next is a Tab stop only once
+      // the stop has settled (a disabled button is skipped by Tab).
+      await page.waitForFunction(() => window.__moon.tutorialState().phase === 'ready', null, { timeout: 300_000 });
       await settle(page, 600);
       stops = await tabWalk(page);
       landed = stops.filter((id) => CARD_BUTTONS.includes(id));

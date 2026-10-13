@@ -14,12 +14,12 @@ const model = (id: TutorialStep['id'], phase: TutorialPhase, kicker?: string | n
   tutorialCardModel(stepById(id), indexOf(id), phase, kicker === undefined ? {} : { kicker });
 
 describe('tutorialCardModel', () => {
-  it('welcome card: start/not-now labels, no stop lit yet', () => {
-    const m = model('welcome', 'ready');
-    expect(m.progress).toEqual({ count: 4, current: null, done: 0, label: 'Before the first stop' });
-    expect(m.primary).toEqual({ label: 'Start the tutorial', action: 'advance', disabled: false, busy: false });
-    expect(m.ghost).toEqual({ label: 'Not now', disabled: false });
-    expect(m.kicker).toBeNull();
+  it('the first card is Saturn, staging at once: the first dot lit, skip live, no Back', () => {
+    const m = model('saturn', 'staging');
+    expect(m.progress).toEqual({ count: 4, current: 1, done: 0, label: 'Stop 1 of 4' });
+    expect(m.ghost).toEqual({ label: 'Skip tutorial', disabled: false });
+    expect(m.back).toBeNull();
+    expect(m.kicker).toBe('Saturn');
   });
 
   it('primary waits for ready and says why; ghost stays live until the restore runs', () => {
@@ -39,12 +39,10 @@ describe('tutorialCardModel', () => {
     expect(ending.ghost?.disabled).toBe(true);
   });
 
-  it('card-only steps are never busy: their label shows at once', () => {
-    for (const id of ['welcome', 'wrap'] as const) {
-      const m = model(id, 'staging');
-      expect(m.primary.busy).toBe(false);
-      expect(m.primary.label).toBe(stepById(id).primaryLabel);
-    }
+  it('the card-only wrap is never busy: its label shows at once', () => {
+    const m = model('wrap', 'staging');
+    expect(m.primary.busy).toBe(false);
+    expect(m.primary.label).toBe(stepById('wrap').primaryLabel);
   });
 
   it('the body is the staging copy while the beats play, the settled copy from the arrival on', () => {
@@ -84,7 +82,6 @@ describe('tutorialCardModel', () => {
   });
 
   it('Back appears from the Moon card on and waits for ready like Next', () => {
-    expect(model('welcome', 'ready').back).toBeNull();
     expect(model('saturn', 'ready').back).toBeNull();
     for (const id of ['moon', 'timelapse', 'eclipse', 'wrap'] as const) {
       expect(model(id, 'ready').back).toEqual({ label: '‹ Back', disabled: false });

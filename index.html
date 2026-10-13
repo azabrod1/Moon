@@ -1822,6 +1822,41 @@
       #tutorial-spotlight { transition: none; }
       .tutorial-spotlight-ring { animation: none; box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.22); }
     }
+
+    /* ============================================= */
+    /* FIRST-RUN WELCOME                             */
+    /* ============================================= */
+
+    /* The welcome over the live scene (same slot as help, z 70): a light
+       backdrop so the sky still reads, one card, two choices of equal weight
+       side by side (stacked on phones, 44 px each), a quiet line under them. */
+    #tutorial-hero { display: none; position: fixed; inset: 0; z-index: 70; pointer-events: auto; }
+    #tutorial-hero.visible { display: flex; align-items: center; justify-content: center; }
+    .tutorial-hero-backdrop { position: absolute; inset: 0; background: rgba(2, 3, 6, 0.42); }
+    .tutorial-hero-card {
+      position: relative; width: min(460px, calc(100vw - 32px)); padding: 26px 28px 20px; text-align: center;
+    }
+    .tutorial-hero-title { font-size: 19px; font-weight: 600; color: var(--t1); margin: 0 0 8px; outline: none; }
+    .tutorial-hero-lead { font-size: 13px; line-height: 1.55; color: var(--t2); margin: 0 0 18px; }
+    .tutorial-hero-choices { display: flex; gap: 10px; justify-content: center; }
+    .tutorial-hero-btn {
+      flex: 1 1 0; min-height: 44px; padding: 10px 14px;
+      border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: 10px;
+      background: rgba(var(--accent-rgb), 0.12); color: var(--t1);
+      font-family: var(--font); font-size: 13px; font-weight: 500; cursor: pointer;
+      transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+    }
+    .tutorial-hero-btn:hover { background: rgba(var(--accent-rgb), 0.22); border-color: rgba(var(--accent-rgb), 0.45); }
+    .tutorial-hero-mins { color: var(--t2); font-weight: 400; }
+    .tutorial-hero-note { font-size: 11.5px; line-height: 1.5; color: var(--t3); margin: 14px 0 0; }
+    .tutorial-hero-link {
+      background: none; border: none; padding: 0; color: var(--t2); font: inherit;
+      text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+    }
+    .tutorial-hero-link:hover { color: var(--t1); }
+    @media (max-width: 640px) {
+      .tutorial-hero-choices { flex-direction: column; }
+    }
     .historic-header {
       display: flex;
       align-items: flex-start;
@@ -3063,7 +3098,7 @@
       color: var(--text-secondary);
     }
     /* Modal action bar — a flex-footer sibling of the scrollable body, so the
-       tutorial recommendation is visible without scrolling the reference sections. */
+       tour's entry is visible without scrolling the reference sections. */
     .help-tutorial-row {
       display: flex;
       gap: 8px;
@@ -4784,7 +4819,7 @@
           <button class="menu-action" id="planetarium-btn-help">Help</button>
           <button class="menu-action" id="planetarium-btn-save">Save</button>
           <button class="menu-action" id="planetarium-btn-new">New Journey</button>
-          <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
+          <button class="menu-action" id="planetarium-btn-tutorial">Take the tour</button>
           <button class="menu-action" id="planetarium-btn-map">System map</button>
           <div class="menu-divider"></div>
           <button type="button" class="pk-row menu-tier" data-open="graphics">
@@ -5138,11 +5173,28 @@
       </div>
 
       <!-- Help modal (centered) -->
+      <!-- First-run welcome: one choice over the live scene — the tour or your own
+           way — two buttons of equal weight, nothing to read first. Either marks
+           the welcome seen; the tour stays in ☰ and at the foot of Help. Esc is
+           "Explore on my own". -->
+      <div id="tutorial-hero" role="dialog" aria-labelledby="tutorial-hero-title" aria-describedby="tutorial-hero-lead">
+        <div class="tutorial-hero-backdrop"></div>
+        <div class="tutorial-hero-card pn pn-high">
+          <h3 class="tutorial-hero-title" id="tutorial-hero-title" tabindex="-1">Welcome to your planetarium</h3>
+          <p class="tutorial-hero-lead" id="tutorial-hero-lead">Every planet, moon and star is where it really is for the date on screen, at real scale. Fly anywhere, stand on any world, and bend time.</p>
+          <div class="tutorial-hero-choices">
+            <button class="tutorial-hero-btn" id="tutorial-hero-tour">Take the tour <span class="tutorial-hero-mins">· 2 min</span></button>
+            <button class="tutorial-hero-btn" id="tutorial-hero-explore">Explore on my own</button>
+          </div>
+          <p class="tutorial-hero-note">The tour is in the ☰ menu whenever you want it. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
+        </div>
+      </div>
+
       <div id="planetarium-help">
         <div class="planetarium-help-backdrop"></div>
         <div class="planetarium-help-card">
           <div class="planetarium-help-header">
-            <h3>Welcome to Your Planetarium</h3>
+            <h3>Help</h3>
             <button class="planetarium-help-close" id="planetarium-help-close" aria-label="Close help">&times;</button>
           </div>
           <div class="planetarium-help-body">
@@ -5178,8 +5230,7 @@
             <p class="help-signoff">Have fun out there.</p>
           </div>
           <div class="help-tutorial-row">
-            <button class="tutorial-btn tutorial-btn-ghost" id="help-explore">Explore on my own</button>
-            <button class="tutorial-btn tutorial-btn-primary" id="help-take-tutorial">Take the tutorial</button>
+            <button class="tutorial-btn tutorial-btn-ghost" id="help-take-tutorial">Take the tour</button>
           </div>
         </div>
       </div>

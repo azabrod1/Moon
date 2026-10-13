@@ -1,13 +1,15 @@
 /**
  * Pure logic for the guided tutorial — the Next-driven click-through that stages
  * the app's showcase scenes (Saturn's rings, standing on the Moon, time-lapse,
- * a total solar eclipse). DOM-free so the step table, the phase machine, and
- * the restore/settle decisions stay unit-testable; PlanetariumMode owns the
- * scene staging and the card widget.
+ * a total solar eclipse). Choosing the tour is the decision, so every entry
+ * stages the first stop at once: there is no welcome card, and the first
+ * stop's staging copy carries the one-line introduction. DOM-free so the step
+ * table, the beats, the phase machine, and the restore/settle decisions stay
+ * unit-testable; PlanetariumMode owns the scene staging and the card widget.
  */
 import type { ShadowEventSpec } from '../astronomy/shadows';
 
-export type TutorialStepId = 'welcome' | 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
+export type TutorialStepId = 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
 
 /** What the controller must stage when a step becomes current ('none' = card only). */
 export type TutorialStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'eclipse';
@@ -123,22 +125,14 @@ const CARD_ONLY_SETTLE: SettleNeeds = { arrival: false, fov: false, totality: fa
 
 export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
-    id: 'welcome',
-    title: 'A quick look around',
-    kicker: null,
-    body: 'We’ll take four stops to show you how the app works: Saturn, the Moon, Jupiter with time sped up, and a total solar eclipse. The tutorial does the flying and shows you the button behind each move; you can always drag to look around.',
-    primaryLabel: 'Start the tutorial',
-    ghostLabel: 'Not now',
-    stage: 'none',
-    settle: CARD_ONLY_SETTLE,
-  },
-  {
     id: 'saturn',
     title: 'Teleport',
     kicker: 'Saturn',
     bodyDuring: 'Four stops, about two minutes. First, {teleport} Teleport: this button jumps you to any planet or moon. We’re going to Saturn.',
     body: 'One tap, anywhere in the solar system. Drag to look around.',
     beats: SATURN_BEATS,
+    // Skip reads "Skip tutorial" here too: a skip before the first arrival
+    // restores nothing, because nothing has moved yet (everStaged).
     primaryLabel: 'Next: the Moon',
     ghostLabel: 'Skip tutorial',
     stage: 'saturn',
@@ -203,9 +197,7 @@ export function tutorialProgress(index: number): { count: number; current: numbe
     return { count: TUTORIAL_STOP_COUNT, current, done: current - 1, label: `Stop ${current} of ${TUTORIAL_STOP_COUNT}` };
   }
   const before = TUTORIAL_STEPS.slice(0, index).filter((s) => s.stage !== 'none').length;
-  return before === 0
-    ? { count: TUTORIAL_STOP_COUNT, current: null, done: 0, label: 'Before the first stop' }
-    : { count: TUTORIAL_STOP_COUNT, current: null, done: before, label: `All ${before} stops seen` };
+  return { count: TUTORIAL_STOP_COUNT, current: null, done: before, label: `All ${before} stops seen` };
 }
 
 export interface BeatRunState {

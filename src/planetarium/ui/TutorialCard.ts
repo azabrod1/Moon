@@ -24,9 +24,8 @@ export interface TutorialCardModel {
   primary: { label: string; action: 'advance' | 'return'; disabled: boolean; busy: boolean };
   /** null hides the ghost button (the wrap card: ending always takes you back). */
   ghost: { label: string; disabled: boolean } | null;
-  /** Re-stages the previous stop. null hides it: on the welcome card there is
-   *  nowhere to go, and on Saturn the previous card stages no scene — Back
-   *  there would strand the welcome copy over the Saturn parking spot. */
+  /** Re-stages the previous stop. null hides it on the first stop, where
+   *  there is nowhere to go back to. */
   back: { label: string; disabled: boolean } | null;
 }
 
@@ -92,7 +91,7 @@ export function tutorialCardModel(
       step.ghostLabel === null
         ? null
         : { label: step.ghostLabel, disabled: phase === 'ending' },
-    back: index >= 2 ? { label: '‹ Back', disabled: phase !== 'ready' } : null,
+    back: index >= 1 ? { label: '‹ Back', disabled: phase !== 'ready' } : null,
   };
 }
 

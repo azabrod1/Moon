@@ -105,11 +105,14 @@ describe('tutorialCardModel', () => {
     expect(model('saturn', 'ready', null).kicker).toBeNull();
   });
 
-  it('the wrap card always takes you back: primary restores, no skip button, every stop done', () => {
+  it('the wrap card always takes you back: primary restores, no skip button, every stop done, three chips once ready', () => {
     const m = model('wrap', 'ready');
-    expect(m.primary).toEqual({ label: 'End tutorial', action: 'return', disabled: false, busy: false });
+    expect(m.primary).toEqual({ label: 'Back where I was', action: 'return', disabled: false, busy: false });
     expect(m.ghost).toBeNull();
     expect(m.progress).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
+    expect(m.chips.map((c) => c.id)).toEqual(['visit-mars', 'earth-from-moon', 'follow-voyager']);
+    expect(model('wrap', 'ending').chips).toEqual([]);
+    expect(model('saturn', 'ready').chips).toEqual([]);
   });
 
   it('every non-wrap card advances and can skip', () => {

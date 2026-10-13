@@ -409,6 +409,7 @@ import {
   type BeatEffect,
   type BeatRunState,
   type TutorialBeat,
+  type TutorialChipId,
   type TutorialTargetRef,
 } from './tutorialLogic';
 import {
@@ -2400,8 +2401,9 @@ export class PlanetariumMode {
     () => this.advanceTutorial(),
     () => this.backTutorial(),
     () => this.stopTutorial({ restore: true, toast: 'skip' }),
-    () => this.stopTutorial({ restore: true, toast: 'return' }),
+    () => this.stopTutorial({ restore: true, toast: 'return', completed: true }),
     () => this.tutorialShowMe(),
+    (id) => this.tutorialChip(id),
   );
   /** The dimming mask, ring and coach bubble the beats point with. */
   private tutorialSpotlight = new TutorialSpotlight();
@@ -2511,7 +2513,7 @@ export class PlanetariumMode {
     stagedAtMs: number;
     timer: number | null;
     generation: number;
-    endRequest: { restore: boolean; toast: TutorialEndToast } | null;
+    endRequest: { restore: boolean; toast: TutorialEndToast; completed: boolean; after: (() => void) | null } | null;
     /** The current stop's demonstration: its beat list and the runner's
      *  state while it plays, null once it has handed over to the arrival (or
      *  for a stop that stages in one move). `beatFrameMs` is the last frame
@@ -2536,6 +2538,9 @@ export class PlanetariumMode {
     composition: { subject: ScreenRect; free: ScreenRect } | null;
     /** The element that had focus when the tour began: ending hands it back. */
     returnFocus: Element | null;
+    /** The Saturn stop's slow pan: when it began, or null once it has run
+     *  its course or the user took the view. */
+    pan: { startMs: number; lastMs: number } | null;
   } | null = null;
   /** A caption for the next arrival veil the tour's own press raises through
    *  a real control (the deck row's commit): taken by arriveThen. */
@@ -10664,6 +10669,7 @@ export class PlanetariumMode {
       kicker: null,
       composition: null,
       returnFocus,
+      pan: null,
     };
     // The card narrates from here; stray banners would talk over it (on
     // phones they share the same top strip).
@@ -10695,9 +10701,17 @@ export class PlanetariumMode {
    * marks a lifecycle abort (deactivate, mission start): the caller's own
    * teardown continues immediately after, so the restore must apply
    * synchronously — never through the veil-gated arrival, which is silently
-   * dropped while another arrival is mid-flight.
+   * dropped while another arrival is mid-flight. `completed` records the
+   * tour as seen through (the wrap's primary and its chips); `after` runs
+   * once the restore has applied (a chip's own action).
    */
-  private stopTutorial(opts: { restore: boolean; sync?: boolean; toast?: 'skip' | 'return' }): void {
+  private stopTutorial(opts: {
+    restore: boolean;
+    sync?: boolean;
+    toast?: 'skip' | 'return';
+    completed?: boolean;
+    after?: () => void;
+  }): void {
     const tutorial = this.tutorial;
     if (!tutorial) return;
     tutorial.generation++; // strand every pending theater timer and arrival closure
@@ -10712,17 +10726,25 @@ export class PlanetariumMode {
     tutorial.beats = null;
     this.tutorialSpotlight.clear();
     const toast = opts.toast ?? null;
+    const completed = opts.completed === true;
+    const after = opts.after ?? null;
     if (!opts.sync && this.arrivalInFlight) {
       // Mid-arrival: park the request; updateTutorial executes it on the first
       // idle frame (the veil is up — nothing useful could happen sooner).
-      tutorial.endRequest = { restore: opts.restore, toast };
+      tutorial.endRequest = { restore: opts.restore, toast, completed, after };
       this.renderTutorialCard(); // 'ending' disables both buttons
       return;
     }
-    this.executeTutorialStop(opts.restore, opts.sync === true, toast);
+    this.executeTutorialStop(opts.restore, opts.sync === true, toast, completed, after);
   }
 
-  private executeTutorialStop(restore: boolean, sync: boolean, toast: TutorialEndToast): void {
+  private executeTutorialStop(
+    restore: boolean,
+    sync: boolean,
+    toast: TutorialEndToast,
+    completed = false,
+    after: (() => void) | null = null,
+  ): void {
     const tutorial = this.tutorial;
     if (!tutorial) return;
     const snap = tutorial.snapshot;
@@ -10750,14 +10772,17 @@ export class PlanetariumMode {
         returnFocus.focus({ preventScroll: true });
       }
       this.store.saveState(this.getState());
+      if (completed) {
+        // The wrap card's primary or a chip: the tour was seen through to its end.
+        this.store.writeTourProgress({ completed: true, completedAt: Date.now() });
+        this.refreshTourEntries();
+      }
       if (toast === 'skip') {
         this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
       } else if (toast === 'return') {
-        // The wrap card's primary: the tour was seen through to its end.
-        this.store.writeTourProgress({ completed: true, completedAt: Date.now() });
-        this.refreshTourEntries();
         this.notification.show('Back where you started.', { force: true });
       }
+      after?.();
     };
     if (!restore) {
       // New Journey: the staged scene becomes the journey.
@@ -10872,6 +10897,7 @@ export class PlanetariumMode {
     this.tutorialVeilNote = null;
     tutorial.kicker = null;
     tutorial.composition = null;
+    tutorial.pan = null;
     this.tutorialSpotlight.clear();
     this.clearTutorialOverrides();
     // A user-opened deck may hold a search filter that would hide the
@@ -11024,6 +11050,48 @@ export class PlanetariumMode {
     if (tutorial.beatRun && (tutorial.beatRun.index !== previous.index || tutorial.beatRun.stage !== previous.stage)) {
       this.renderTutorialCard();
     }
+  }
+
+  /**
+   * A wrap-card chip: the tour ends as completed and the journey is restored
+   * first, then the chip does what its label says from there — the real
+   * teleport, the real Observatory landing and Look up, the real mission —
+   * once any restore arrival has cleared.
+   */
+  private tutorialChip(id: TutorialChipId): void {
+    if (!this.tutorial) return;
+    const after = (): void => {
+      switch (id) {
+        case 'visit-mars':
+          this.afterArrivalIdle(() => this.commitBodyPick('travel', { type: 'planet', name: 'Mars' }));
+          break;
+        case 'earth-from-moon':
+          this.afterArrivalIdle(() => {
+            this.commitBodyPick('observe', { type: 'moon', name: 'Moon', parentPlanet: 'Earth' });
+            this.afterArrivalIdle(() => {
+              if (this.landedOn?.name === 'Moon' && this.landedView !== 'surface') this.enterSurfaceView();
+            });
+          });
+          break;
+        case 'follow-voyager':
+          void this.startHistoricJourney('voyager1');
+          break;
+      }
+    };
+    this.stopTutorial({ restore: true, completed: true, after });
+  }
+
+  /** Run `action` on the first frame no arrival owns the screen (now, when
+   *  none does), giving up after a few seconds rather than acting on a scene
+   *  the user has since moved on from. */
+  private afterArrivalIdle(action: () => void, deadlineMs = performance.now() + 15_000): void {
+    if (!this.active) return;
+    if (!this.arrivalVeilUp()) {
+      action();
+      return;
+    }
+    if (performance.now() > deadlineMs) return;
+    window.setTimeout(() => this.afterArrivalIdle(action, deadlineMs), 120);
   }
 
   /** The card's "Show me": the runner presses the awaited control on the next frame. */
@@ -11314,10 +11382,16 @@ export class PlanetariumMode {
           this.composeTutorialPlanet(saturn);
           // Freeze-frame: the card narrates over a parked ship. Left under way
           // (the arrival default), it would glide from the standoff to Saturn's
-          // collision shell in ~20 s, right under the copy.
+          // collision shell in ~20 s, right under the copy. A slow pan keeps
+          // the frame breathing instead (updateTutorialPan); none under
+          // reduced motion.
           this.player.moving = false;
           const live = this.tutorial;
-          if (live) live.kicker = this.tutorialPlanetKicker(saturn);
+          if (live) {
+            live.kicker = this.tutorialPlanetKicker(saturn);
+            const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            live.pan = reduced ? null : { startMs: performance.now(), lastMs: performance.now() };
+          }
         }), veilNote);
         break;
       }
@@ -11355,6 +11429,31 @@ export class PlanetariumMode {
       default:
         tutorial.arrived = true;
     }
+  }
+
+  /** How long the Saturn stop's pan runs, and how far it turns in all. */
+  private static readonly TUTORIAL_PAN_MS = 10_000;
+  private static readonly TUTORIAL_PAN_DEG = 2.5;
+
+  /** The Saturn stop's slow pan: the parked ship yaws a couple of degrees
+   *  over ten seconds, eased out, and the chase camera carries the frame
+   *  with it. The first drag or steer is the user's, and the pan stops. */
+  private updateTutorialPan(): void {
+    const tutorial = this.tutorial;
+    const pan = tutorial?.pan;
+    if (!tutorial || !pan) return;
+    if (this.orbitDragging || this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.player.moving) {
+      tutorial.pan = null;
+      return;
+    }
+    const now = performance.now();
+    const total = PlanetariumMode.TUTORIAL_PAN_MS;
+    const ease = (t: number) => 1 - (1 - t) * (1 - t);
+    const before = ease(Math.min(1, (pan.lastMs - pan.startMs) / total));
+    const after = ease(Math.min(1, (now - pan.startMs) / total));
+    pan.lastMs = now;
+    this.player.heading += THREE.MathUtils.degToRad(PlanetariumMode.TUTORIAL_PAN_DEG) * (after - before);
+    if (now - pan.startMs >= total) tutorial.pan = null;
   }
 
   /** Climb the clock one detent at a time, flashing each, so the rail's thumb
@@ -11612,7 +11711,7 @@ export class PlanetariumMode {
       if (tutorial.endRequest && !this.arrivalInFlight) {
         const request = tutorial.endRequest;
         tutorial.endRequest = null;
-        this.executeTutorialStop(request.restore, false, request.toast);
+        this.executeTutorialStop(request.restore, false, request.toast, request.completed, request.after);
       }
       return;
     }
@@ -11624,6 +11723,7 @@ export class PlanetariumMode {
     // several writers — and the ring follows its control wherever it goes.
     if (tutorial.overrides.hideShip) this.player.group.visible = false;
     if (this.tutorialSpotlight.isVisible()) this.tutorialSpotlight.track(this.tutorialAvoidRects());
+    this.updateTutorialPan();
     if (tutorial.phase === 'settling') {
       const settled = isStepSettled(
         {
@@ -18335,6 +18435,15 @@ export class PlanetariumMode {
     this.stopTutorial({ restore: true, toast: 'skip' });
   }
 
+  /** Stage a step by index, out of order — the headless walk reaches the wrap
+   *  card without playing every stop first. */
+  devTutorialStage(index: number): boolean {
+    const tutorial = this.tutorial;
+    if (!tutorial || index < 0 || index >= TUTORIAL_STEPS.length) return false;
+    this.stageTutorialStep(index);
+    return true;
+  }
+
   /** One flat snapshot of everything the headless QA walk asserts per stop. */
   devTutorialState(): unknown {
     const tutorial = this.tutorial;
@@ -18358,6 +18467,8 @@ export class PlanetariumMode {
         : null,
       userActed: tutorial?.userActed ?? false,
       arrived: tutorial?.arrived ?? false,
+      panning: tutorial?.pan !== null && tutorial?.pan !== undefined,
+      missionActive: this.isMissionActive(),
       declutter: document.body.classList.contains('tutorial-declutter'),
       earthOnScreen: this.devBodyOnScreen('Earth'),
       sunOnScreen: this.devBodyOnScreen('Sun'),

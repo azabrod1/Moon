@@ -18,6 +18,9 @@
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
 //   - Esc in the middle of a beat drops the ring and the press at once;
+//   - the wrap's three chips each restore the journey and then do what they
+//     say: a teleport to Mars, the Moon landing with Earth overhead, the
+//     Voyager 1 mission;
 //   - the first run opens on the welcome, whose three ways out all mark it
 //     seen, and the ☰ row reads "Take the tour" until the tour has been
 //     completed once, then "Replay the tour".
@@ -278,6 +281,7 @@ try {
     check(card.primaryDisabled === false && card.primary === 'Next: the Moon', `${tag} saturn: Next is live`, card);
     const s = saturn.state;
     check(s.landedOn === null && s.shipVisible === false && s.labelsShown === false, `${tag} saturn: cruising at Saturn with the ship model and the labels out of the picture`, { landed: s.landedOn, ship: s.shipVisible, labels: s.labelsShown });
+    check(s.panning === true || saturn.seconds > 12, `${tag} saturn: the slow pan is running (or has run its ten seconds)`, { panning: s.panning, seconds: saturn.seconds });
     check(!!s.composition, `${tag} saturn: the scene was composed`);
     if (s.composition) {
       const { subject, free } = s.composition;
@@ -385,6 +389,10 @@ try {
     await waitReady(page, tag, 'wrap');
     card = await cardText(page);
     check(card.dots.every((d) => d === 'done'), `${tag} wrap: every dot done`, card.dots);
+    const chips = await page.evaluate(() => Array.from(document.querySelectorAll('#tutorial-chips .tutorial-chip')).map((b) => [b.textContent, b.getBoundingClientRect().height]));
+    check(chips.map((c) => c[0]).join('|') === 'Visit Mars|Earth from the Moon|Follow Voyager 1', `${tag} wrap: the three doors`, chips);
+    if (tag === 'phone') check(chips.every((c) => c[1] >= 44), `${tag} wrap: the chips are 44 px targets`, chips);
+    check(card.primary === 'Back where I was' && card.ghost === '', `${tag} wrap: Back where I was, no skip`, { primary: card.primary, ghost: card.ghost });
     await shot(page, `${tag}-19-wrap`);
     await page.click('#tutorial-primary');
     await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
@@ -430,6 +438,48 @@ try {
     check(dist < 0.02 && after.ship.heading === before.ship.heading, 'esc: the ship kept its own course (no scene was staged)', { dist });
     await shot(page, 'desktop-31-esc-after');
     await context.close();
+  }
+
+  // The wrap's chips, each from a fresh boot: the wrap card is staged
+  // directly (the dev bridge), the chip ends the tour as completed, and its
+  // action follows once the restore has cleared.
+  if (!ONLY || ONLY === 'desktop') {
+    const speedLabel = (page) => page.evaluate(() => document.getElementById('planetarium-speed-label')?.textContent ?? '');
+    for (const [chip, expect] of [
+      ['visit-mars', async (page) => {
+        await page.waitForFunction(() => (document.getElementById('planetarium-speed-label')?.textContent ?? '') === 'Mars', null, { timeout: 300_000 }).catch(() => {});
+        const state = await tstate(page);
+        check((await speedLabel(page)) === 'Mars' && state.landedOn === null, 'chip visit-mars: teleported to Mars', { label: await speedLabel(page), landed: state.landedOn });
+      }],
+      ['earth-from-moon', async (page) => {
+        await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.landedOn === 'Moon' && s.surface && s.earthOnScreen; }, null, { timeout: 300_000 }).catch(() => {});
+        const state = await tstate(page);
+        check(state.landedOn === 'Moon' && state.surface && state.earthOnScreen === true, 'chip earth-from-moon: standing on the Moon looking at Earth', { landed: state.landedOn, surface: state.surface, earth: state.earthOnScreen });
+      }],
+      ['follow-voyager', async (page) => {
+        await page.waitForFunction(() => window.__moon.tutorialState().missionActive, null, { timeout: 300_000 }).catch(() => {});
+        const state = await tstate(page);
+        check(state.missionActive === true, 'chip follow-voyager: the Voyager 1 mission is under way', state.missionActive);
+      }],
+    ]) {
+      note(`[chip ${chip}]`);
+      const context = await fresh(DESKTOP);
+      const page = await boot(context);
+      await page.evaluate(() => window.__moon.tutorialStart());
+      await page.waitForFunction(() => window.__moon.tutorialState().active, null, { timeout: 60_000 });
+      const staged = await page.evaluate(() => window.__moon.tutorialStage(4));
+      await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'wrap' && window.__moon.tutorialState().phase === 'ready', null, { timeout: 120_000 });
+      check(staged, `chip ${chip}: the wrap card staged directly`);
+      await page.click(`#tutorial-chips .tutorial-chip[data-chip="${chip}"]`);
+      await page.waitForFunction(() => !window.__moon.tutorialState().active, null, { timeout: 120_000 });
+      check(!(await tstate(page)).active, `chip ${chip}: the tour ended`);
+      await expect(page);
+      await page.click('#planetarium-btn-menu'); await sleep(400);
+      check((await page.evaluate(() => document.getElementById('planetarium-btn-tutorial')?.textContent)) === 'Replay the tour', `chip ${chip}: counts as completing the tour`);
+      await page.click('#planetarium-btn-menu'); await sleep(300);
+      await shot(page, `desktop-40-chip-${chip}`);
+      await context.close();
+    }
   }
 } finally {
   await browser.close();

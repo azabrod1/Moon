@@ -159,6 +159,17 @@ describe('TUTORIAL_STEPS', () => {
     expect(eclipse.body).toMatch(/twenty minutes a second/);
   });
 
+  it('the wrap is a door: Back where I was, and three chips that each do what they say', () => {
+    const wrap = TUTORIAL_STEPS.find((s) => s.id === 'wrap')!;
+    expect(wrap.primaryLabel).toBe('Back where I was');
+    expect(wrap.chips?.map((c) => [c.id, c.label])).toEqual([
+      ['visit-mars', 'Visit Mars'],
+      ['earth-from-moon', 'Earth from the Moon'],
+      ['follow-voyager', 'Follow Voyager 1'],
+    ]);
+    for (const step of TUTORIAL_STEPS) if (step.id !== 'wrap') expect(step.chips).toBeUndefined();
+  });
+
   it('every card has complete copy; only the wrap card drops the skip (always taken back)', () => {
     for (const step of TUTORIAL_STEPS) {
       expect(step.title.length).toBeGreaterThan(0);

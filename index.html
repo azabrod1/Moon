@@ -1715,6 +1715,16 @@
        SVGs (see TutorialCard.renderBody). A bare 20 px glyph in the text, not a
        button replica: the real control is the one under the spotlight. */
     .tutorial-body .tutorial-inline-icon { width: 20px; height: 20px; vertical-align: -5px; margin: 0 2px 0 1px; color: var(--t1); }
+    /* The wrap's doors: three things to try next, as pills under the copy. */
+    .tutorial-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .tutorial-chip {
+      padding: 7px 12px; min-height: 32px;
+      border: 1px solid var(--panel-border); border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04); color: var(--t1);
+      font-family: var(--font); font-size: 12px; cursor: pointer;
+      transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+    }
+    .tutorial-chip:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.35); }
     /* Buttons never break their own label; on a narrow card the row wraps
        instead (Back holds the left edge, the forward pair the right). */
     .tutorial-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
@@ -4553,6 +4563,7 @@
         max-width: none;
       }
       .tutorial-btn { min-height: 44px; padding: 10px 14px; }
+      .tutorial-chip { min-height: 44px; padding: 10px 14px; }
       .historic-header {
         margin-bottom: 6px;
       }
@@ -5519,6 +5530,8 @@
         <h3 class="tutorial-title" id="tutorial-title" tabindex="-1"></h3>
         <div class="tutorial-kicker" id="tutorial-kicker"></div>
         <p class="tutorial-body" id="tutorial-body" aria-live="polite"></p>
+        <!-- The wrap's doors: built per render by TutorialCard.renderChips. -->
+        <div class="tutorial-chips" id="tutorial-chips" style="display:none"></div>
         <div class="tutorial-actions">
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-back"></button>
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>

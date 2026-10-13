@@ -3836,6 +3836,7 @@ function installDevHooks() {
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),
     tutorialSkip: () => planetariumMode?.devTutorialSkip(),
+    tutorialStage: (index: number) => planetariumMode?.devTutorialStage(index) ?? false,
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
     openMap: () => planetariumMode?.devOpenMap() ?? false,
     closeMap: () => planetariumMode?.devCloseMap() ?? false,

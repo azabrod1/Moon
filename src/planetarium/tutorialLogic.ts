@@ -12,6 +12,13 @@ import { TIME_RATE_PRESETS } from './timeRates';
 
 export type TutorialStepId = 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
 
+/** A wrap-card chip: the action it performs after the restore, and its label. */
+export type TutorialChipId = 'visit-mars' | 'earth-from-moon' | 'follow-voyager';
+export interface TutorialChip {
+  id: TutorialChipId;
+  label: string;
+}
+
 /** What the controller must stage when a step becomes current ('none' = card only). */
 export type TutorialStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'eclipse';
 
@@ -50,6 +57,8 @@ export interface TutorialStep {
   busyLabel?: string;
   /** The card once the eclipse reaches totality: the climax gets its own words. */
   totality?: { title: string; kicker: string; body: string };
+  /** The wrap's doors: each restores the journey, then does what its label says. */
+  chips?: readonly TutorialChip[];
   /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
   /** Ghost skip button; null on the wrap card — ending the tutorial always takes
@@ -304,10 +313,16 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   },
   {
     id: 'wrap',
-    title: 'That’s the tutorial',
+    title: 'That’s the tour',
     kicker: null,
-    body: '{teleport} Teleport (T) sends you to any planet or moon; {observatory} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
-    primaryLabel: 'End tutorial',
+    body: '{teleport} Teleport jumps. {observatory} Observatory lands and reads the sky. The clock bends time. Help and the historic journeys live in the ☰ menu.',
+    // A door, not a summary: three things to try next, each from where you started.
+    chips: [
+      { id: 'visit-mars', label: 'Visit Mars' },
+      { id: 'earth-from-moon', label: 'Earth from the Moon' },
+      { id: 'follow-voyager', label: 'Follow Voyager 1' },
+    ],
+    primaryLabel: 'Back where I was',
     ghostLabel: null,
     stage: 'none',
     settle: CARD_ONLY_SETTLE,

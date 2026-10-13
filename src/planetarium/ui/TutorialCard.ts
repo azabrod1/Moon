@@ -11,7 +11,7 @@
  */
 import { setText } from '../../shared/dom';
 import { tutorialProgress } from '../tutorialLogic';
-import type { TutorialBeat, TutorialPhase, TutorialStep } from '../tutorialLogic';
+import type { TutorialBeat, TutorialChip, TutorialChipId, TutorialPhase, TutorialStep } from '../tutorialLogic';
 
 export interface TutorialCardModel {
   /** The stop dots and the counter they stand in for ("Stop 2 of 4" to a screen reader). */
@@ -29,6 +29,8 @@ export interface TutorialCardModel {
   /** Re-stages the previous stop. null hides it on the first stop, where
    *  there is nowhere to go back to. */
   back: { label: string; disabled: boolean } | null;
+  /** The wrap's chips, live only once the card is ready; empty elsewhere. */
+  chips: readonly TutorialChip[];
 }
 
 /** The primary's label while a stop's scene is still on its way. */
@@ -108,6 +110,7 @@ export function tutorialCardModel(
         ? null
         : { label: step.ghostLabel, disabled: phase === 'ending' },
     back: index >= 1 ? { label: '‹ Back', disabled: phase !== 'ready' } : null,
+    chips: phase === 'ready' ? (step.chips ?? []) : [],
   };
 }
 
@@ -120,6 +123,7 @@ export class TutorialCard {
   private primaryEl: HTMLButtonElement | null = null;
   private ghostEl: HTMLButtonElement | null = null;
   private backEl: HTMLButtonElement | null = null;
+  private chipsEl: HTMLElement | null = null;
   /** The action-cluster button SVGs, cloned into the body per icon token. */
   private icons: Record<'teleport' | 'observatory', Element | null> = {
     teleport: null,
@@ -134,6 +138,7 @@ export class TutorialCard {
     private onSkip: () => void,
     private onReturn: () => void,
     private onShowMe: () => void,
+    private onChip: (id: TutorialChipId) => void,
   ) {}
 
   bind(): void {
@@ -145,6 +150,7 @@ export class TutorialCard {
     this.primaryEl = document.getElementById('tutorial-primary') as HTMLButtonElement | null;
     this.ghostEl = document.getElementById('tutorial-ghost') as HTMLButtonElement | null;
     this.backEl = document.getElementById('tutorial-back') as HTMLButtonElement | null;
+    this.chipsEl = document.getElementById('tutorial-chips');
     this.icons.teleport = document.querySelector('#planetarium-btn-travel svg');
     this.icons.observatory = document.querySelector('#planetarium-btn-observatory svg');
     if (this.wired) return;
@@ -202,6 +208,26 @@ export class TutorialCard {
         this.backEl.textContent = model.back.label;
         this.backEl.disabled = model.back.disabled;
       }
+    }
+    this.renderChips(model.chips);
+  }
+
+  /** The wrap's doors, rebuilt per render (three buttons at most). */
+  private renderChips(chips: readonly TutorialChip[]): void {
+    const row = this.chipsEl;
+    if (!row) return;
+    row.style.display = chips.length ? '' : 'none';
+    const current = Array.from(row.children).map((el) => el.getAttribute('data-chip'));
+    if (current.length === chips.length && chips.every((chip, i) => current[i] === chip.id)) return;
+    row.textContent = '';
+    for (const chip of chips) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tutorial-chip';
+      button.dataset.chip = chip.id;
+      button.textContent = chip.label;
+      button.addEventListener('click', () => this.onChip(chip.id));
+      row.appendChild(button);
     }
   }
 

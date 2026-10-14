@@ -48,6 +48,30 @@
  * handed back to is Medium, never lower: a display that cannot hold its own
  * rate at the sharper rung is not made softer than it was for it.
  *
+ * A rung above Medium is KEPT to `CLOCK_INTERVAL_DOWN` of that bar — 8.75 ms
+ * on a 120 Hz panel — rather than the `DOWN_FACTOR` that holds Medium and
+ * below. The interval is all the rule has at a fine tick, and it reads the
+ * tick whether the GPU took 4 ms of it or 8: a 120 Hz Mac measured at its
+ * sharpest rung near a magnified surface had the GPU at 86–100 % of the
+ * tick, every tile that arrived tipped a frame to two ticks, and a frame in
+ * eight late — a trimmed mean of 9.37 ms — sat under the 1.15 bar (9.58)
+ * through twenty seconds of visible stutter. At 1.05 the down window crosses
+ * the bar once twenty-two of its 360 intervals are two ticks — about three
+ * seconds of a frame in eight, or two and a half of the three-second bursts
+ * the same Mac drew as tiles arrived — and the rung is handed back once: the
+ * window is cleared with the step, so the tail of a burst at the rung below
+ * does not hand that rung back as well. A clean stream holds as before, and
+ * the climb's own gate is `UP_FACTOR` of the same tick, under the hold bar,
+ * so a stream between the two neither climbs nor falls. The hand-back is one
+ * rung, a slide — or the probe's revert inside its probation, with the wait
+ * doubled and the rung ceilinged, which is what bounds the hunting: near a
+ * body the sharpest rung fails a few probes and is ceilinged, while in deep
+ * space it is climbed and held as before. The clock's delivery guard is NOT
+ * applied here: its 2 % slack with one stall forgiven would hand the same
+ * burst back twice — the rung the burst began at and, six seconds later, the
+ * rung its tail was drawn at — and at a fine tick the intervals are the
+ * direct measurement the guard exists to back up.
+ *
  * **Counted intervals.** An interval votes when both its endpoints were
  * eligible (visible, focused, uncovered), no frame-sliced work was done in
  * the frame that produced it, and either it came in on time or the app's own
@@ -2787,13 +2811,17 @@ export class ResolutionController {
     const stat = this.window.trimmedMean(this.downCounted, TRIM_COUNT, nowMs - STALENESS_MS);
     const by = downWindowComplete(stat, this.downCounted);
     if (stat === null || by === null) return null;
-    // A rung the clock earned is held to a tighter bar than the tick's: a
-    // phone at 52–58 fps at a sharper rung is what the clock must not buy.
     const earned = this.clockHolds();
     // A full window inside this rung's bar: it holds. Above Medium the bar is
-    // the display's own tick, so a sharper rung that has lost the screen's
-    // full rate is handed back — to Medium at most, never past it for that.
-    const bar = earned ? CLOCK_INTERVAL_DOWN * this.budgetMs : DOWN_FACTOR * this.budgetAt(this.index);
+    // `CLOCK_INTERVAL_DOWN` of what the rung is held to — the display's own
+    // tick, or a row's rate — whoever holds the rung: a sharper picture is
+    // kept only while the screen's full rate really holds, and the 1.15 that
+    // holds Medium is a bar a frame in eight late never crosses (the header).
+    // A rung the clock earned is held the same way: a phone at 52–58 fps at a
+    // sharper rung is what the clock must not buy. At and below Medium the bar
+    // is `DOWN_FACTOR` of the budget, and a hand-back for the tick lands on
+    // Medium at most, never past it.
+    const bar = this.index > this.mediumIndex ? CLOCK_INTERVAL_DOWN * this.budgetAt(this.index) : DOWN_FACTOR * this.budgetMs;
     if (stat.meanMs <= bar) return null;
     // At a rung the clock earned this is a measured failure, inside the
     // probation or out of it; and the floor's references, interval evidence

@@ -27,7 +27,11 @@
  * reads THAT). Dev poses never ramp: the capture fleet pins pixels close in.
  *
  * Pure math only — no three.js imports — so the shader interpolation sites
- * and the CPU seam share one definition.
+ * and the CPU seam share one definition. The inverse map's GLSL comes in two
+ * forms: `lensSourceUvGlsl`, one scene position per output pixel, and
+ * `lensSourceFootprintGlsl`, the same position with its derivative, which the
+ * finishing pass places a supersample's taps along (app/FusedOutputPass.ts);
+ * `lensSourceFootprint` is that one's CPU twin.
  */
 
 import { DEG2RAD as DEG } from './angles';
@@ -488,6 +492,152 @@ vec2 lensSourceUv(vec2 vUv) {
   return clamp(srcUv * uUvScale, vec2(0.0), uUvMax);
 }
 `;
+
+/**
+ * Where one output pixel lands in the scene image, and how that point moves
+ * as the pixel does: the same inverse map, before the sub-rectangle clamp, with
+ * its derivative. Used by the finishing pass when it averages a scene drawn
+ * larger than the canvas down onto it (app/FusedOutputPass.ts): the warp is
+ * solved once, at the pixel's centre, and every tap of the pixel's footprint is
+ * placed along this derivative from there.
+ *
+ * Unclamped on purpose. A position clamped to the sub-rect stops moving at the
+ * clamp, so a derivative taken through the clamp would flatten the footprint
+ * of every pixel near the edge; each tap is clamped instead, once it is placed.
+ *
+ * The derivative is worked out rather than read off `dFdx`: the finishing text
+ * is three's output shader, GLSL ES 1.00, where the derivative functions are
+ * not part of the language, and a difference across the 2×2 quad would sample
+ * the map half a pixel away from the centre in alternate quads besides. The map
+ * is radial: a point at distance ρ from the optical centre (in frame
+ * half-heights) goes to distance h(ρ) = tan θ / tan(half render FOV) on the
+ * same ray, θ the angle the blend puts at ρ·rEdge. Its derivative along a step
+ * v is g·v + (h′ − g)(d̂·v)d̂ with g = h/ρ, and h′ = sec²θ · rEdge /
+ * (R′(θ) · tan(half render FOV)) by the inverse function rule, R′ the same
+ * derivative the Newton steps use. At the centre both g and h′ are
+ * rEdge / tan(half render FOV), the map's scale on the axis.
+ *
+ * `outputSize` is the canvas in pixels; `dUdx`/`dUdy` come back as the
+ * scene-uv step per output pixel along x and y. Declares nothing: it reads the
+ * four warp uniforms `lensSourceUvGlsl` declares and the sub-rect pair, so it
+ * goes in after them.
+ */
+export const lensSourceFootprintGlsl = /* glsl */ `
+vec2 lensSourceFootprint(vec2 vUv, vec2 outputSize, out vec2 dUdx, out vec2 dUdy) {
+  vec2 ndc = vUv * 2.0 - 1.0;
+  vec2 d = vec2(ndc.x * uAspect, ndc.y);
+  float rho = length(d);
+  float rOut = rho * uREdge;
+  if (uStrength <= 0.0) {
+    dUdx = vec2(uUvScale.x / outputSize.x, 0.0);
+    dUdy = vec2(0.0, uUvScale.y / outputSize.y);
+    return vUv * uUvScale;
+  }
+  // One output pixel, as a step of d.
+  vec2 stepX = vec2(2.0 * uAspect / outputSize.x, 0.0);
+  vec2 stepY = vec2(0.0, 2.0 / outputSize.y);
+  // From a step of the source's d to a step of scene uv.
+  vec2 toUv = vec2(0.5 / uAspect, 0.5) * uUvScale;
+  if (rOut < 1e-6) {
+    // The optical centre: the map is its scale on the axis there.
+    float g0 = uREdge / uTanHalfRender;
+    dUdx = g0 * stepX * toUv;
+    dUdy = g0 * stepY * toUv;
+    return vUv * uUvScale;
+  }
+  // The same Newton solve as lensSourceUv, step for step.
+  float theta = atan(rOut);
+  for (int i = 0; i < ${LENS_INVERSE_ITERATIONS}; i++) {
+    float t = tan(theta);
+    float th = tan(theta * 0.5);
+    float f = (1.0 - uStrength) * t + uStrength * 2.0 * th - rOut;
+    float df = (1.0 - uStrength) * (1.0 + t * t) + uStrength * (1.0 + th * th);
+    theta -= f / df;
+  }
+  float tanTheta = tan(theta);
+  float tanHalf = tan(theta * 0.5);
+  float srcRadius = tanTheta / uTanHalfRender;
+  vec2 dir = d / rho;
+  float g = srcRadius / rho;
+  float dRdTheta = (1.0 - uStrength) * (1.0 + tanTheta * tanTheta) + uStrength * (1.0 + tanHalf * tanHalf);
+  float gRadial = (1.0 + tanTheta * tanTheta) * uREdge / (dRdTheta * uTanHalfRender);
+  dUdx = (g * stepX + (gRadial - g) * dot(dir, stepX) * dir) * toUv;
+  dUdy = (g * stepY + (gRadial - g) * dot(dir, stepY) * dir) * toUv;
+  vec2 srcNdc = normalize(d) * srcRadius;
+  vec2 srcUv = vec2(srcNdc.x / uAspect, srcNdc.y) * 0.5 + 0.5;
+  return srcUv * uUvScale;
+}
+`;
+
+/** The CPU twin of `lensSourceFootprintGlsl`, line for line, for the tests
+ *  that hold its derivative to a finite difference of the inverse map and
+ *  its taps to the downsample's texel centres. `uvScale` is the sub-rect's
+ *  scale (1 where the frame fills its allocation). */
+export interface LensFootprint {
+  /** The scene uv under the pixel's centre, before the sub-rect clamp. */
+  x: number;
+  y: number;
+  /** Scene uv per output pixel along x, and along y. */
+  dUdx: [number, number];
+  dUdy: [number, number];
+}
+
+export function lensSourceFootprint(
+  ctx: LensWarpContext,
+  uvScale: { x: number; y: number },
+  u: number,
+  v: number,
+  outputWidth: number,
+  outputHeight: number,
+): LensFootprint {
+  const ndcX = u * 2 - 1;
+  const ndcY = v * 2 - 1;
+  const dx = ndcX * ctx.aspect;
+  const dy = ndcY;
+  const rho = Math.hypot(dx, dy);
+  const rOut = rho * ctx.rEdge;
+  if (ctx.strength <= 0) {
+    return {
+      x: u * uvScale.x,
+      y: v * uvScale.y,
+      dUdx: [uvScale.x / outputWidth, 0],
+      dUdy: [0, uvScale.y / outputHeight],
+    };
+  }
+  const stepX = (2 * ctx.aspect) / outputWidth;
+  const stepY = 2 / outputHeight;
+  const toUvX = (0.5 / ctx.aspect) * uvScale.x;
+  const toUvY = 0.5 * uvScale.y;
+  if (rOut < 1e-6) {
+    const g0 = ctx.rEdge / ctx.tanHalfRender;
+    return { x: u * uvScale.x, y: v * uvScale.y, dUdx: [g0 * stepX * toUvX, 0], dUdy: [0, g0 * stepY * toUvY] };
+  }
+  let theta = Math.atan(rOut);
+  for (let i = 0; i < LENS_INVERSE_ITERATIONS; i++) {
+    const t = Math.tan(theta);
+    const th = Math.tan(theta * 0.5);
+    const f = (1 - ctx.strength) * t + ctx.strength * 2 * th - rOut;
+    const df = (1 - ctx.strength) * (1 + t * t) + ctx.strength * (1 + th * th);
+    theta -= f / df;
+  }
+  const tanTheta = Math.tan(theta);
+  const tanHalf = Math.tan(theta * 0.5);
+  const srcRadius = tanTheta / ctx.tanHalfRender;
+  const dirX = dx / rho;
+  const dirY = dy / rho;
+  const g = srcRadius / rho;
+  const dRdTheta = (1 - ctx.strength) * (1 + tanTheta * tanTheta) + ctx.strength * (1 + tanHalf * tanHalf);
+  const gRadial = ((1 + tanTheta * tanTheta) * ctx.rEdge) / (dRdTheta * ctx.tanHalfRender);
+  // Along x the step is (stepX, 0), along y (0, stepY).
+  const kx = (gRadial - g) * dirX * stepX;
+  const ky = (gRadial - g) * dirY * stepY;
+  return {
+    x: ((dirX * srcRadius) / ctx.aspect * 0.5 + 0.5) * uvScale.x,
+    y: (dirY * srcRadius * 0.5 + 0.5) * uvScale.y,
+    dUdx: [(g * stepX + kx * dirX) * toUvX, kx * dirY * toUvY],
+    dUdy: [ky * dirX * toUvX, (g * stepY + ky * dirY) * toUvY],
+  };
+}
 
 /**
  * The lens pass fragment: the shared inverse map, one sample per output pixel.

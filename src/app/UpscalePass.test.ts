@@ -326,8 +326,8 @@ describe('DownsamplePass', () => {
 });
 
 describe('the output dither, on every route', () => {
-  type Route = 'direct' | 'easu' | 'easu+rcas' | 'downsample';
-  const ROUTES: Route[] = ['direct', 'easu', 'easu+rcas', 'downsample'];
+  type Route = 'direct' | 'easu' | 'easu+rcas' | 'downsample' | 'finishing box';
+  const ROUTES: Route[] = ['direct', 'easu', 'easu+rcas', 'downsample', 'finishing box'];
 
   /**
    * One frame through the chain as main builds it — the finishing pass (fused
@@ -336,7 +336,7 @@ describe('the output dither, on every route', () => {
    * recorded with the target it landed on and the uDither its pass held then.
    */
   function frame(fused: boolean, route: Route) {
-    const draws: { pass: string; canvas: boolean; dither: number; wired: boolean }[] = [];
+    const draws: { pass: string; canvas: boolean; dither: number; wired: boolean; box: number }[] = [];
     let bound: THREE.WebGLRenderTarget | null = null;
     let current = { name: '', material: null as unknown as THREE.RawShaderMaterial };
     const renderer = {
@@ -349,6 +349,7 @@ describe('the output dither, on every route', () => {
           // A pass with no uDither at all draws no dither.
           dither: (current.material.uniforms.uDither?.value as number | undefined) ?? 0,
           wired: outputDitherIsWired(current.material.fragmentShader),
+          box: (current.material.uniforms.uBox?.value as number | undefined) ?? 0,
         });
       },
       clear: () => {},
@@ -359,7 +360,11 @@ describe('the output dither, on every route', () => {
       autoClearDepth: true,
       autoClearStencil: true,
     } as unknown as THREE.WebGLRenderer;
-    const finishing = fused ? new FusedOutputPass({ bloom: null, lens: null }) : new OutputTargetPass();
+    const finishing = fused ? new FusedOutputPass({ bloom: null, lens: null, box: true }) : new OutputTargetPass();
+    // A frame drawn larger than the canvas, averaged inside the finishing pass
+    // (app/FusedOutputPass.ts): the downsample is off and the finishing pass
+    // draws the canvas. The `?fused=0` chain has no such route.
+    if (finishing instanceof FusedOutputPass) finishing.setBox(route === 'finishing box', 'box');
     const up = new UpscalePass(finishing);
     const sharpen = new SharpenPass(up);
     const down = new DownsamplePass(finishing);
@@ -375,7 +380,8 @@ describe('the output dither, on every route', () => {
     chain.forEach((c, i) => { c.pass.renderToScreen = i === chain.length - 1; });
     // A scene larger than the canvas on the downsample route, smaller on the
     // upscale ones: the passes read their sizes, not the route.
-    const read = new THREE.WebGLRenderTarget(route === 'downsample' ? 2592 : 1296, route === 'downsample' ? 1676 : 838);
+    const larger = route === 'downsample' || route === 'finishing box';
+    const read = new THREE.WebGLRenderTarget(larger ? 2592 : 1296, larger ? 1676 : 838);
     for (const c of chain) {
       current = c;
       c.pass.render(renderer, read, read, 0, false);
@@ -384,13 +390,15 @@ describe('the output dither, on every route', () => {
   }
 
   it('dithers exactly one write a frame, the one that lands on the canvas', () => {
-    // fused on and off × direct, EASU, EASU then RCAS, and the downsample: the
-    // eight ways a frame can leave the chain. Every route draws the canvas once,
+    // fused on and off × direct, EASU, EASU then RCAS, and the downsample, and
+    // the fused chain's own box: the nine ways a frame can leave the chain.
+    // Every route draws the canvas once,
     // that write carries the dither text and a uDither of 1, and every
     // intermediate before it is written with a uDither of 0.
     setOutputDither(true);
     for (const fused of [true, false]) {
       for (const route of ROUTES) {
+        if (!fused && route === 'finishing box') continue;
         const label = `${fused ? 'fused' : '?fused=0'} ${route}`;
         const draws = frame(fused, route);
         expect(draws.filter((d) => d.canvas), label).toHaveLength(1);
@@ -399,8 +407,14 @@ describe('the output dither, on every route', () => {
         expect(dithered[0].canvas, label).toBe(true);
         expect(dithered[0].dither, label).toBe(1);
         expect(dithered[0].wired, label).toBe(true);
-        const last = { direct: 'finishing', easu: 'easu', 'easu+rcas': 'rcas', downsample: 'downsample' }[route];
+        const last = {
+          direct: 'finishing', easu: 'easu', 'easu+rcas': 'rcas', downsample: 'downsample', 'finishing box': 'finishing',
+        }[route];
         expect(dithered[0].pass, label).toBe(last);
+        // The finishing pass averages only on its own route, and then on the
+        // canvas write.
+        expect(draws.filter((d) => d.box !== 0).map((d) => d.canvas), label)
+          .toEqual(route === 'finishing box' ? [true] : []);
       }
     }
   });
@@ -410,6 +424,7 @@ describe('the output dither, on every route', () => {
     try {
       for (const fused of [true, false]) {
         for (const route of ROUTES) {
+          if (!fused && route === 'finishing box') continue;
           expect(frame(fused, route).every((d) => d.dither === 0), `${fused} ${route}`).toBe(true);
         }
       }

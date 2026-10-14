@@ -6,7 +6,9 @@
  * Where it matters. The frame is drawn in half-float and leaves the chain
  * through 8-bit storage: the finishing pass's write (the canvas, or its own
  * RGBA8 target when the resample follows), EASU's write, RCAS's, and the
- * downsample's on a frame drawn larger than the canvas. A dark
+ * downsample's where a frame drawn larger than the canvas is averaged by a
+ * pass of its own — the finishing pass averages it in its own canvas write
+ * otherwise (app/FusedOutputPass.ts), its dither added after the sum. A dark
  * sea at a low Sun spans a few dozen 8-bit values across the whole frame,
  * so each value is a band tens of pixels wide, and after the sRGB transfer
  * the steps near black are the widest: the arcs that ring the glint. A dither

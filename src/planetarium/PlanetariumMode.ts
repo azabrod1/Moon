@@ -15351,11 +15351,19 @@ export class PlanetariumMode {
       this.commitObservePick(target, sameBody, fromPanel);
       return true;
     }
-    if (sameBody) {
-      // Your own row on Travel/Autopilot: lift off and park nearby.
+    if (verb === 'leave') {
+      // The map card's Leave on the body you stand on: the cluster's own
+      // take-off (an Observatory excursion returns to its stashed cruise pose).
+      if (!this.landedOn) return false;
       this.exitLandedMode();
       return true;
     }
+    // No same-body shortcut past this point. The Teleport and Autopilot tabs
+    // list the body the player stands on, and a pick there means what the tab
+    // says — a jump to its flyby pose, or the pilot flying there — exactly as
+    // for any other body. A bare take-off instead (the old shortcut) dropped
+    // an Observatory excursion back at wherever the ship was before the
+    // Observatory grabbed it, an AU or more from the body just picked.
     if (verb === 'travel') {
       this.arriveThen(target, () => {
         if (this.landedOn) this.exitLandedMode();
@@ -15371,6 +15379,10 @@ export class PlanetariumMode {
       });
       return true;
     }
+    // Autopilot: from the body's own row the take-off puts the ship beside it
+    // (a classic landing) and the pilot parks on the spot, or, after an
+    // Observatory excursion, back at the stashed cruise pose, and the pilot
+    // flies it to the body from there.
     if (this.landedOn) this.exitLandedMode();
     this.engageAutopilot(target);
     return true;

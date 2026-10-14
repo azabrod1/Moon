@@ -15,7 +15,11 @@
  *   SharpenPass        RCAS on that target → the canvas.
  *   DownsamplePass     the other direction: a scene drawn LARGER than the
  *                      canvas, area-averaged down onto it. Never enabled
- *                      together with the two above.
+ *                      together with the two above, and off wherever the
+ *                      finishing pass averages the frame down itself
+ *                      (app/FusedOutputPass.ts, the supersample's box): it
+ *                      runs only under `?fuseddown=0`, `?fused=0`, and the
+ *                      DEV key `fused-downsample` off.
  *
  * Why the finishing pass owns a target instead of writing the composer's
  * writeBuffer. The reason that holds on every chain is FSR's input: 8-bit,
@@ -42,9 +46,10 @@
  *
  * Exactly one write a frame is dithered (app/outputDither.ts), on every route:
  * the one that lands on the canvas. That is the finishing pass's on the direct
- * route (fused or `?fused=0`, which carry the same dither text), EASU's when it
- * draws the canvas alone, RCAS's after EASU, and the downsample's on a frame
- * drawn larger than the canvas. Each of those carries the dither and sets its
+ * route (fused or `?fused=0`, which carry the same dither text) and on a frame
+ * drawn larger than the canvas that it averages down itself, EASU's when it
+ * draws the canvas alone, RCAS's after EASU, and the downsample's where it
+ * still runs. Each of those carries the dither and sets its
  * own uDither every render from whether its write is the canvas, so an
  * intermediate is always written clean.
  *
@@ -94,7 +99,10 @@
  * the footprint weigh exactly zero and taps outside the image are clamped for
  * the fetch but weighted by their true (empty) overlap, so an edge pixel is
  * the average of the texels that really are there rather than one of them
- * counted twice.
+ * counted twice. The finishing pass's own box (app/FusedOutputPass.ts), which
+ * replaces this pass on the shipped chain, takes the same weights over the
+ * same texels, and reads two taps per axis instead of three where every
+ * footprint covers exactly two of them.
  */
 import * as THREE from 'three';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
@@ -139,8 +147,9 @@ function fitTarget(target: THREE.WebGLRenderTarget, width: number, height: numbe
  * allocation (app/sceneSubRect.ts) that is the rung's own sub-rectangle at the
  * origin, and it is what the resample must derive its taps from — the target's
  * width would step outside the image into the region the rung above drew.
+ * The finishing pass's box reads the scene target's through the same rule.
  */
-function drawnSize(target: THREE.WebGLRenderTarget): { width: number; height: number } {
+export function drawnSize(target: THREE.WebGLRenderTarget): { width: number; height: number } {
   return {
     width: Math.min(target.width, Math.max(1, Math.round(target.viewport.z))),
     height: Math.min(target.height, Math.max(1, Math.round(target.viewport.w))),

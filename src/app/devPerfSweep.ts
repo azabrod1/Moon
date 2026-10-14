@@ -438,6 +438,8 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   'bloom-nodepth': { off: 'Bloom depth buffers back', on: 'Bloom depth buffers off' },
   'depth-discard': { off: 'Depth discard removed', on: 'Depth discard on' },
   'fused-final': { off: 'Finishing pass split in three again', on: 'Lens, glow and tone map as one pass', needsReload: true, exact: false },
+  // Live, but it moves pixels by a bit here and there: never in the combined row.
+  'fused-downsample': { off: 'Supersample averaged by a pass of its own again', on: 'Supersample averaged in the finishing pass', exact: false },
   'cloud-program': { off: 'Deck program shared again', on: 'Deck program of its own', needsReload: true },
   // The deck's cost probes: each takes one term off the cloud deck so a device
   // can price it. Not changes, so never exact and never in the combined row.

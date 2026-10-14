@@ -13,7 +13,10 @@ import {
   surfaceHexWeights,
   surfaceHexVertex,
   surfaceStackWeights,
+  surfaceDetailGlsl,
+  parseSynthDepthParam,
   SYNTH_STACK_DEPTH,
+  SYNTH_STACK_DEPTH_BUILT,
   SYNTH_STACK_TAPER,
   SYNTH_STACK_GAIN,
   advanceSurfaceAir,
@@ -723,6 +726,39 @@ describe('the field\'s tiling lattice', () => {
       expect(surfaceStackWeights(SYNTH_STACK_DEPTH + 2)[0].rung).toBeGreaterThan(0);
       const top = surfaceStackWeights(12);
       expect(top[top.length - 1].rung).toBe(12);
+    });
+
+    it('is built at the depth the DEV knob asks for, and the CPU twin walks the same stack', () => {
+      // `?synthdepth=N` is read once, at module load, into the shader text —
+      // the shipped text is the template at SYNTH_STACK_DEPTH, byte for byte.
+      expect(fragment()).toContain(surfaceDetailGlsl(SYNTH_STACK_DEPTH));
+      expect(SYNTH_STACK_DEPTH_BUILT).toBe(SYNTH_STACK_DEPTH);
+      for (const depth of [5, 6]) {
+        const text = surfaceDetailGlsl(depth);
+        expect(text).toContain(`float coarse = wanted - ${(depth - 1).toFixed(1)};`);
+        expect(text).toContain(`for (int k = 0; k <= ${depth}; k++) {`);
+        expect(text).not.toContain(`for (int k = 0; k <= ${SYNTH_STACK_DEPTH}; k++) {`);
+        // The twin at that depth: the coarse end is depth − 1 rungs below the
+        // wanted one, the taper and the gain as they are.
+        const w = surfaceStackWeights(9, depth);
+        expect(w[0].rung).toBe(9 - (depth - 1));
+        expect(w[w.length - 1].rung).toBe(9);
+        expect(w.length).toBe(depth);
+        expect(Math.hypot(...w.map((r) => r.weight))).toBeCloseTo(SYNTH_STACK_GAIN, 12);
+        expect(w[0].weight / w[w.length - 1].weight).toBeCloseTo(SYNTH_STACK_TAPER ** (depth - 1), 12);
+        // Half a rung on: the coarse rung is half gone and the next one half in.
+        const half = surfaceStackWeights(9.5, depth);
+        expect(half[0].rung).toBe(9 - (depth - 1));
+        expect(half[half.length - 1].rung).toBe(10);
+      }
+      expect(surfaceStackWeights(9)).toEqual(surfaceStackWeights(9, SYNTH_STACK_DEPTH));
+      // The knob: DEV only, an integer from 1 to 8, else nothing.
+      const dev = import.meta.env.DEV;
+      expect(parseSynthDepthParam('?synthdepth=5')).toBe(dev ? 5 : null);
+      expect(parseSynthDepthParam('?synth=0&synthdepth=8')).toBe(dev ? 8 : null);
+      for (const bad of ['', '?synthdepth=0', '?synthdepth=9', '?synthdepth=5.5', '?synthdepth=x', '?synthdepth=']) {
+        expect(parseSynthDepthParam(bad)).toBeNull();
+      }
     });
 
     it('is drawn as it was walked', () => {

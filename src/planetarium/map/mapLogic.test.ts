@@ -29,11 +29,19 @@ describe('mapCardActions', () => {
     expect(actions.map((a) => a.label)).toEqual(['Teleport', 'Autopilot', 'Focus']);
   });
 
-  it('offers Leave + Observatory on the current landed body, never Autopilot', () => {
+  it('offers Leave + Observatory on the current landed body, never Autopilot or Teleport', () => {
     const actions = mapCardActions(planet('Earth'), planet('Earth'));
-    expect(verbs(actions)).toEqual(['travel', 'observe']);
+    expect(verbs(actions)).toEqual(['leave', 'observe']);
     expect(actions.map((a) => a.label)).toEqual(['Leave', 'Observatory', 'Focus', 'Look inside']);
     expect(verbs(actions)).not.toContain('pilot');
+    expect(verbs(actions)).not.toContain('travel');
+  });
+
+  it('offers Leave only on the body the player stands on', () => {
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'leave')).toBe(true);
+    expect(mapCardOffersVerb(planet('Mars'), planet('Earth'), 'leave')).toBe(false);
+    expect(mapCardOffersVerb(planet('Mars'), null, 'leave')).toBe(false);
+    expect(mapCardOffersVerb(planet('Sun'), null, 'leave')).toBe(false);
   });
 
   it('offers Look inside on every planet and moon but never on the Sun, and never as a commit', () => {
@@ -93,9 +101,10 @@ describe('mapCardOffersVerb', () => {
     expect(mapCardOffersVerb(planet('Sun'), null, 'observe')).toBe(false);
   });
 
-  it('refuses Autopilot on the current landed body', () => {
-    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'travel')).toBe(true);
+  it('refuses Autopilot and Teleport on the current landed body — its card leaves instead', () => {
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'leave')).toBe(true);
     expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'observe')).toBe(true);
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'travel')).toBe(false);
     expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'pilot')).toBe(false);
   });
 });
@@ -104,13 +113,13 @@ describe('commitBodyPickOutcome', () => {
   const base = { missionActive: false, arrivalInFlight: false, sameBody: false } as const;
 
   it('accepts an ordinary commit', () => {
-    for (const verb of ['travel', 'observe', 'pilot'] as const) {
+    for (const verb of ['travel', 'observe', 'pilot', 'leave'] as const) {
       expect(commitBodyPickOutcome({ ...base, verb })).toBe('accepted');
     }
   });
 
   it('refuses everything during a mission', () => {
-    for (const verb of ['travel', 'observe', 'pilot'] as const) {
+    for (const verb of ['travel', 'observe', 'pilot', 'leave'] as const) {
       expect(commitBodyPickOutcome({ ...base, missionActive: true, verb })).toBe('refused');
     }
   });
@@ -124,13 +133,19 @@ describe('commitBodyPickOutcome', () => {
     expect(commitBodyPickOutcome({ ...base, arrivalInFlight: true, verb: 'pilot' })).toBe('accepted');
   });
 
-  it('never blocks a same-body Leave / Observatory-reopen on an in-flight arrival', () => {
+  it('never blocks a Leave / same-body Observatory-reopen on an in-flight arrival', () => {
     expect(
-      commitBodyPickOutcome({ ...base, arrivalInFlight: true, sameBody: true, verb: 'travel' }),
+      commitBodyPickOutcome({ ...base, arrivalInFlight: true, sameBody: true, verb: 'leave' }),
     ).toBe('accepted');
     expect(
       commitBodyPickOutcome({ ...base, arrivalInFlight: true, sameBody: true, verb: 'observe' }),
     ).toBe('accepted');
+  });
+
+  it('reports busy for a same-body teleport while an arrival is in flight — it is a real jump', () => {
+    expect(
+      commitBodyPickOutcome({ ...base, arrivalInFlight: true, sameBody: true, verb: 'travel' }),
+    ).toBe('busy');
   });
 
   it('lets a mission refusal win over a busy arrival', () => {

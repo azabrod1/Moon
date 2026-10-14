@@ -13,10 +13,11 @@
 //     1 hr/s with the panel closed; the eclipse presses the panel's own
 //     next-solar arrow (parking three minutes before the 2027-08-02 peak),
 //     rewinds to first contact, presses Look up, declutters the surface view
-//     and approaches at 20 min/s, holding "Watching…" until totality's card,
+//     and approaches at 20 min/s, holding Next until totality's card,
 //     which follows the clock: six minutes on, or a run past the event, takes
 //     it down, and the clock brought back shows it again;
-//   - Next re-enables within a bound at every stop;
+//   - Next re-enables within a bound at every stop; held, it reads its own
+//     label at its own width, and lights up in place with its ready ring;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
 //   - Esc in the middle of a beat drops the ring and the press at once, and
@@ -132,7 +133,9 @@ try {
     return {
       count: text('tutorial-count'), title: text('tutorial-title'), kicker: text('tutorial-kicker'), body: text('tutorial-body'),
       back: text('tutorial-back'), ghost: text('tutorial-ghost'), primary: text('tutorial-primary'),
-      primaryDisabled: primary?.disabled ?? null, busy: primary?.classList.contains('busy') ?? null, dots,
+      primaryDisabled: primary?.disabled ?? null, dots,
+      primaryWidth: primary?.getBoundingClientRect().width ?? null,
+      primaryAnimation: primary ? getComputedStyle(primary).animationName : null,
       rect: card && { x: card.x, y: card.y, w: card.width, h: card.height },
     };
   });
@@ -280,7 +283,8 @@ try {
     // Saturn stages at once: the demonstration, beat by beat, then the composed arrival.
     let card = await cardText(page);
     check(card.dots.length === 4 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
-    check(card.busy && card.primary === 'Arriving…', `${tag} saturn: the primary says why it waits`, { primary: card.primary, busy: card.busy });
+    check(card.primaryDisabled === true && card.primary === 'Next: the Moon' && card.primaryAnimation === 'none', `${tag} saturn: the primary is held under its own label, no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation });
+    const heldWidth = card.primaryWidth;
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     const saturn = await waitReady(page, tag, 'saturn');
     // Polling can miss a one-frame stage; the recorder below proves the presses.
@@ -294,6 +298,7 @@ try {
     check(/billion km from the Sun/.test(card.kicker), `${tag} saturn: the kicker is the live distance`, card.kicker);
     check(/One tap/.test(card.body), `${tag} saturn: the settled copy is the lesson`, card.body);
     check(card.primaryDisabled === false && card.primary === 'Next: the Moon', `${tag} saturn: Next is live`, card);
+    check(card.primaryWidth === heldWidth && card.primaryAnimation === 'tutorial-ready', `${tag} saturn: Next lit up in place, at the held width, with its ring`, { held: heldWidth, live: card.primaryWidth, animation: card.primaryAnimation });
     const s = saturn.state;
     check(s.landedOn === null && s.shipVisible === false && s.labelsShown === false, `${tag} saturn: cruising at Saturn with the ship model and the labels out of the picture`, { landed: s.landedOn, ship: s.shipVisible, labels: s.labelsShown });
     check(s.panning === true || saturn.seconds > 12, `${tag} saturn: the slow pan is running (or has run its ten seconds)`, { panning: s.panning, seconds: saturn.seconds });
@@ -334,7 +339,7 @@ try {
     await page.evaluate(() => window.__moon.tutorialNext());
     await sleep(150);
     card = await cardText(page);
-    check(/Tap the Moon/.test(card.body) && card.primary === 'Arriving…', `${tag} moon: the staging copy and the held primary`, { body: card.body, primary: card.primary });
+    check(/Tap the Moon/.test(card.body) && card.primary === 'Next: speed up time' && card.primaryDisabled === true, `${tag} moon: the staging copy and the held primary`, { body: card.body, primary: card.primary, disabled: card.primaryDisabled });
     const moon = await waitReady(page, tag, 'moon', {
       act: async (state) => {
         const waiting = await cardText(page);
@@ -413,7 +418,7 @@ try {
     check(approach.surface && approach.rate === 1200 && approach.declutter, `${tag} eclipse: approaching in a decluttered surface view at 20 min/s`, { surface: approach.surface, rate: approach.rate, declutter: approach.declutter });
     check(approach.sunOnScreen === true, `${tag} eclipse: the Sun is on screen during the approach`, approach.sunOnScreen);
     card = await cardText(page);
-    check(card.primary === 'Watching…' && card.busy && /peak in|starts in/.test(card.kicker), `${tag} eclipse: Watching… with a live countdown`, { primary: card.primary, kicker: card.kicker });
+    check(card.primary === 'Next: wrap up' && card.primaryDisabled === true && /peak in|starts in/.test(card.kicker), `${tag} eclipse: Next held through the approach, with a live countdown`, { primary: card.primary, disabled: card.primaryDisabled, kicker: card.kicker });
     await sleep(1500);
     await shot(page, `${tag}-17-eclipse-approach`);
     const eclipse = await waitReady(page, tag, 'eclipse', { shots: false });

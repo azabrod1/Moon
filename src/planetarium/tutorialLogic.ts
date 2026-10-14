@@ -52,9 +52,6 @@ export interface TutorialStep {
   /** The demonstration played before the arrival (see TutorialBeat); absent
    *  for a stop that stages in one move. */
   beats?: readonly TutorialBeat[];
-  /** The held primary's label while the stop settles after its beats
-   *  ("Watching…" for the eclipse's approach); "Arriving…" when absent. */
-  busyLabel?: string;
   /** The card once the eclipse reaches totality: the climax gets its own words. */
   totality?: { title: string; kicker: string; body: string };
   /** The wrap's doors: each restores the journey, then does what its label says. */
@@ -301,7 +298,6 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     // Settling is the approach: the kicker counts down to the peak live.
     body: 'The Moon is crossing the Sun at twenty minutes a second. Stay with it.',
     beats: ECLIPSE_BEATS,
-    busyLabel: 'Watching…',
     totality: {
       title: 'Totality',
       kicker: '6 minutes · the longest on land this century',
@@ -540,7 +536,7 @@ export const TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS = 60 * 60_000;
 
 /**
  * Where the eclipse stop's clock stands against its event, since the time
- * controls stay live while the card reads "Watching…": 'approach' from a
+ * controls stay live while Next is held for totality: 'approach' from a
  * little before first contact up to the settle instant, 'totality' from
  * there to the end of local totality at the standing spot, and 'away' once
  * the clock stands before the approach or past totality — the event's

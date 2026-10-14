@@ -27,10 +27,10 @@ export interface TutorialCardModel {
   /** Mono line for the place or the date; null hides it. */
   kicker: string | null;
   body: string;
-  /** `busy` is the held state while a stop stages — the label says why Next
-   *  waits. 'show-me' is the you-try beat's offer: live, and it presses the
-   *  awaited control for the user. */
-  primary: { label: string; action: 'advance' | 'return' | 'show-me'; disabled: boolean; busy: boolean };
+  /** The label is the step's own from the first frame to the last: while the
+   *  stop plays, only `disabled` changes. 'show-me' is the you-try beat's
+   *  offer: live, and it presses the awaited control for the user. */
+  primary: { label: string; action: 'advance' | 'return' | 'show-me'; disabled: boolean };
   /** null hides the ghost button (the wrap card: ending always takes you back). */
   ghost: { label: string; disabled: boolean } | null;
   /** Re-stages the previous stop. null hides it on the first stop, where
@@ -40,8 +40,6 @@ export interface TutorialCardModel {
   chips: readonly TutorialChip[];
 }
 
-/** The primary's label while a stop's scene is still on its way. */
-export const TUTORIAL_ARRIVING_LABEL = 'Arriving…';
 /** The primary's label while a you-try beat waits for the user. */
 export const TUTORIAL_SHOW_ME_LABEL = 'Show me';
 
@@ -77,16 +75,18 @@ export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase, beat: 
 /**
  * Card content for one step. The wrap card's primary restores the
  * pre-tutorial state instead of advancing, and it has no skip. Next and Back
- * wait for the step to settle — while a scene stop is on its way the primary
- * reads "Arriving…" so the wait explains itself; skip stays live mid-flight
+ * wait for the step to settle. Held, the primary keeps its own label, dimmed,
+ * and lights up in place when the stop is done. The copy and the spotlight
+ * say what is playing; a status in the button ("Arriving…") was wrong for
+ * most of a stop (the panel and Look up play after the landing) and changed
+ * the button's width as it cleared. Skip stays live mid-flight
  * (stopTutorial absorbs an in-flight arrival), and only the restore actually
  * running ('ending') disables everything. `kicker` overrides the step's own
  * line when the host has a live one (a distance, a phase, a countdown);
  * `beat` is the current beat while staging — its copy, and on a you-try beat
  * the primary becomes a live "Show me" while the beat still waits
  * (`beatStage` before the press or the perform); `totality` swaps in the
- * eclipse's climax card. The held label while settling is the step's own
- * busyLabel (the eclipse's "Watching…"), else "Arriving…".
+ * eclipse's climax card.
  */
 export function tutorialCardModel(
   step: TutorialStep,
@@ -105,21 +105,14 @@ export function tutorialCardModel(
   const stage = opts.beatStage ?? 'await';
   const awaiting =
     phase === 'staging' && beat?.await === true && (stage === 'enter' || stage === 'hold' || stage === 'await');
-  const busy = !awaiting && step.stage !== 'none' && (phase === 'staging' || phase === 'settling');
-  const busyLabel = phase === 'settling' && step.busyLabel ? step.busyLabel : TUTORIAL_ARRIVING_LABEL;
   return {
     progress: tutorialProgress(index),
     title: climax?.title ?? step.title,
     kicker: opts.kicker === undefined ? (climax?.kicker ?? step.kicker) : opts.kicker,
     body: climax?.body ?? tutorialBodyFor(step, phase, beat),
     primary: awaiting
-      ? { label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false, busy: false }
-      : {
-          label: busy ? busyLabel : step.primaryLabel,
-          action: wrap ? 'return' : 'advance',
-          disabled: phase !== 'ready',
-          busy,
-        },
+      ? { label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false }
+      : { label: step.primaryLabel, action: wrap ? 'return' : 'advance', disabled: phase !== 'ready' },
     ghost:
       step.ghostLabel === null
         ? null
@@ -208,7 +201,6 @@ export class TutorialCard {
     if (this.primaryEl) {
       this.primaryEl.textContent = model.primary.label;
       this.primaryEl.disabled = model.primary.disabled;
-      this.primaryEl.classList.toggle('busy', model.primary.busy);
     }
     if (this.ghostEl) {
       this.ghostEl.style.display = model.ghost ? '' : 'none';

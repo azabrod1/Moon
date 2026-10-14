@@ -11463,7 +11463,7 @@ export class PlanetariumMode {
         then();
       } finally {
         // Landed even if the scene work threw (arriveAtSystem logs it): the
-        // stop falls through to its card rather than holding "Arriving…".
+        // stop falls through to its card rather than holding Next forever.
         live.arrived = true;
         this.renderTutorialCard();
       }
@@ -11881,7 +11881,7 @@ export class PlanetariumMode {
     // the card). One-shot — a user who scrubs the rate afterwards is left
     // alone. Gated past 'staging' so a pre-stage clock already sitting in 2027+
     // can't trip it before the staging has even set the time. The time
-    // controls stay live under "Watching…": a clock moved by hand out of
+    // controls stay live while Next is held: a clock moved by hand out of
     // the approach (Now, a date, a reverse run) frees Next without the
     // climax — totality is read only inside the six minutes of local totality
     // (eclipseClockPhase), so the climax card never shows over another sky.

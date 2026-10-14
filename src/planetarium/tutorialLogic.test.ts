@@ -158,7 +158,6 @@ describe('TUTORIAL_STEPS', () => {
     expect(lookUp.spotlight?.target).toEqual({ kind: 'panel-window' });
     expect(lookUp.perform).toEqual({ kind: 'look-up' });
     expect(approach.perform).toEqual({ kind: 'approach', rate: TUTORIAL_ECLIPSE_APPROACH_RATE });
-    expect(eclipse.busyLabel).toBe('Watching…');
     expect(eclipse.totality?.title).toBe('Totality');
     expect(eclipse.totality?.body).toMatch(/corona/);
     expect(eclipse.body).toMatch(/twenty minutes a second/);

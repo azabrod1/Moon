@@ -12,6 +12,7 @@ import {
   isStepSettled,
   restorePlan,
   earlyRestorePlan,
+  eclipseClimaxShown,
   canStartTutorial,
   clockWasLive,
   restoredClockUtcMs,
@@ -552,6 +553,29 @@ describe('eclipseClockPhase', () => {
     expect(eclipseClockPhase(Date.parse('2028-01-26T12:00:00Z'), event)).toBe('away');
     expect(eclipseClockPhase(event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS - 1, event)).toBe('away');
     expect(eclipseClockPhase(event.endUtcMs + 1, event)).toBe('away');
+  });
+});
+
+describe('eclipseClimaxShown', () => {
+  const peak = Date.parse('2027-08-02T10:06:41Z');
+  const event = { startUtcMs: peak - 150 * MIN, peakUtcMs: peak, endUtcMs: peak + 150 * MIN };
+  const settle = totalitySettleUtcMs(peak);
+
+  it('never before totality was reached, even with the clock inside the window', () => {
+    expect(eclipseClimaxShown(false, peak, event)).toBe(false);
+  });
+
+  it('shows while the reached totality still stands on the clock', () => {
+    expect(eclipseClimaxShown(true, settle, event)).toBe(true);
+    expect(eclipseClimaxShown(true, peak, event)).toBe(true);
+    expect(eclipseClimaxShown(true, event.endUtcMs, event)).toBe(true);
+  });
+
+  it('comes down when a Now press, a date or a fast run carries the clock out, and back when the clock returns', () => {
+    expect(eclipseClimaxShown(true, Date.parse('2026-10-14T08:00:00Z'), event)).toBe(false);
+    expect(eclipseClimaxShown(true, event.endUtcMs + 1, event)).toBe(false);
+    expect(eclipseClimaxShown(true, settle - 1, event)).toBe(false);
+    expect(eclipseClimaxShown(true, peak, event)).toBe(true);
   });
 });
 

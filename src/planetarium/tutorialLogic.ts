@@ -549,6 +549,23 @@ export function eclipseClockPhase(
 }
 
 /**
+ * Whether the eclipse card shows the climax right now: totality has been
+ * reached (the one-shot that dropped the clock to realtime and released
+ * Next) and the clock still stands inside the event's window. A Now press,
+ * a date or a fast run that carries the clock out afterwards takes the
+ * climax card down — the approach card with its live kicker ("ended 2h
+ * ago") is honest about the sky the user moved to — and a clock brought
+ * back in shows it again, without touching the rate a second time.
+ */
+export function eclipseClimaxShown(
+  totalityReached: boolean,
+  nowUtcMs: number,
+  event: { startUtcMs: number; peakUtcMs: number; endUtcMs: number },
+): boolean {
+  return totalityReached && eclipseClockPhase(nowUtcMs, event) === 'totality';
+}
+
+/**
  * Per-step phase machine. 'staging' = scene work requested (theater playing,
  * arrival pending); 'settling' = staged, waiting for the busy signals to
  * clear; 'ready' = Next enabled; 'ending' = a stop was requested while an

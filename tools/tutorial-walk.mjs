@@ -13,7 +13,9 @@
 //     1 hr/s with the panel closed; the eclipse presses the panel's own
 //     next-solar arrow (parking three minutes before the 2027-08-02 peak),
 //     rewinds to first contact, presses Look up, declutters the surface view
-//     and approaches at 20 min/s, holding "Watching…" until totality's card;
+//     and approaches at 20 min/s, holding "Watching…" until totality's card,
+//     which follows the clock: a run past the event takes it down, the clock
+//     brought back shows it again;
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
@@ -400,6 +402,20 @@ try {
     check(card.title === 'Totality' && /corona/.test(card.body) && card.primary === 'Next: wrap up', `${tag} eclipse: the climax card`, { title: card.title, primary: card.primary });
     check(!(await page.evaluate(() => document.getElementById('surface-trackpill')?.offsetParent !== null)), `${tag} eclipse: the tracking pill is out of the picture`);
     await shot(page, `${tag}-18-eclipse-totality`);
+    // The climax follows the clock: a run past the event takes the card back
+    // to the approach copy with a live kicker and leaves Next free, and the
+    // clock brought back shows the climax again without touching the rate.
+    const totalityMs = eclipse.state.timeMs;
+    await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs + 6 * 3600_000);
+    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === false, null, { timeout: 30_000 }).catch(() => {});
+    const moved = await tstate(page);
+    card = await cardText(page);
+    check(moved.climaxShown === false && card.title === 'A total solar eclipse' && /ended .* ago/.test(card.kicker) && card.primary === 'Next: wrap up', `${tag} eclipse: a run past the event takes the climax card down, Next stays free`, { climax: moved.climaxShown, title: card.title, kicker: card.kicker, primary: card.primary });
+    await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs);
+    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === true, null, { timeout: 30_000 }).catch(() => {});
+    const back = await tstate(page);
+    card = await cardText(page);
+    check(back.climaxShown === true && card.title === 'Totality' && back.rate === 1, `${tag} eclipse: the clock brought back shows the climax again at realtime`, { climax: back.climaxShown, title: card.title, rate: back.rate });
     await page.evaluate(() => window.__moon.tutorialNext());
     await waitReady(page, tag, 'wrap');
     card = await cardText(page);

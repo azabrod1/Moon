@@ -402,6 +402,7 @@ import {
   TUTORIAL_STEPS,
   tutorialTransition,
   eclipseClockPhase,
+  eclipseClimaxShown,
   initialBeatRun,
   stepBeatRun,
   clockWasLive,
@@ -2524,6 +2525,9 @@ export class PlanetariumMode {
      *  hand out of the approach (eclipseClockPhase 'away'), so Next frees
      *  without the climax card. */
     totalityWaived: boolean;
+    /** The climax card is up: totality was reached and the clock still
+     *  stands inside the event's window (eclipseClimaxShown). */
+    climaxShown: boolean;
     /** A scene step actually staged. False while only card-only steps ran —
      *  ending then has nothing to put back (see executeTutorialStop). */
     everStaged: boolean;
@@ -10690,6 +10694,7 @@ export class PlanetariumMode {
       eclipse: null,
       totalityReached: false,
       totalityWaived: false,
+      climaxShown: false,
       everStaged: false,
       stagedAtMs: performance.now(),
       timer: null,
@@ -10936,6 +10941,7 @@ export class PlanetariumMode {
     tutorial.phase = 'staging';
     tutorial.totalityReached = false;
     tutorial.totalityWaived = false;
+    tutorial.climaxShown = false;
     // The furthest stop reached outlives the tour and the journey: a skip
     // mid-way is remembered, and the entries can say the tour was finished.
     this.store.writeTourProgress({ stopReached: index });
@@ -11851,35 +11857,45 @@ export class PlanetariumMode {
     // the approach (Now, a date, a reverse run) frees Next without the
     // climax — totality is read only inside this event's own window, so the
     // climax card never shows over another sky.
-    if (
-      !tutorial.totalityReached &&
+    const eclipse = tutorial.eclipse;
+    const nowUtcMs = this.timeState.currentUtcMs;
+    const eclipseLive =
       step.stage === 'eclipse' &&
-      tutorial.eclipse !== null &&
-      (tutorial.phase === 'settling' || tutorial.phase === 'ready')
-    ) {
-      const clockPhase = eclipseClockPhase(this.timeState.currentUtcMs, tutorial.eclipse);
+      eclipse !== null &&
+      (tutorial.phase === 'settling' || tutorial.phase === 'ready');
+    if (eclipseLive && !tutorial.totalityReached) {
+      const clockPhase = eclipseClockPhase(nowUtcMs, eclipse);
       if (clockPhase === 'totality') {
         tutorial.totalityReached = true;
         this.setTutorialClockRate(1);
-        // The climax card: its own title, kicker and words (tutorialCardModel).
-        tutorial.kicker = null;
-        this.renderTutorialCard();
       } else if (clockPhase === 'away' && !tutorial.totalityWaived) {
         tutorial.totalityWaived = true;
         this.renderTutorialCard();
       }
     }
+    // The climax card follows the clock from then on: it is up while the
+    // reached totality still stands on the clock, and comes down — back to
+    // the approach card with its live kicker — when a Now press, a date or
+    // a fast run carries the clock out of the event's window, so it never
+    // describes the corona over another sky. The rate drop and the released
+    // Next above stay one-shot: a clock brought back in shows the climax
+    // again without touching the rate.
+    if (eclipseLive) {
+      const climaxShown = eclipseClimaxShown(tutorial.totalityReached, nowUtcMs, eclipse);
+      if (climaxShown !== tutorial.climaxShown) {
+        tutorial.climaxShown = climaxShown;
+        // The climax card: its own title, kicker and words (tutorialCardModel).
+        if (climaxShown) tutorial.kicker = null;
+        this.renderTutorialCard();
+      }
+    }
     // The approach's kicker counts down to the peak, live, from the same
     // helper the surface HUD uses; re-rendered only as the text changes. It
-    // keeps reading the clock after a waiver too ("ended 2h ago"), so the
-    // card stays honest about a sky the user moved to.
-    if (
-      step.stage === 'eclipse' &&
-      tutorial.eclipse &&
-      !tutorial.totalityReached &&
-      (tutorial.phase === 'settling' || tutorial.phase === 'ready')
-    ) {
-      const kicker = `From Earth · ${eventCountdownText(this.timeState.currentUtcMs, tutorial.eclipse)}`;
+    // keeps reading the clock after a waiver too ("ended 2h ago"), and after
+    // a climax the clock was moved away from, so the card stays honest about
+    // a sky the user moved to.
+    if (eclipseLive && !tutorial.climaxShown) {
+      const kicker = `From Earth · ${eventCountdownText(nowUtcMs, eclipse)}`;
       if (kicker !== tutorial.kicker) {
         tutorial.kicker = kicker;
         this.renderTutorialCard();
@@ -11897,7 +11913,7 @@ export class PlanetariumMode {
         ...(tutorial.kicker === null ? {} : { kicker: tutorial.kicker }),
         beat,
         beatStage: tutorial.beatRun?.stage ?? null,
-        totality: tutorial.totalityReached,
+        totality: tutorial.climaxShown,
       }),
     );
   }
@@ -18607,6 +18623,7 @@ export class PlanetariumMode {
       stepIndex: tutorial?.stepIndex ?? -1,
       phase: tutorial?.phase ?? null,
       totalityReached: tutorial?.totalityReached ?? false,
+      climaxShown: tutorial?.climaxShown ?? false,
       arrivalInFlight: this.arrivalInFlight,
       veilCovering:
         document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,

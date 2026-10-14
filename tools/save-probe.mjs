@@ -3,7 +3,7 @@
 // user left them rather than the way a menu holds them?
 //
 //   node tools/save-probe.mjs --url=http://localhost:5174
-//   node tools/save-probe.mjs --scenario=mission,menu
+//   node tools/save-probe.mjs --scenario=mission,menu,preferences
 //
 // Scenarios:
 //   mission   a historic mission (Voyager 1, from the Tools popover) stages its
@@ -17,6 +17,13 @@
 //             user paused (Space) before opening ☰ is stored paused. The help
 //             sheet holds both the same way, and a save made under it (the
 //             page-hide save, fired by hand) stores them running too.
+//   preferences
+//             the ☰ toggles live on keys of their own, never in the journey:
+//             flipping Show ship off and Orbit lines on writes two keys and
+//             the next save carries neither field; ☰ → New Journey keeps both
+//             toggles; a reload that lands on "Welcome back" → New Journey
+//             keeps them too; and a journey written by an older build, with
+//             the toggles inside it, is read once and copied onto the keys.
 //
 // The save is read back from localStorage (PlanetariumStore's key). Boots
 // with storage cleared and the first-run help marked seen, so no modal holds
@@ -27,7 +34,7 @@ import { takeBrowserLock } from './browserLock.mjs';
 
 const arg = (k, d) => { const m = process.argv.find((a) => a.startsWith(`--${k}=`)); return m ? m.slice(k.length + 3) : d; };
 const URL = arg('url', 'http://localhost:5174');
-const SCENARIOS = new Set(arg('scenario', 'mission,menu').split(','));
+const SCENARIOS = new Set(arg('scenario', 'mission,menu,preferences').split(','));
 const SOFTWARE = process.argv.includes('--software');
 const GPU_ARGS = SOFTWARE
   ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']
@@ -154,6 +161,89 @@ try {
       'menu: a save under the help sheet stores the clock running and the ship moving',
       { helpOpen: help.open, astroTimePaused: help.saved?.astroTimePaused, moving: help.saved?.moving });
     await context.close();
+  }
+
+  // ── preferences ─────────────────────────────────────────────────────────
+  if (SCENARIOS.has('preferences')) {
+    console.log('[preferences]');
+    const SHIP_KEY = 'planetarium-show-ship';
+    const ORBITS_KEY = 'planetarium-orbit-lines';
+    const labels = (page) => page.evaluate(() => ({
+      ship: document.getElementById('settings-ship-label')?.textContent,
+      orbits: document.getElementById('settings-orbits-label')?.textContent,
+    }));
+    const keys = (page) => page.evaluate(([a, b]) => ({ ship: localStorage.getItem(a), orbits: localStorage.getItem(b) }), [SHIP_KEY, ORBITS_KEY]);
+    const { context, page } = await boot();
+    const fresh = await labels(page);
+    check(fresh.ship === 'On' && fresh.orbits === 'Off', 'preferences: the toggles start at their defaults', fresh);
+    await page.click('#planetarium-btn-menu');
+    await sleep(300);
+    await page.click('#settings-ship-toggle');
+    await page.click('#settings-orbits-toggle');
+    await sleep(200);
+    const flipped = await labels(page);
+    const written = await keys(page);
+    check(flipped.ship === 'Off' && flipped.orbits === 'On', 'preferences: the flips show on the rows', flipped);
+    check(written.ship === 'false' && written.orbits === 'true', 'preferences: each flip lands on its own key', written);
+    await page.click('#planetarium-btn-menu');
+    await sleep(300);
+    const saved = await saveFromMenu(page);
+    check(!('showShip' in saved) && !('showOrbitLines' in saved), 'preferences: the journey save carries no copy of the toggles', { fields: Object.keys(saved).filter((k) => /^show|Pref$|systemSlowdown/.test(k)) });
+    // ☰ → New Journey resets the journey and nothing else.
+    await page.click('#planetarium-btn-menu');
+    await sleep(300);
+    await page.click('#planetarium-btn-new');
+    await sleep(800);
+    const afterNew = await labels(page);
+    const keysAfterNew = await keys(page);
+    check(afterNew.ship === 'Off' && afterNew.orbits === 'On', 'preferences: ☰ → New Journey keeps the toggles', afterNew);
+    check(keysAfterNew.ship === 'false' && keysAfterNew.orbits === 'true', 'preferences: and their keys', keysAfterNew);
+    if (await menuOpen(page)) { await page.click('#planetarium-btn-menu'); await sleep(300); }
+    // A reload lands on "Welcome back"; its New Journey button used to be
+    // where the toggles died. The same tab, on purpose: the init script
+    // clears storage once per tab, and a fresh tab would wipe the keys.
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    await page.goto(`${URL}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('planetarium-resume-prompt')?.classList.contains('visible'), null, { timeout: 180_000 });
+    await page.click('#resume-btn-new');
+    await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 180_000 });
+    await page.waitForFunction(() => {
+      const s = document.getElementById('loading-screen');
+      return !s || s.classList.contains('hidden') || getComputedStyle(s).display === 'none';
+    }, null, { timeout: 180_000 });
+    await sleep(1500);
+    const afterReload = await labels(page);
+    check(afterReload.ship === 'Off' && afterReload.orbits === 'On', 'preferences: "Welcome back" → New Journey keeps the toggles', afterReload);
+    await context.close();
+
+    // A journey from before the keys existed: its copies are read once and
+    // copied onto the keys, and the next save drops them.
+    const legacyContext = await browser.newContext({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
+    await legacyContext.addInitScript(([key]) => {
+      try {
+        localStorage.clear(); indexedDB.deleteDatabase('orbital-sim-storage');
+        localStorage.setItem('planetarium-help-seen', '1'); localStorage.setItem('planetarium-surface-hint-seen', '1');
+        localStorage.setItem(key, JSON.stringify({
+          positionAU: { x: 0.28, y: 0.015, z: 0.04 }, headingRad: 0, speed: 1, visitedPlanets: [], distanceTraveled: 0,
+          timeElapsed: 0, timestamp: Date.now(), autopilot: false, astroTimeUtcMs: Date.now(),
+          showShip: false, showOrbitLines: true, labelDistancesMode: 'always', headingBasis: 'ecliptic',
+        }));
+      } catch {}
+    }, [SAVE_KEY]);
+    const legacyPage = await legacyContext.newPage();
+    legacyPage.on('pageerror', (e) => { console.log('[pageerror]', e.message); failures.push(`pageerror: ${e.message}`); });
+    await legacyPage.goto(`${URL}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+    await legacyPage.waitForFunction(() => document.getElementById('planetarium-resume-prompt')?.classList.contains('visible'), null, { timeout: 180_000 });
+    await legacyPage.click('#resume-btn-continue');
+    await legacyPage.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 180_000 });
+    await sleep(1500);
+    const migrated = await keys(legacyPage);
+    const legacyLabels = await labels(legacyPage);
+    check(migrated.ship === 'false' && migrated.orbits === 'true', 'preferences: an older journey\'s toggles are copied onto the keys', migrated);
+    check(legacyLabels.ship === 'Off' && legacyLabels.orbits === 'On', 'preferences: and applied', legacyLabels);
+    const resaved = await saveFromMenu(legacyPage);
+    check(!('showShip' in resaved) && !('labelDistancesMode' in resaved), 'preferences: the next save no longer carries them', { fields: Object.keys(resaved).filter((k) => /^show|Pref$|Mode$|systemSlowdown/.test(k)) });
+    await legacyContext.close();
   }
 } finally {
   await browser.close();

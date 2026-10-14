@@ -3853,6 +3853,7 @@ function installDevHooks() {
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),
     openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
+    setSheetPark: (park: string) => planetariumMode?.devSetSheetPark(park as never),
     swapVantage: () => planetariumMode?.devSwapVantage() ?? false,
     jumpEvent: (type: string, direction?: 1 | -1) =>
       planetariumMode?.devJumpEvent(type as never, direction ?? 1) ?? false,
@@ -3869,6 +3870,7 @@ function installDevHooks() {
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),
     tutorialSkip: () => planetariumMode?.devTutorialSkip(),
+    tutorialStage: (index: number) => planetariumMode?.devTutorialStage(index) ?? false,
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
     openMap: () => planetariumMode?.devOpenMap() ?? false,
     closeMap: () => planetariumMode?.devCloseMap() ?? false,

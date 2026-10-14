@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createDefaultPlanetariumState,
   sanitizePlanetariumState,
+  sanitizeTourProgress,
   PlanetariumStore,
 } from './PlanetariumStore';
 import { SPEED_MAX, SYSTEM_SPEED_MAX } from './shipLimits';
@@ -99,9 +100,9 @@ describe('headingBasis — the flight-frame migration flag', () => {
   });
 });
 
-describe('showBodyMarkers is a plain boolean (default true)', () => {
-  it('defaults to true when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBe(true);
+describe('showBodyMarkers is a plain boolean (default true, applied at read)', () => {
+  it('stays absent when the field is absent from the save: the default is the preference’s, never the save’s', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBeUndefined();
     expect(createDefaultPlanetariumState().showBodyMarkers).toBe(true);
   });
 
@@ -109,15 +110,28 @@ describe('showBodyMarkers is a plain boolean (default true)', () => {
     expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: false }))?.showBodyMarkers).toBe(false);
   });
 
-  it('non-boolean garbage falls back to the default', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 'no' }))?.showBodyMarkers).toBe(true);
-    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 1 }))?.showBodyMarkers).toBe(true);
+  it('non-boolean garbage is dropped, not defaulted', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 'no' }))?.showBodyMarkers).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 1 }))?.showBodyMarkers).toBeUndefined();
+  });
+
+  it('every ☰ preference is carried only when the save held it', () => {
+    const fields = ['showShip', 'showConstellations', 'showBodyLabels', 'labelDistancesMode', 'showBodyMarkers', 'showOrbitLines', 'systemSlowdown'] as const;
+    // A save written after the keys took the preferences carries none of them.
+    const stripped = rawSave({}) as Record<string, unknown>;
+    for (const field of fields) delete stripped[field];
+    const parsed = sanitizePlanetariumState(stripped)!;
+    for (const field of fields) expect(parsed[field]).toBeUndefined();
+    const held = sanitizePlanetariumState(rawSave({ showShip: false, showConstellations: true, systemSlowdown: false }))!;
+    expect(held.showShip).toBe(false);
+    expect(held.showConstellations).toBe(true);
+    expect(held.systemSlowdown).toBe(false);
   });
 });
 
-describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
-  it('defaults to hover when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBe('hover');
+describe('labelDistancesMode (default hover, applied at read; legacy boolean dropped)', () => {
+  it('stays absent when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBeUndefined();
     expect(createDefaultPlanetariumState().labelDistancesMode).toBe('hover');
   });
 
@@ -126,17 +140,17 @@ describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
     expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'hover' }))?.labelDistancesMode).toBe('hover');
   });
 
-  it('drops the legacy showBodyLabelDistances boolean (both values → hover)', () => {
+  it('drops the legacy showBodyLabelDistances boolean (both values → absent, read as hover)', () => {
     const optIn = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: true }));
-    expect(optIn?.labelDistancesMode).toBe('hover');
+    expect(optIn?.labelDistancesMode).toBeUndefined();
     expect('showBodyLabelDistances' in JSON.parse(JSON.stringify(optIn))).toBe(false);
     const optOut = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }));
-    expect(optOut?.labelDistancesMode).toBe('hover');
+    expect(optOut?.labelDistancesMode).toBeUndefined();
   });
 
-  it('garbage (or an unknown literal) falls back to hover', () => {
-    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBe('hover');
-    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBe('hover');
+  it('garbage (or an unknown literal) is dropped, not defaulted', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBeUndefined();
   });
 });
 
@@ -332,5 +346,47 @@ describe('clock sanitizing survives the first running frame', () => {
     const clock = advancePlanetariumTime({ currentUtcMs: state.astroTimeUtcMs, rate: state.astroTimeRate!, paused: false }, 1 / 60);
     expect(Number.isFinite(new Date(clock.currentUtcMs).getTime())).toBe(true);
     expect(clock.currentUtcMs).toBe(MAX_UTC_MS);
+  });
+});
+
+describe('the tour record (planetarium-tour)', () => {
+  it('is fresh where nothing legible is stored, and a key of its own', async () => {
+    const local = fakeStorage();
+    const fresh = await withWindow(local, fakeStorage(), async () => new PlanetariumStore().readTourProgress());
+    expect(fresh).toEqual({ completed: false, stopReached: -1, completedAt: null });
+    local.setItem('planetarium-tour', '{not json');
+    const broken = await withWindow(local, fakeStorage(), async () => new PlanetariumStore().readTourProgress());
+    expect(broken).toEqual({ completed: false, stopReached: -1, completedAt: null });
+  });
+
+  it('keeps the furthest stop and a completion already earned', async () => {
+    const local = fakeStorage();
+    await withWindow(local, fakeStorage(), async () => {
+      const store = new PlanetariumStore();
+      expect(store.writeTourProgress({ stopReached: 2 }).stopReached).toBe(2);
+      // A replay skipped at the first stop must not demote the record.
+      expect(store.writeTourProgress({ stopReached: 1 }).stopReached).toBe(2);
+      const done = store.writeTourProgress({ completed: true, completedAt: 1_700_000_000_000 });
+      expect(done).toEqual({ completed: true, stopReached: 2, completedAt: 1_700_000_000_000 });
+      expect(store.writeTourProgress({ stopReached: 0 })).toEqual(done);
+      expect(store.readTourProgress()).toEqual(done);
+      // Not inside the journey save: New Journey clears that key, not this one.
+      await store.saveState(createDefaultPlanetariumState());
+      expect(local.getItem(STORAGE_KEY)).not.toBeNull();
+      store.clearState();
+      expect(local.getItem(STORAGE_KEY)).toBeNull();
+      expect(store.readTourProgress()).toEqual(done);
+    });
+  });
+
+  it('sanitises a hand-edited record', () => {
+    expect(sanitizeTourProgress({ completed: 'yes', stopReached: 2.5, completedAt: 'now' })).toEqual({
+      completed: false,
+      stopReached: -1,
+      completedAt: null,
+    });
+    // A completion time without a completion is nothing.
+    expect(sanitizeTourProgress({ completed: false, completedAt: 5 })?.completedAt).toBeNull();
+    expect(sanitizeTourProgress(null)).toBeNull();
   });
 });

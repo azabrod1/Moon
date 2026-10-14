@@ -13,8 +13,10 @@
  *
  * Pure DOM + ephemeris reads; clock changes, camera work, and the chunked
  * event search live in PlanetariumMode. 8 Hz renders touch text nodes only;
- * the window's structure is gated on a state key and list rebuilds happen
- * only in setEvents.
+ * the window's structure is gated on a state key, and setEvents rebuilds the
+ * list only when something it renders has changed — a publish that repeats
+ * the rows on screen touches nothing, so a fast clock cannot make the list
+ * flicker.
  */
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';
@@ -435,6 +437,53 @@ export function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
   return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)} years`;
 }
 
+/**
+ * The line under the upcoming-events list. A sweep filling an empty list
+ * says how far it has got; a sweep rolling a populated list forward (quiet)
+ * says nothing, so rows the reader is using never gain a ticking counter
+ * under them and the list's height holds still. Once the sweep is done, an
+ * empty list says why it is empty.
+ */
+export function observatoryEventsStatus(input: {
+  scanning: { index: number; count: number } | null;
+  quiet: boolean;
+  rowCount: number;
+}): string {
+  if (input.scanning) {
+    if (input.quiet && input.rowCount > 0) return '';
+    return `Scanning ${input.scanning.index + 1}/${input.scanning.count}…`;
+  }
+  return input.rowCount === 0 ? 'No events in range' : '';
+}
+
+/** The rail glyph's disc size for an apparent diameter: log scale, 3–9 px. */
+function railGlyphPx(discDeg: number): number {
+  return Math.round(Math.min(9, Math.max(3, 3 + 1.5 * Math.log10(Math.max(discDeg, 0.01) / 0.01))));
+}
+
+/**
+ * Everything setEvents would put in the DOM for these rows, as one string:
+ * the list is rebuilt only when it changes. Keyed on the rendered text and
+ * glyph sizes, not the raw numbers, so a disc that drifted below the
+ * precision shown is no change, and a re-found event whose contacts moved by
+ * seconds (the same minute on screen) is the same row.
+ */
+export function eventRowsRenderKey(rows: readonly ObservatoryEventRow[]): string {
+  return rows
+    .map((row) =>
+      [
+        row.label,
+        row.classification,
+        row.hint,
+        formatEventRowTime(row.event.peakUtcMs, false),
+        row.magnitudeText ?? '',
+        row.speck ? 'ring' : `disc${railGlyphPx(row.discDeg)}`,
+        formatDiscDeg(row.discDeg),
+      ].join('\u0001'),
+    )
+    .join('\u0000');
+}
+
 /** A phase for the glyph: how much is lit and which side the light is on. */
 export interface PhaseGlyphInput {
   litFraction: number;
@@ -589,6 +638,10 @@ export class ObservatoryPanel {
   private keyExplainEl: HTMLElement | null = null;
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; countdownEl: HTMLElement }[] = [];
+  /** What the list last rendered (eventRowsRenderKey) and what the status
+   *  line says: a publish that repeats them touches no DOM. */
+  private eventsKey = '';
+  private eventsStatusText: string | null = null;
   private wired = false;
   // Sheet-form park state (≤640px) — the user's INTENT. Entering sheet form —
   // open or a breakpoint crossing — always means peek; `wasSheetForm` detects
@@ -887,6 +940,20 @@ export class ObservatoryPanel {
     this.updateSheetInset();
   }
 
+  /** Where the sheet is parked right now. Desktop has no sheet; it reads
+   *  'peek', which show() would set anyway. */
+  getSheetPark(): SheetPark {
+    return this.sheetPark;
+  }
+
+  /** Park the open sheet where a snapshot left it (the tutorial's restore):
+   *  show() always starts at peek, so this runs after it. */
+  setSheetPark(park: SheetPark): void {
+    if (!this.isOpen() || !this.isSheetForm()) return;
+    this.sheetPark = park;
+    this.updateSheetInset();
+  }
+
   show(): void {
     this.panelEl?.classList.add('visible');
     document.body.classList.add('observatory-sheet-open');
@@ -1101,22 +1168,48 @@ export class ObservatoryPanel {
     this.updateSheetInset();
   }
 
-  /** Replace the upcoming-events list; an empty statusText hides the status line. */
-  setEvents(rows: ObservatoryEventRow[], statusText: string): void {
-    setText('observatory-events-status', statusText);
-    if (!this.eventsListEl) return;
+  /**
+   * Replace the upcoming-events list; an empty statusText hides the status
+   * line. Returns whether the DOM changed. Rows that render exactly as the
+   * ones on screen are not rebuilt: their events are swapped in behind the
+   * rows instead (a re-found event with the same minute on screen), so the
+   * countdown and the jump always read the latest one while nothing moves
+   * under the reader.
+   */
+  setEvents(rows: ObservatoryEventRow[], statusText: string): boolean {
+    let changed = false;
+    if (statusText !== this.eventsStatusText) {
+      this.eventsStatusText = statusText;
+      setText('observatory-events-status', statusText);
+      changed = true;
+    }
+    const key = eventRowsRenderKey(rows);
+    if (key === this.eventsKey && rows.length === this.renderedRows.length) {
+      rows.forEach((row, index) => { this.renderedRows[index].row = row; });
+      // The status line appearing or going changes the sheet's height too.
+      if (changed) this.updateSheetInset();
+      return changed;
+    }
+    this.eventsKey = key;
+    if (!this.eventsListEl) return true;
     this.eventsListEl.textContent = '';
     this.renderedRows = [];
     for (const row of rows) {
       // The whole row is the jump: a real button, so it answers to the
       // keyboard and the tap target is the row you were reading. Each row
-      // closes over its own event — a key re-lookup would silently no-op
-      // while a restarted search repopulates the map.
-      const rowEl = document.createElement('button');
+      // reads its event off its own rendered entry — never a key re-lookup
+      // in the results map, which a restarted search is repopulating — and a
+      // publish that changed nothing on screen refreshes the entry in place.
+      const rendered = {
+        row,
+        rowEl: document.createElement('button'),
+        countdownEl: document.createElement('span'),
+      };
+      const rowEl = rendered.rowEl;
       rowEl.type = 'button';
       rowEl.className = row.speck ? 'obs-ev speck' : 'obs-ev';
       rowEl.setAttribute('aria-label', `Jump to ${row.label}`);
-      rowEl.addEventListener('click', () => this.onEventJump(row.event));
+      rowEl.addEventListener('click', () => this.onEventJump(rendered.row.event));
       // Rail glyph: a disc sized to the apparent ∅ (log scale, 3–9px), or
       // the hollow "nothing to see from here" ring for specks.
       const railEl = document.createElement('span');
@@ -1126,9 +1219,7 @@ export class ObservatoryPanel {
         glyphEl.className = 'obs-ev-ring';
       } else {
         glyphEl.className = 'obs-ev-disc';
-        const px = Math.round(
-          Math.min(9, Math.max(3, 3 + 1.5 * Math.log10(Math.max(row.discDeg, 0.01) / 0.01))),
-        );
+        const px = railGlyphPx(row.discDeg);
         glyphEl.style.width = `${px}px`;
         glyphEl.style.height = `${px}px`;
       }
@@ -1160,7 +1251,7 @@ export class ObservatoryPanel {
       mainEl.append(nameEl, metaEl);
       const rightEl = document.createElement('span');
       rightEl.className = 'obs-ev-right';
-      const countdownEl = document.createElement('span');
+      const countdownEl = rendered.countdownEl;
       countdownEl.className = 'obs-cd';
       const diameterEl = document.createElement('span');
       diameterEl.className = 'obs-ev-dia';
@@ -1168,10 +1259,11 @@ export class ObservatoryPanel {
       rightEl.append(countdownEl, diameterEl);
       rowEl.append(railEl, mainEl, rightEl);
       this.eventsListEl.appendChild(rowEl);
-      this.renderedRows.push({ row, rowEl, countdownEl });
+      this.renderedRows.push(rendered);
     }
     // List rebuilds change the sheet's height — keep the inset current.
     this.updateSheetInset();
+    return true;
   }
 
   /** Re-render all live text (phase hero, now-bar, countdowns) — 8 Hz cadence. */

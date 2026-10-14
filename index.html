@@ -1371,7 +1371,20 @@
     #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
     /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
     #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
-    .shud-bl { position: absolute; left: calc(24px + env(safe-area-inset-left, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); max-width: 46vw; }
+    /* The bottom band: the narrative at the left, the field-of-view block at
+       the right, on one baseline above the time pill. One flex row, so neither
+       can run under the other — the narrative wraps in what the block leaves.
+       With the Observatory panel open the band ends at the panel's edge, so
+       the block never sits under the panel's lower reach. */
+    .shud-bottom {
+      position: absolute;
+      left: calc(24px + env(safe-area-inset-left, 0px));
+      right: calc(24px + env(safe-area-inset-right, 0px));
+      bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+      display: flex; justify-content: space-between; align-items: flex-end; gap: 24px;
+    }
+    body.observatory-sheet-open .shud-bottom { right: calc(12px + 334px + 20px + env(safe-area-inset-right, 0px)); }
+    .shud-bl { max-width: 46vw; flex: 0 1 auto; min-width: 0; }
     .shud-eyebrow {
       font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
       color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
@@ -1409,7 +1422,7 @@
     /* Paused clock (incl. the silent park when stepping down through 1×):
        hollow the dot, same idiom as the bottom bar's paused rail thumb. */
     .shud-timebar.paused .shud-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--obs-t3); }
-    .shud-br { position: absolute; right: calc(24px + env(safe-area-inset-right, 0px)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); text-align: right; }
+    .shud-br { flex: none; text-align: right; }
     .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
     .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
     .shud-fovmark {
@@ -1422,10 +1435,17 @@
     .shud-hint { margin-top: 22px; font-size: 10.5px; color: var(--obs-t3); }
     @media (max-width: 640px) {
       .shud-bl h1 { font-size: 24px; }
-      /* The HUD corners join the one bottom-inset exclusion zone: a jump
-         parks the sheet at peek, and the narrative must not sit under it. */
-      .shud-bl { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); max-width: 60vw; }
-      .shud-br { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); }
+      /* The band joins the one bottom-inset exclusion zone: a jump parks the
+         sheet at peek, and the narrative must not sit under it. The panel is
+         that sheet here, not a side panel, so the band keeps the full width;
+         the field-of-view block narrows to a fixed lane with its hint
+         wrapping inside it, and the narrative takes the rest. */
+      .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); gap: 16px; }
+      body.observatory-sheet-open .shud-bottom { right: calc(24px + env(safe-area-inset-right, 0px)); }
+      .shud-bl { max-width: none; flex: 1 1 auto; }
+      .shud-br { width: 120px; }
+      .shud-fovscale { width: 120px; }
+      .shud-hint { line-height: 1.4; }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
@@ -1668,18 +1688,18 @@
     /* ============================================= */
 
     /* The tutorial's narrator, in the historic-panel slot (a mission and a tutorial
-       never coexist). z 30: above the deck (27) and the action cluster (28) —
-       the deck theater plays underneath — below the ☰ menu (34), Look-at (60)
-       and help (70); the body-level arrival veil (50) covers it during
-       teleports on purpose. Deliberately NOT hidden by surface-view-active:
+       never coexist). z 30: above the deck (27), the action cluster (28) and the
+       spotlight (29) — the demonstrations play underneath it — below the ☰ menu
+       (34), Look-at (60) and help (70); the body-level arrival veil (50) covers it
+       during teleports on purpose. Deliberately NOT hidden by surface-view-active:
        the time-lapse and eclipse cards narrate from inside surface view. */
     #tutorial-card {
       position: absolute;
       top: calc(88px + env(safe-area-inset-top, 0px));
       left: calc(12px + env(safe-area-inset-left, 0px));
-      width: 336px; /* fits ‹ Back + Skip + the longest Next label on one row */
+      width: 360px; /* fits ‹ Back + Skip + the longest Next label on one row */
       max-width: calc(100vw - 24px);
-      padding: 14px 16px;
+      padding: 14px 16px 16px;
       z-index: 30;
       opacity: 0;
       transform: translateY(-6px);
@@ -1693,19 +1713,45 @@
     #tutorial-card.visible { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition-delay: 0s; }
     .tutorial-eyebrow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
     .tutorial-eyebrow b { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--t3); }
-    .tutorial-count { font-family: var(--font-mono); font-size: 10px; color: var(--t3); font-variant-numeric: tabular-nums; }
-    .tutorial-title { font-size: 15px; font-weight: 600; color: var(--t1); margin: 0 0 6px; }
-    .tutorial-body { font-size: 12px; line-height: 1.55; color: var(--t2); margin: 0; }
+    /* Stop dots: one per scene stop, the current one filled, the seen ones dimmed.
+       The counter beside them ("Stop 2 of 4") is for screen readers only. */
+    .tutorial-dots { display: inline-flex; align-items: center; gap: 6px; }
+    .tutorial-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.28); background: transparent;
+      transition: background 0.2s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+    }
+    .tutorial-dot.done { background: rgba(255, 255, 255, 0.28); border-color: transparent; }
+    .tutorial-dot.current { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.22); }
+    .tutorial-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .tutorial-title { font-size: 16px; font-weight: 600; color: var(--t1); margin: 0 0 3px; outline: none; }
+    /* Place or date under the title; live where it states a fact about the sky. */
+    .tutorial-kicker {
+      font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; color: var(--t3);
+      font-variant-numeric: tabular-nums; margin: 0 0 8px;
+    }
+    .tutorial-body { font-size: 13px; line-height: 1.5; color: var(--t2); margin: 0; }
     /* Button glyphs quoted inline in the copy — clones of the real action-cluster
-       SVGs (see TutorialCard.renderBody), sized to ride the 12px text line. */
-    .tutorial-body .tutorial-inline-icon { width: 14px; height: 14px; vertical-align: -3px; margin: 0 1px; }
+       SVGs (see TutorialCard.renderBody). A bare 20 px glyph in the text, not a
+       button replica: the real control is the one under the spotlight. */
+    .tutorial-body .tutorial-inline-icon { width: 20px; height: 20px; vertical-align: -5px; margin: 0 2px 0 1px; color: var(--t1); }
+    /* The wrap's doors: three things to try next, as pills under the copy. */
+    .tutorial-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .tutorial-chip {
+      padding: 7px 12px; min-height: 32px;
+      border: 1px solid var(--panel-border); border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04); color: var(--t1);
+      font-family: var(--font); font-size: 12px; cursor: pointer;
+      transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+    }
+    .tutorial-chip:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(var(--accent-rgb), 0.35); }
     /* Buttons never break their own label; on a narrow card the row wraps
        instead (Back holds the left edge, the forward pair the right). */
     .tutorial-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
     /* Back sits apart on the left — the forward cluster keeps the right edge. */
     #tutorial-back { margin-right: auto; padding-left: 10px; padding-right: 10px; }
     .tutorial-btn {
-      padding: 7px 14px;
+      padding: 8px 14px;
       border: 1px solid var(--panel-border);
       border-radius: 8px;
       font-family: var(--font);
@@ -1719,15 +1765,125 @@
     .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
     .tutorial-btn-ghost { background: transparent; color: var(--t2); }
     .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
-    /* Deck-theater row pulse: the tutorial pointing at the row it is about to press. */
-    @keyframes tutorial-pulse {
-      0%, 100% { background: rgba(var(--accent-rgb), 0.09); }
-      50% { background: rgba(var(--accent-rgb), 0.22); }
+    /* The held primary while a stop's scene is on its way: it reads as waiting,
+       not as disabled — the label says why, the slow breathing is the only motion. */
+    @keyframes tutorial-busy {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 0.95; }
     }
-    .pk-row.tutorial-pulse { animation: tutorial-pulse 1.1s ease-in-out infinite; }
+    .tutorial-btn.busy:disabled { opacity: 0.8; color: var(--t2); animation: tutorial-busy 1.8s ease-in-out infinite; }
+    /* The spotlight's visible press on the real control: a dip plus the
+       control's own on-colour, for the press's 180 ms. */
+    .act-btn.tutorial-press {
+      transform: scale(0.94);
+      background: rgba(var(--accent-rgb), 0.24); border-color: rgba(var(--accent-rgb), 0.5); color: var(--t1);
+      transition: transform 0.12s var(--ease), background 0.12s var(--ease), border-color 0.12s var(--ease);
+    }
+    .act-btn.tutorial-press .act-glyph { color: var(--accent); opacity: 1; }
+    .pk-row.tutorial-press {
+      transform: scale(0.98); background: rgba(var(--accent-rgb), 0.24);
+      transition: transform 0.12s var(--ease), background 0.12s var(--ease);
+    }
     @media (prefers-reduced-motion: reduce) {
       #tutorial-card { transition: opacity 0.22s var(--ease), visibility 0s linear 0.22s; transform: none; }
-      .pk-row.tutorial-pulse { animation: none; background: rgba(var(--accent-rgb), 0.16); }
+      .tutorial-btn.busy:disabled { animation: none; opacity: 0.7; }
+      .act-btn.tutorial-press, .pk-row.tutorial-press { transform: none; }
+      .tutorial-dot { transition: none; }
+    }
+
+    /* ============================================= */
+    /* TUTORIAL SPOTLIGHT                            */
+    /* ============================================= */
+
+    /* The dimming mask with a cutout around the one control a beat teaches, its
+       ring and the coach bubble (ui/TutorialSpotlight.ts). z 29: above the
+       cluster (28), the deck (27) and the panel (21); below the card (30), the
+       ☰ menu (34) and the veil (50). Never a pointer target — the control it
+       rings stays tappable through it. No backdrop filter: the mask spans the
+       whole screen, and a blur that size is a phone's entire frame budget. */
+    #tutorial-spotlight {
+      position: fixed; inset: 0; z-index: 29; pointer-events: none;
+      opacity: 0; visibility: hidden;
+      transition: opacity 0.22s var(--ease), visibility 0s linear 0.22s;
+    }
+    #tutorial-spotlight.visible { opacity: 1; visibility: visible; transition-delay: 0s; }
+    .tutorial-spotlight-mask { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    .tutorial-spotlight-mask path { fill: rgba(2, 3, 6, 0.55); }
+    /* The ring loops the cluster's hand-off pulse; static under reduced motion. */
+    @keyframes tutorial-ring {
+      0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.55); }
+      70%, 100% { box-shadow: 0 0 0 8px rgba(var(--accent-rgb), 0); }
+    }
+    .tutorial-spotlight-ring {
+      position: absolute; box-sizing: border-box;
+      border: 2px solid var(--accent); border-radius: 11px;
+      animation: tutorial-ring 1.6s ease-out infinite;
+    }
+    /* The coach bubble: one to three words, the panel coach's material, an
+       arrow back across the gap at the control. --arrow is the arrow's place
+       along the facing edge (TutorialSpotlight.track). */
+    .tutorial-bubble {
+      position: absolute; display: inline-flex; align-items: center; gap: 8px;
+      padding: 7px 11px; border-radius: var(--r-m);
+      background: #0c101c; border: 1px solid rgba(var(--accent-rgb), 0.45);
+      box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
+      font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--t1);
+      white-space: nowrap;
+    }
+    /* The key chip rides pointer devices only, like the cluster's tooltips. */
+    .tutorial-bubble kbd { display: none; }
+    @media (hover: hover) and (pointer: fine) { .tutorial-bubble kbd { display: inline-block; } }
+    .tutorial-bubble::before {
+      content: ''; position: absolute; width: 8px; height: 8px; background: #0c101c;
+      border-left: 1px solid rgba(var(--accent-rgb), 0.45); border-top: 1px solid rgba(var(--accent-rgb), 0.45);
+    }
+    .tutorial-bubble.side-below::before { top: -5px; left: calc(var(--arrow, 14px) - 4px); transform: rotate(45deg); }
+    .tutorial-bubble.side-above::before { bottom: -5px; left: calc(var(--arrow, 14px) - 4px); transform: rotate(225deg); }
+    .tutorial-bubble.side-right::before { left: -5px; top: calc(var(--arrow, 14px) - 4px); transform: rotate(-45deg); }
+    .tutorial-bubble.side-left::before { right: -5px; top: calc(var(--arrow, 14px) - 4px); transform: rotate(135deg); }
+    @media (prefers-reduced-motion: reduce) {
+      #tutorial-spotlight { transition: none; }
+      .tutorial-spotlight-ring { animation: none; box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.22); }
+    }
+    /* The eclipse's climax: the surface view keeps its headline and its time
+       bar; the field-of-view cluster and the tracking pill step aside for the
+       stop (a tour override, set and cleared with it). */
+    body.tutorial-declutter .shud-br,
+    body.tutorial-declutter #surface-trackpill { display: none !important; }
+
+    /* ============================================= */
+    /* FIRST-RUN WELCOME                             */
+    /* ============================================= */
+
+    /* The welcome over the live scene (same slot as help, z 70): a light
+       backdrop so the sky still reads, one card, two choices of equal weight
+       side by side (stacked on phones, 44 px each), a quiet line under them. */
+    #tutorial-hero { display: none; position: fixed; inset: 0; z-index: 70; pointer-events: auto; }
+    #tutorial-hero.visible { display: flex; align-items: center; justify-content: center; }
+    .tutorial-hero-backdrop { position: absolute; inset: 0; background: rgba(2, 3, 6, 0.42); }
+    .tutorial-hero-card {
+      position: relative; width: min(460px, calc(100vw - 32px)); padding: 26px 28px 20px; text-align: center;
+    }
+    .tutorial-hero-title { font-size: 19px; font-weight: 600; color: var(--t1); margin: 0 0 8px; outline: none; }
+    .tutorial-hero-lead { font-size: 13px; line-height: 1.55; color: var(--t2); margin: 0 0 18px; }
+    .tutorial-hero-choices { display: flex; gap: 10px; justify-content: center; }
+    .tutorial-hero-btn {
+      flex: 1 1 0; min-height: 44px; padding: 10px 14px;
+      border: 1px solid rgba(var(--accent-rgb), 0.3); border-radius: 10px;
+      background: rgba(var(--accent-rgb), 0.12); color: var(--t1);
+      font-family: var(--font); font-size: 13px; font-weight: 500; cursor: pointer;
+      transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+    }
+    .tutorial-hero-btn:hover { background: rgba(var(--accent-rgb), 0.22); border-color: rgba(var(--accent-rgb), 0.45); }
+    .tutorial-hero-mins { color: var(--t2); font-weight: 400; }
+    .tutorial-hero-note { font-size: 11.5px; line-height: 1.5; color: var(--t3); margin: 14px 0 0; }
+    .tutorial-hero-link {
+      background: none; border: none; padding: 0; color: var(--t2); font: inherit;
+      text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+    }
+    .tutorial-hero-link:hover { color: var(--t1); }
+    @media (max-width: 640px) {
+      .tutorial-hero-choices { flex-direction: column; }
     }
     .historic-header {
       display: flex;
@@ -2829,7 +2985,8 @@
     /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
        chrome itself — the HUD washes toward white while staying clickable
        underneath (pointer-events pass through). Above the everyday chrome
-       (deck 27, action cluster 28) but below the tutorial card (30), the ☰
+       (deck 27, action cluster 28), level with the tutorial spotlight (29, later
+       in the DOM, so the ring draws over the flood), below the tutorial card (30), the ☰
        menu (34), the veils (50), and help (70): deliberate reading surfaces
        never drown. Opacity is driven per frame by the mode controller. */
     #sun-glare-flood {
@@ -2969,7 +3126,7 @@
       color: var(--text-secondary);
     }
     /* Modal action bar — a flex-footer sibling of the scrollable body, so the
-       tutorial recommendation is visible without scrolling the reference sections. */
+       tour's entry is visible without scrolling the reference sections. */
     .help-tutorial-row {
       display: flex;
       gap: 8px;
@@ -4416,7 +4573,8 @@
         padding: 10px 14px;
         border-radius: 12px;
       }
-      /* Top-docked, full width — the bottom band is the deck sheet's turf. */
+      /* Top-docked, full width — the bottom band is the deck sheet's turf.
+         Every button is a 44 px touch target. */
       #tutorial-card {
         top: calc(60px + env(safe-area-inset-top, 0px));
         left: calc(8px + env(safe-area-inset-left, 0px));
@@ -4424,6 +4582,8 @@
         width: auto;
         max-width: none;
       }
+      .tutorial-btn { min-height: 44px; padding: 10px 14px; }
+      .tutorial-chip { min-height: 44px; padding: 10px 14px; }
       .historic-header {
         margin-bottom: 6px;
       }
@@ -4688,7 +4848,7 @@
           <button class="menu-action" id="planetarium-btn-help">Help</button>
           <button class="menu-action" id="planetarium-btn-save">Save</button>
           <button class="menu-action" id="planetarium-btn-new">New Journey</button>
-          <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
+          <button class="menu-action" id="planetarium-btn-tutorial">Take the tour</button>
           <button class="menu-action" id="planetarium-btn-map">System map</button>
           <div class="menu-divider"></div>
           <button type="button" class="pk-row menu-tier" data-open="graphics">
@@ -5017,16 +5177,18 @@
           <button class="shud-chip" id="surface-swap" style="display:none"><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
           <button class="shud-chip" id="surface-exit">&#x2715; Exit surface view</button>
         </div>
-        <div class="shud-bl">
-          <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
-          <h1 id="surface-headline">--</h1>
-          <div class="shud-sub" id="surface-sub"></div>
-        </div>
-        <div class="shud-br">
-          <div class="shud-eyebrow">Field of view</div>
-          <div class="shud-fov" id="surface-fov">10&deg;</div>
-          <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
-          <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+        <div class="shud-bottom">
+          <div class="shud-bl">
+            <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
+            <h1 id="surface-headline">--</h1>
+            <div class="shud-sub" id="surface-sub"></div>
+          </div>
+          <div class="shud-br">
+            <div class="shud-eyebrow">Field of view</div>
+            <div class="shud-fov" id="surface-fov">10&deg;</div>
+            <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
+            <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+          </div>
         </div>
         <div class="shud-timebar" id="surface-timebar">
           <div class="shud-when">
@@ -5042,11 +5204,28 @@
       </div>
 
       <!-- Help modal (centered) -->
+      <!-- First-run welcome: one choice over the live scene — the tour or your own
+           way — two buttons of equal weight, nothing to read first. Either marks
+           the welcome seen; the tour stays in ☰ and at the foot of Help. Esc is
+           "Explore on my own". -->
+      <div id="tutorial-hero" role="dialog" aria-modal="true" aria-labelledby="tutorial-hero-title" aria-describedby="tutorial-hero-lead">
+        <div class="tutorial-hero-backdrop"></div>
+        <div class="tutorial-hero-card pn pn-high">
+          <h3 class="tutorial-hero-title" id="tutorial-hero-title" tabindex="-1">Welcome to your planetarium</h3>
+          <p class="tutorial-hero-lead" id="tutorial-hero-lead">Every planet, moon and star is where it really is for the date on screen, at real scale. Fly anywhere, stand on any world, and bend time.</p>
+          <div class="tutorial-hero-choices">
+            <button class="tutorial-hero-btn" id="tutorial-hero-tour">Take the tour <span class="tutorial-hero-mins">· 2 min</span></button>
+            <button class="tutorial-hero-btn" id="tutorial-hero-explore">Explore on my own</button>
+          </div>
+          <p class="tutorial-hero-note">The tour is in the ☰ menu whenever you want it. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
+        </div>
+      </div>
+
       <div id="planetarium-help">
         <div class="planetarium-help-backdrop"></div>
         <div class="planetarium-help-card">
           <div class="planetarium-help-header">
-            <h3>Welcome to Your Planetarium</h3>
+            <h3>Help</h3>
             <button class="planetarium-help-close" id="planetarium-help-close" aria-label="Close help">&times;</button>
           </div>
           <div class="planetarium-help-body">
@@ -5082,8 +5261,7 @@
             <p class="help-signoff">Have fun out there.</p>
           </div>
           <div class="help-tutorial-row">
-            <button class="tutorial-btn tutorial-btn-ghost" id="help-explore">Explore on my own</button>
-            <button class="tutorial-btn tutorial-btn-primary" id="help-take-tutorial">Take the tutorial</button>
+            <button class="tutorial-btn tutorial-btn-ghost" id="help-take-tutorial">Take the tour</button>
           </div>
         </div>
       </div>
@@ -5356,14 +5534,26 @@
       </div>
       <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
 
+      <!-- Tutorial spotlight: the dimming mask, the ring and the coach bubble around
+           the control a beat teaches (ui/TutorialSpotlight.ts). Decorative — the
+           card's live body carries the words — and never a pointer target. -->
+      <div id="tutorial-spotlight" aria-hidden="true">
+        <svg class="tutorial-spotlight-mask"><path id="tutorial-spotlight-mask" fill-rule="evenodd" d=""/></svg>
+        <div class="tutorial-spotlight-ring" id="tutorial-spotlight-ring"></div>
+        <div class="tutorial-bubble" id="tutorial-bubble"><span id="tutorial-bubble-text"></span><kbd class="kbd" id="tutorial-bubble-key"></kbd></div>
+      </div>
+
       <!-- Guided-tutorial narrator card. Deliberate exception to one-modal-at-a-time:
-           the tutorial stages scenes through the other overlays (the deck theater
-           opens and closes UNDER it), so no overlay's open() closes this card —
+           the tutorial stages scenes through the other overlays (the deck and the
+           spotlight play UNDER it), so no overlay's open() closes this card —
            only its own buttons and the tutorial lifecycle do. -->
       <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tutorial">
-        <div class="tutorial-eyebrow"><b>Tutorial</b><span class="tutorial-count" id="tutorial-count"></span></div>
-        <h3 class="tutorial-title" id="tutorial-title"></h3>
+        <div class="tutorial-eyebrow"><b>Tutorial</b><span class="tutorial-dots" id="tutorial-dots" aria-hidden="true"></span><span class="tutorial-sr" id="tutorial-count"></span></div>
+        <h3 class="tutorial-title" id="tutorial-title" tabindex="-1"></h3>
+        <div class="tutorial-kicker" id="tutorial-kicker"></div>
         <p class="tutorial-body" id="tutorial-body" aria-live="polite"></p>
+        <!-- The wrap's doors: built per render by TutorialCard.renderChips. -->
+        <div class="tutorial-chips" id="tutorial-chips" style="display:none"></div>
         <div class="tutorial-actions">
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-back"></button>
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>

@@ -400,8 +400,13 @@ try {
       const deadline = Date.now() + 60_000;
       const tick = () => {
         const s = window.__moon.tutorialState();
-        const caught = s.arrivalInFlight;
-        if (caught || s.landedOn === 'Moon' || Date.now() > deadline) {
+        // The flight, or its veil (which outlives the flight by its hold and
+        // fade); the landing is set before either, so it is no signal. Only
+        // the picture beat, which starts once the veil is down, means the
+        // landing was too quick to catch.
+        const caught = s.arrivalInFlight || s.veilCovering;
+        const landed = s.beat?.id === 'moon-picture' || s.beat?.id === 'look-up' || s.phase !== 'staging';
+        if (caught || landed || Date.now() > deadline) {
           document.getElementById('tutorial-back').click();
           resolve({ caught, ...window.__moon.tutorialState() });
           return;

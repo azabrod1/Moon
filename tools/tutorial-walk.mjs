@@ -154,7 +154,7 @@ try {
   const proceed = async (page, tag, stop, state) => {
     const expected = state.beat.await === 'you-try' ? 'Show me' : 'Continue';
     const card = await cardText(page);
-    check(card.primary === expected && card.primaryDisabled === false, `${tag} ${stop}/${state.beat.id}: the card offers ${expected} while it waits`, { primary: card.primary, disabled: card.primaryDisabled });
+    check(card.primary === expected && card.primaryDisabled === false && card.primaryAnimation === 'tutorial-ready', `${tag} ${stop}/${state.beat.id}: the card offers ${expected} while it waits, lit with its ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation });
     await page.click('#tutorial-primary');
     note(`  acted: ${state.beat.id}: pressed ${expected}`);
   };
@@ -298,12 +298,15 @@ try {
     await page.click('#planetarium-btn-menu'); await sleep(400);
     const started = await page.evaluate(() => window.__moon.tutorialStart());
     check(started, `${tag}: the tour starts from idle`);
-    await sleep(150);
+    // The card reads the first beat from the frame the beats are installed;
+    // under software rendering that frame can be a second away.
+    await page.waitForFunction(() => window.__moon.tutorialState().beat !== null, null, { timeout: 60_000 });
 
     // Saturn stages at once: the demonstration, beat by beat, then the composed arrival.
     let card = await cardText(page);
+    let firstBeat = (await tstate(page)).beat;
     check(card.dots.length === 4 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
-    check(card.primary === 'Continue' && card.primaryDisabled === true && card.primaryAnimation === 'none', `${tag} saturn: the first scene's Continue is dimmed through the tap guard, no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation });
+    check(card.primary === 'Continue' && (firstBeat.stage === 'await' || (card.primaryDisabled === true && card.primaryAnimation === 'none')), `${tag} saturn: the first scene's Continue, dimmed through the tap guard with no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation, stage: firstBeat.stage });
     const heldWidth = card.primaryWidth;
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     // The desktop user gets there first at both scenes: the chip, then the
@@ -387,11 +390,15 @@ try {
     await page.click('#tutorial-primary');
     await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.beat?.id === 'moon-row' && s.beat.stage === 'await'; }, null, { timeout: 120_000 });
     await page.click('#tutorial-primary');
-    await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.arrivalInFlight || s.landedOn === 'Moon'; }, null, { timeout: 120_000 });
+    const caught = await page.waitForFunction(() => window.__moon.tutorialState().arrivalInFlight, null, { timeout: 60_000 }).then(() => true).catch(() => false);
     await page.click('#tutorial-back');
     const pressed = await tstate(page);
-    note(`  back mid-flight: ${JSON.stringify({ step: pressed.stepId, inFlight: pressed.arrivalInFlight, request: pressed.stageRequest })}`);
-    check(pressed.stepId === 'saturn' || pressed.stageRequest === 0, `${tag} back mid-flight: taken at once, or queued behind the landing`, { step: pressed.stepId, request: pressed.stageRequest });
+    note(`  back mid-flight: ${JSON.stringify({ caught, step: pressed.stepId, inFlight: pressed.arrivalInFlight, request: pressed.stageRequest })}`);
+    if (caught) {
+      check(pressed.stageRequest === 0 || pressed.stepId === 'saturn', `${tag} back mid-flight: queued behind the landing (or the landing was down by the press)`, { step: pressed.stepId, request: pressed.stageRequest, inFlight: pressed.arrivalInFlight });
+    } else {
+      check(pressed.stepId === 'saturn', `${tag} back mid-flight: the landing was too quick to catch in flight; taken at once`, { step: pressed.stepId });
+    }
     await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'saturn', null, { timeout: 180_000 });
     const saturnThird = await waitReady(page, tag, 'saturn', { shots: false });
     check(saturnThird.state.phase === 'ready' && saturnThird.state.landedOn === null && !!saturnThird.state.composition, `${tag} back mid-flight: Saturn is composed again once the landing is down`, { landed: saturnThird.state.landedOn, composed: !!saturnThird.state.composition });
@@ -400,9 +407,10 @@ try {
     // you-try (the desktop taps it, the phone presses Show me); Look up pauses
     // too, and the desktop taps the window itself.
     await page.evaluate(() => window.__moon.tutorialNext());
-    await sleep(150);
+    await page.waitForFunction(() => window.__moon.tutorialState().beat !== null, null, { timeout: 60_000 });
     card = await cardText(page);
-    check(/Observatory lands you/.test(card.body) && !/Tap the Moon/.test(card.body) && card.primary === 'Continue' && card.primaryDisabled === true, `${tag} moon: the staging copy and the first scene's dimmed Continue`, { body: card.body, primary: card.primary, disabled: card.primaryDisabled });
+    firstBeat = (await tstate(page)).beat;
+    check(/Observatory lands you/.test(card.body) && !/Tap the Moon/.test(card.body) && card.primary === 'Continue' && (firstBeat.stage === 'await' || card.primaryDisabled === true), `${tag} moon: the staging copy and the first scene's Continue, dimmed through the guard`, { body: card.body, primary: card.primary, disabled: card.primaryDisabled, stage: firstBeat.stage });
     const moon = await waitReady(page, tag, 'moon', {
       act: async (state) => {
         if (state.beat.id === 'moon-row') {

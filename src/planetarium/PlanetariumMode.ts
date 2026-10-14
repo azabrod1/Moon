@@ -11113,6 +11113,9 @@ export class PlanetariumMode {
     tutorial.beats = beats;
     tutorial.beatRun = initialBeatRun();
     tutorial.beatFrameMs = performance.now();
+    // The card follows the first beat from this frame (its copy, its dimmed
+    // Continue): the stop rendered it before the beats were installed.
+    this.renderTutorialCard();
   }
 
   /** One frame of the current stop's demonstration (updateTutorial, while staging). */

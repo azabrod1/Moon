@@ -28,8 +28,8 @@ export interface TutorialCardModel {
   kicker: string | null;
   body: string;
   /** 'advance' is the step's own Next, held until the stop is ready; 'proceed'
-   *  is a waiting beat's "Continue" or "Show me", which presses its control
-   *  for the user, dimmed through the tap guard and live from the wait. */
+   *  is a waiting beat's "Show me", which presses its control for the user,
+   *  dimmed through the tap guard and live from the wait. */
   primary: { label: string; action: 'advance' | 'return' | 'proceed'; disabled: boolean };
   /** null hides the ghost button (the wrap card: ending always takes you back). */
   ghost: { label: string; disabled: boolean } | null;
@@ -40,10 +40,8 @@ export interface TutorialCardModel {
   chips: readonly TutorialChip[];
 }
 
-/** The primary's label while a you-try beat waits for the user. */
+/** The primary's label while a beat waits for the user's own press. */
 export const TUTORIAL_SHOW_ME_LABEL = 'Show me';
-/** The primary's label while a pause beat waits for the user. */
-export const TUTORIAL_CONTINUE_LABEL = 'Continue';
 
 /** A run of body text, or one of the action-cluster button glyphs inline. */
 export type TutorialBodySegment =
@@ -87,9 +85,8 @@ export function tutorialBodyFor(step: TutorialStep, phase: TutorialPhase, beat: 
  * `kicker` overrides the step's own line when the host has a live one (a
  * distance, a phase, a countdown); `beat` is the current beat while staging
  * — its copy, and while it waits (`beatStage` before the press or the
- * perform) the primary is its "Continue" or "Show me", dimmed through the
- * tap guard and live from the wait; `totality` swaps in the eclipse's
- * climax card.
+ * perform) the primary is "Show me", dimmed through the tap guard and live
+ * from the wait; `totality` swaps in the eclipse's climax card.
  */
 export function tutorialCardModel(
   step: TutorialStep,
@@ -107,20 +104,14 @@ export function tutorialCardModel(
   const climax = opts.totality === true && step.totality ? step.totality : null;
   const stage = opts.beatStage ?? 'await';
   const waiting =
-    phase === 'staging' && beat && beat.await && (stage === 'enter' || stage === 'hold' || stage === 'await')
-      ? beat.await
-      : null;
+    phase === 'staging' && beat?.await === true && (stage === 'enter' || stage === 'hold' || stage === 'await');
   return {
     progress: tutorialProgress(index),
     title: climax?.title ?? step.title,
     kicker: opts.kicker === undefined ? (climax?.kicker ?? step.kicker) : opts.kicker,
     body: climax?.body ?? tutorialBodyFor(step, phase, beat),
     primary: waiting
-      ? {
-          label: waiting === 'you-try' ? TUTORIAL_SHOW_ME_LABEL : TUTORIAL_CONTINUE_LABEL,
-          action: 'proceed',
-          disabled: stage !== 'await',
-        }
+      ? { label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: stage !== 'await' }
       : { label: step.primaryLabel, action: wrap ? 'return' : 'advance', disabled: phase !== 'ready' },
     ghost:
       step.ghostLabel === null

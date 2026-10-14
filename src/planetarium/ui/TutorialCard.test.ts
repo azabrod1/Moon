@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  TUTORIAL_CONTINUE_LABEL,
   TUTORIAL_SHOW_ME_LABEL,
   tutorialBodyFor,
   tutorialBodySegments,
@@ -45,9 +44,7 @@ describe('tutorialCardModel', () => {
       }
       for (const beat of step.beats ?? []) {
         const label = tutorialCardModel(step, index, 'staging', { beat }).primary.label;
-        if (beat.await === 'pause') expect(label).toBe(TUTORIAL_CONTINUE_LABEL);
-        else if (beat.await === 'you-try') expect(label).toBe(TUTORIAL_SHOW_ME_LABEL);
-        else expect(label).toBe(step.primaryLabel);
+        expect(label).toBe(beat.await ? TUTORIAL_SHOW_ME_LABEL : step.primaryLabel);
       }
     });
   });
@@ -74,15 +71,15 @@ describe('tutorialCardModel', () => {
     expect(model('saturn', 'ready').body).toBe(saturn.body);
   });
 
-  it('a waiting beat makes the primary its Continue or Show me, dimmed through the guard, live from the wait', () => {
+  it('a waiting beat makes the primary Show me, dimmed through the guard, live from the wait', () => {
     const moon = stepById('moon');
     const [chip, row, picture] = moon.beats!;
     const waiting = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row });
     expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: false });
     expect(waiting.body).toBe(row.body);
-    const pausing = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
-    expect(pausing.primary).toEqual({ label: TUTORIAL_CONTINUE_LABEL, action: 'proceed', disabled: false });
-    expect(pausing.body).toBe(moon.bodyDuring);
+    const first = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
+    expect(first.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: false });
+    expect(first.body).toBe(moon.bodyDuring);
     for (const beat of [chip, row]) {
       for (const beatStage of ['enter', 'hold'] as const) {
         const guarded = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage }).primary;

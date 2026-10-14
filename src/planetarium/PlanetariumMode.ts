@@ -2346,7 +2346,7 @@ export class PlanetariumMode {
       // or it stays lit until the next deck/panel toggle.
       this.updateClusterOnStates();
     },
-    () => this.toggleSurfaceView(),
+    () => this.handlePanelLookUp(),
     () => this.watchLiveEvent(),
     (viaWindow) => {
       this.store.markLookupCoachSeen();
@@ -2543,8 +2543,8 @@ export class PlanetariumMode {
     beatRun: BeatRunState | null;
     beatFrameMs: number;
     /** The user pressed the awaited control themselves (set where the deck
-     *  commits, reset on every beat); the card's Continue or Show me was
-     *  pressed (one frame). */
+     *  commits and where the panel's window is pressed, reset on every
+     *  beat); the card's Show me was pressed (one frame). */
     userActed: boolean;
     proceed: boolean;
     /** A Back pressed while an arrival is in flight: the step to stage once
@@ -11192,8 +11192,8 @@ export class PlanetariumMode {
     window.setTimeout(() => this.afterArrivalIdle(action, deadlineMs), 120);
   }
 
-  /** The card's Continue or Show me: the runner presses the waiting beat's
-   *  control on the next frame. */
+  /** The card's Show me: the runner presses the waiting beat's control on
+   *  the next frame. */
   private tutorialProceed(): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.phase !== 'staging' || !tutorial.beatRun) return;
@@ -11225,6 +11225,41 @@ export class PlanetariumMode {
     tutorial.everStaged = true;
     this.tutorialSpotlight.hide();
     this.performTutorialArrival(tutorial.generation, beat.veilNote);
+  }
+
+  /** The panel's Look up window. While a beat waits on it, the user's press
+   *  is the beat's perform, aimed as the tour aims it (the eclipse's sky at
+   *  first contact, where the window's own aim may not yet find the event);
+   *  otherwise the window's own action. */
+  private handlePanelLookUp(): void {
+    const tutorial = this.tutorial;
+    const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
+    if (tutorial && beat?.await && beat.perform.kind === 'look-up' && tutorial.phase === 'staging') {
+      tutorial.userActed = true;
+      tutorial.everStaged = true;
+      this.performTutorialLookUp();
+      return;
+    }
+    this.toggleSurfaceView();
+  }
+
+  /** The window's own action: the surface view, aimed where the window says
+   *  (the parent from a moon with nothing overhead; the event when one is
+   *  on). The eclipse's clock sits at the event's first contact, where the
+   *  engine may not yet call it live — then the view is aimed at the event's
+   *  sky directly, as a jump does. */
+  private performTutorialLookUp(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    this.tutorialSpotlight.hide();
+    const event = TUTORIAL_STEPS[tutorial.stepIndex].stage === 'eclipse' ? tutorial.eclipse : null;
+    const landedInfo = this.surfaceLandedInfo();
+    if (event && landedInfo && !this.liveShadowEventNow()) {
+      this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', { suppressHint: true });
+      this.dismissSheetAfterDoorEntry();
+    } else {
+      this.toggleSurfaceView();
+    }
   }
 
   /** The user's own press on the awaited row has committed: their press is
@@ -11318,20 +11353,7 @@ export class PlanetariumMode {
         } else if (perform.kind === 'open-panel') {
           this.openObservatoryPanel();
         } else if (perform.kind === 'look-up') {
-          // The window's own action: the surface view, aimed where the
-          // window says (the parent from a moon with nothing overhead; the
-          // event when one is on). The eclipse's clock sits at the event's
-          // first contact, where the engine may not yet call it live — then
-          // the view is aimed at the event's sky directly, as a jump does.
-          this.tutorialSpotlight.hide();
-          const event = TUTORIAL_STEPS[tutorial.stepIndex].stage === 'eclipse' ? tutorial.eclipse : null;
-          const landedInfo = this.surfaceLandedInfo();
-          if (event && landedInfo && !this.liveShadowEventNow()) {
-            this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', { suppressHint: true });
-            this.dismissSheetAfterDoorEntry();
-          } else {
-            this.toggleSurfaceView();
-          }
+          this.performTutorialLookUp();
         }
         break;
       }
@@ -11397,7 +11419,12 @@ export class PlanetariumMode {
       case 'arrive':
         return tutorial.arrived && !this.arrivalInFlight && !this.arrivalVeilUp();
       case 'rate-ladder':
-        return tutorial.ladderDone;
+        // Climbed by the tour, or put on the top rung by the user's own
+        // drag or tap on the rail (the beat asks for exactly that detent).
+        return (
+          tutorial.ladderDone ||
+          (!this.timeState.paused && Math.abs(this.timeState.rate - perform.rates[perform.rates.length - 1]) < 1e-9)
+        );
       case 'jump': {
         // The panel's jump parks the clock OBSERVATORY_JUMP_LEAD_MS before
         // the found event's peak at realtime. Only the showcase eclipse

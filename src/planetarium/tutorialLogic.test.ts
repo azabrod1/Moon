@@ -72,7 +72,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(moon.beats?.map((b) => b.id)).toEqual(['observatory-chip', 'moon-row', 'moon-picture', 'look-up']);
     const [chip, row, picture, lookUp] = moon.beats!;
     expect(chip.perform).toEqual({ kind: 'open-deck', verb: 'observe', reveal: 'Moon' });
-    expect(row.await).toBe('you-try');
+    expect(row.await).toBe(true);
     expect(row.minHoldMs).toBe(TUTORIAL_PAUSE_GUARD_MS);
     expect(row.body).toMatch(/Tap the Moon/);
     expect(row.perform).toEqual({ kind: 'observe', name: 'Moon', parentPlanet: 'Earth' });
@@ -83,15 +83,17 @@ describe('TUTORIAL_STEPS', () => {
     expect(picture.perform).toEqual({ kind: 'open-panel' });
     expect(lookUp.spotlight?.target).toEqual({ kind: 'panel-window' });
     expect(lookUp.perform).toEqual({ kind: 'look-up' });
-    expect(picture.body).toBe(lookUp.body);
+    expect(lookUp.body?.startsWith(picture.body!)).toBe(true);
+    expect(lookUp.body).toMatch(/Tap Look up/);
+    expect(lookUp.spotlight?.label).toBe('Tap Look up');
     expect(moon.bodyDuring).not.toMatch(/Tap the Moon/);
     expect(moon.body).toMatch(/Earth/);
-    // Every ringed control waits for the user, so the pace is theirs; the
-    // Moon row is the one you-try, the rest pause for Continue.
+    // Every ringed control is the user's to press, so the pace is theirs,
+    // and every ring's bubble says what to do with it.
     const ringed = TUTORIAL_STEPS.flatMap((s) => s.beats ?? []).filter((b) => b.spotlight);
     expect(ringed.length).toBeGreaterThanOrEqual(7);
-    expect(ringed.every((b) => b.await === 'pause' || b.await === 'you-try')).toBe(true);
-    expect(ringed.filter((b) => b.await === 'you-try').map((b) => b.id)).toEqual(['moon-row']);
+    expect(ringed.every((b) => b.await === true)).toBe(true);
+    expect(ringed.every((b) => /^(Tap|Drag) /.test(b.spotlight!.label))).toBe(true);
     const unringed = TUTORIAL_STEPS.flatMap((s) => s.beats ?? []).filter((b) => !b.spotlight);
     expect(unringed.every((b) => b.await === undefined)).toBe(true);
   });
@@ -128,8 +130,8 @@ describe('TUTORIAL_STEPS', () => {
     for (const step of TUTORIAL_STEPS) {
       for (const beat of step.beats ?? []) {
         if (beat.press) expect(beat.spotlight).not.toBeNull();
-        // A waiting beat's hold is the tap guard before its Continue or Show
-        // me goes live; an arrival or a scene move needs no hold.
+        // A waiting beat's hold is the tap guard before its Show me goes
+        // live; an arrival or a scene move needs no hold.
         if (beat.await) expect(beat.minHoldMs).toBe(TUTORIAL_PAUSE_GUARD_MS);
       }
     }
@@ -142,6 +144,8 @@ describe('TUTORIAL_STEPS', () => {
     expect(arrive.perform).toEqual({ kind: 'arrive' });
     expect(arrive.veilNote).toMatch(/Jupiter/);
     expect(rail.spotlight?.target).toEqual({ kind: 'time-rail' });
+    expect(rail.spotlight?.label).toMatch(/1 hr\/s/);
+    expect(rail.await).toBe(true);
     expect(rail.press).toBe(false);
     expect(rail.perform).toEqual({ kind: 'rate-ladder', rates: TUTORIAL_RATE_LADDER, stepMs: 700 });
     expect(TUTORIAL_RATE_LADDER).toEqual([60, 1200, 3600]);
@@ -392,15 +396,15 @@ describe('stepBeatRun', () => {
     id: 'try',
     spotlight: { target: { kind: 'deck-row', name: 'Moon', verb: 'observe' }, label: 'Tap the Moon' },
     press: true,
-    await: 'you-try',
+    await: true,
     perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },
     minHoldMs: 300,
   };
-  const pause: TutorialBeat = {
-    id: 'pause',
-    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-travel' }, label: 'Teleport' },
+  const tryChip: TutorialBeat = {
+    id: 'try-chip',
+    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-travel' }, label: 'Tap Teleport' },
     press: true,
-    await: 'pause',
+    await: true,
     perform: { kind: 'open-deck', verb: 'travel', reveal: 'Saturn' },
     minHoldMs: 300,
   };
@@ -511,11 +515,10 @@ describe('stepBeatRun', () => {
     expect(shown.state.stage).toBe('perform');
   });
 
-  it('a pause beat waits after its guard with no deadline; Continue presses for the user', () => {
-    const list = [pause];
+  it('Show me is not taken before the guard has passed, and the wait has no deadline', () => {
+    const list = [tryChip];
     let state: BeatRunState = { index: 0, stage: 'hold', heldMs: 0, pressedMs: 0 };
-    // Continue is not taken before the guard has passed: a double tap on
-    // Next lands here, and must not skip the scene.
+    // A double tap on Next lands here, and must not skip the scene.
     const early = run(list, state, { proceed: true });
     expect(early.effects).toEqual([]);
     expect(early.state.stage).toBe('hold');
@@ -533,9 +536,9 @@ describe('stepBeatRun', () => {
   });
 
   it('a waiting beat whose outcome already holds goes on without a press — in the hold and in the wait', () => {
-    // The user got there first (opened the deck, looked up): no ring to
-    // press, no Continue to wait for.
-    const list = [pause];
+    // The user got there first (opened the deck, looked up, dragged the
+    // rail to the detent): no press of the runner's own, no Show me to wait for.
+    const list = [tryChip];
     const held: BeatRunState = { index: 0, stage: 'hold', heldMs: 50, pressedMs: 0 };
     const fromHold = run(list, held, { performed: true });
     expect(fromHold.effects).toEqual([]);

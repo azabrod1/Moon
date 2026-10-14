@@ -1166,6 +1166,10 @@ export class PlanetariumMode {
   private static readonly ATMOSPHERE_BAKE_DELAY_MS = 6000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
+  /** Set around the tour's own click on a deck row (performTutorialObserve),
+   *  which lands in commitDeckPick in the runner's perform stage, where a
+   *  user's press on that row is spent. */
+  private tutorialOwnPress = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
    *  previous arrival's lift timer can't uncover a newer arrival mid-flight.
    *  Reachable whenever a new veiled arrival starts inside the last one's
@@ -2333,7 +2337,10 @@ export class PlanetariumMode {
     onNow: () => { if (!this.timeControlsLocked()) this.timeJumpToNow(); },
   });
   private observatoryPanel = new ObservatoryPanel(
-    (type, direction) => this.handleObservatoryJump(type, direction),
+    (type, direction) => {
+      if (this.tutorialJumpLanded()) return;
+      this.handleObservatoryJump(type, direction);
+    },
     (event) => this.jumpToShadowEvent(event),
     (on) => {
       this.showShadowGuides = on;
@@ -2346,7 +2353,7 @@ export class PlanetariumMode {
       // or it stays lit until the next deck/panel toggle.
       this.updateClusterOnStates();
     },
-    () => this.toggleSurfaceView(),
+    () => this.handlePanelLookUp(),
     () => this.watchLiveEvent(),
     (viaWindow) => {
       this.store.markLookupCoachSeen();
@@ -2406,7 +2413,7 @@ export class PlanetariumMode {
     () => this.backTutorial(),
     () => this.stopTutorial({ restore: true, toast: 'skip' }),
     () => this.stopTutorial({ restore: true, toast: 'return', completed: true }),
-    () => this.tutorialShowMe(),
+    () => this.tutorialProceed(),
     (id) => this.tutorialChip(id),
   );
   /** The dimming mask, ring and coach bubble the beats point with. */
@@ -2543,9 +2550,14 @@ export class PlanetariumMode {
     beatRun: BeatRunState | null;
     beatFrameMs: number;
     /** The user pressed the awaited control themselves (set where the deck
-     *  commits, reset on every beat); "Show me" was pressed (one frame). */
+     *  commits and where the panel's window is pressed, reset on every
+     *  beat); the card's Show me was pressed (one frame). */
     userActed: boolean;
-    showMe: boolean;
+    proceed: boolean;
+    /** A Back pressed under an arrival veil: the step to stage once the
+     *  cover has cleared (a staging's own arrival would be dropped behind an
+     *  arrival in flight, and its first ring would run unseen under the veil). */
+    stageRequest: number | null;
     /** The stop's arrival has landed (the 'arrive' perform's guard). */
     arrived: boolean;
     /** The rate ladder has been climbed, or left where the user put the clock. */
@@ -10230,8 +10242,11 @@ export class PlanetariumMode {
     const key = e.key.toLowerCase();
     if ((key === 't' || key === 'o' || key === 'p') && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (this.isMissionActive() || this.isHelpOpen()) return;
-      if (key === 't') this.toggleDeck('travel');
-      else if (key === 'o') this.observatoryAction();
+      if (key === 't') {
+        if (!this.tutorialChipPress('planetarium-btn-travel')) this.toggleDeck('travel');
+      } else if (key === 'o') {
+        if (!this.tutorialChipPress('planetarium-btn-observatory')) this.observatoryAction();
+      }
       else this.toggleAutopilot();
       // Opening the deck focuses its search; without this the same keystroke
       // then types into it and the list opens pre-filtered.
@@ -10712,7 +10727,8 @@ export class PlanetariumMode {
       beatRun: null,
       beatFrameMs: performance.now(),
       userActed: false,
-      showMe: false,
+      proceed: false,
+      stageRequest: null,
       arrived: false,
       ladderDone: false,
       overrides: { hideShip: false, hideLabels: false, declutter: false },
@@ -10738,12 +10754,24 @@ export class PlanetariumMode {
   }
 
   /** Back re-stages the previous stop (stagings are absolute, so this is just
-   *  the index math). The card hides Back on the first stop — see
-   *  tutorialCardModel — but guard here too against a stale click. */
+   *  the index math). Live from a stop's first frame, like skip: a stop seen
+   *  enough of is left mid-demonstration, and stageTutorialStep drops
+   *  everything it owned. The one wait is an arrival veil still up (a
+   *  teleport, the Moon landing, their texture hold and fade): the previous
+   *  stop's own arrival would be dropped behind an arrival in flight, and
+   *  staged under the veil its first ring and tap guard would run unseen, so
+   *  the request holds until the cover has cleared (updateTutorial). The
+   *  card hides Back on the first stop — see tutorialCardModel — but guard
+   *  here too against a stale click. */
   private backTutorial(): void {
     const tutorial = this.tutorial;
-    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 1) return;
-    this.stageTutorialStep(tutorial.stepIndex - 1);
+    if (!tutorial || tutorial.phase === 'ending' || tutorial.stepIndex < 1) return;
+    const index = tutorial.stepIndex - 1;
+    if (this.arrivalVeilUp()) {
+      tutorial.stageRequest = index;
+      return;
+    }
+    this.stageTutorialStep(index);
   }
 
   /**
@@ -10948,6 +10976,7 @@ export class PlanetariumMode {
     if (!tutorial) return;
     tutorial.stepIndex = index;
     tutorial.phase = 'staging';
+    tutorial.stageRequest = null;
     tutorial.totalityReached = false;
     tutorial.totalityWaived = false;
     tutorial.climaxShown = false;
@@ -10965,7 +10994,7 @@ export class PlanetariumMode {
     tutorial.beats = null;
     tutorial.beatRun = null;
     tutorial.userActed = false;
-    tutorial.showMe = false;
+    tutorial.proceed = false;
     tutorial.arrived = false;
     tutorial.ladderDone = false;
     this.tutorialVeilNote = null;
@@ -11097,6 +11126,9 @@ export class PlanetariumMode {
     tutorial.beats = beats;
     tutorial.beatRun = initialBeatRun();
     tutorial.beatFrameMs = performance.now();
+    // The card follows the first beat from this frame (its copy, its dimmed
+    // Continue): the stop rendered it before the beats were installed.
+    this.renderTutorialCard();
   }
 
   /** One frame of the current stop's demonstration (updateTutorial, while staging). */
@@ -11115,9 +11147,9 @@ export class PlanetariumMode {
       targetPresent: target !== null,
       performed: beat ? this.tutorialPerformed(beat) : true,
       userActed: tutorial.userActed,
-      showMe: tutorial.showMe,
+      proceed: tutorial.proceed,
     });
-    tutorial.showMe = false; // one-shot
+    tutorial.proceed = false; // one-shot
     if (state.index !== previous.index) tutorial.userActed = false; // per beat
     tutorial.beatRun = state;
     const generation = tutorial.generation;
@@ -11173,20 +11205,131 @@ export class PlanetariumMode {
     window.setTimeout(() => this.afterArrivalIdle(action, deadlineMs), 120);
   }
 
-  /** The card's "Show me": the runner presses the awaited control on the next frame. */
-  private tutorialShowMe(): void {
+  /** The card's Show me: the runner presses the waiting beat's control on
+   *  the next frame. */
+  private tutorialProceed(): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.phase !== 'staging' || !tutorial.beatRun) return;
-    tutorial.showMe = true;
+    tutorial.proceed = true;
   }
 
-  /** The beat a deck commit to `target` would satisfy, if a you-try on that
-   *  body is current. */
-  private tutorialAwaitedObserve(target: NonNullable<LandedTarget>): TutorialBeat | null {
+  /** The beat a deck commit to `target` on `verb` would satisfy, if a waiting
+   *  beat rings that very row right now. */
+  private tutorialAwaitedRow(verb: DeckVerb, target: NonNullable<LandedTarget>): TutorialBeat | null {
     const tutorial = this.tutorial;
     const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
-    if (!tutorial || !beat || beat.perform.kind !== 'observe') return null;
-    return beat.await && beat.perform.name === target.name && tutorial.phase === 'staging' ? beat : null;
+    if (!tutorial || !beat || !beat.await || tutorial.phase !== 'staging') return null;
+    if (verb === 'observe') {
+      return beat.perform.kind === 'observe' && beat.perform.name === target.name ? beat : null;
+    }
+    if (verb !== 'travel') return null;
+    const ring = beat.spotlight?.target;
+    return beat.perform.kind === 'arrive' && ring?.kind === 'deck-row' && ring.verb === 'travel' && ring.name === target.name
+      ? beat
+      : null;
+  }
+
+  /** The user's own tap on the awaited travel row: the tour's arrival runs in
+   *  its place, and the beat waits on its landing as it would on its own. */
+  private noteTutorialUserArrival(beat: TutorialBeat): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.userActed = true;
+    tutorial.everStaged = true;
+    this.tutorialSpotlight.hide();
+    this.performTutorialArrival(tutorial.generation, beat.veilNote);
+  }
+
+  /** The current beat is waiting for the user: its control is still theirs
+   *  to press. Once the press is under way (Show me's, or their own, in
+   *  'press' and 'perform'), a second press on the same control would act
+   *  twice — toggle the surface view back out, commit a second landing — so
+   *  the hosts that route a waiting beat's control swallow it instead. */
+  private tutorialBeatWaiting(): boolean {
+    const stage = this.tutorial?.beatRun?.stage;
+    return stage === 'enter' || stage === 'hold' || stage === 'await';
+  }
+
+  /** The panel's Look up window. While the tour is staging or settling a
+   *  scene stop, the window is the tour's: ringed and waiting, a press is
+   *  the beat's perform, aimed as the tour aims it (the eclipse's sky at
+   *  first contact, where the window's own aim may not yet find the event);
+   *  any other press is spent — a double tap's second half lands after the
+   *  runner has taken the first, and the window's own action would then
+   *  walk back out of the view the stop is settling into (or out of the
+   *  eclipse's approach). Once the stop is ready it is the user's again. */
+  private handlePanelLookUp(): void {
+    const tutorial = this.tutorial;
+    if (
+      tutorial &&
+      (tutorial.phase === 'staging' || tutorial.phase === 'settling') &&
+      TUTORIAL_STEPS[tutorial.stepIndex].stage !== 'none'
+    ) {
+      const beat = tutorial.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
+      if (beat?.await && beat.perform.kind === 'look-up' && this.tutorialBeatWaiting()) {
+        tutorial.userActed = true;
+        tutorial.everStaged = true;
+        this.performTutorialLookUp();
+      }
+      return;
+    }
+    this.toggleSurfaceView();
+  }
+
+  /** The cluster's Teleport and Observatory chips (and their T and O keys)
+   *  while a stop's demonstration runs. Ringed, a press is the beat's own:
+   *  the tour's deck opening, on the tab the beat means — the chip's own
+   *  action while landed would open the panel instead, and the beat would
+   *  wait on a deck that never opens. While the deck row they opened is the
+   *  waiting beat, a press is spent: it would close the deck under the ring.
+   *  Returns true when the press was taken. */
+  private tutorialChipPress(id: 'planetarium-btn-travel' | 'planetarium-btn-observatory'): boolean {
+    const tutorial = this.tutorial;
+    const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
+    if (!tutorial || !beat || tutorial.phase !== 'staging') return false;
+    const ring = beat.spotlight?.target;
+    if (ring?.kind === 'chip' && ring.id === id && beat.perform.kind === 'open-deck') {
+      if (!this.tutorialBeatWaiting()) return true;
+      tutorial.userActed = true;
+      this.openDeck(beat.perform.verb);
+      this.revealDeckRow(beat.perform.reveal);
+      return true;
+    }
+    return ring?.kind === 'deck-row' && beat.await === true;
+  }
+
+  /** The eclipse arrow is spent from the moment its beat's jump has landed on
+   *  the showcase event until the stop has finished staging: a second press
+   *  (a double tap, whose second half lands after the runner has moved on)
+   *  would jump past the event the stop is built on. */
+  private tutorialJumpLanded(): boolean {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.phase !== 'staging' || !tutorial.beats || !tutorial.beatRun) return false;
+    const jumpIndex = tutorial.beats.findIndex((b) => b.perform.kind === 'jump');
+    if (jumpIndex < 0) return false;
+    const current = tutorial.beatRun.index;
+    if (current > jumpIndex) return true;
+    const beat = tutorial.beats[current];
+    return current === jumpIndex && beat !== undefined && this.tutorialPerformed(beat);
+  }
+
+  /** The window's own action: the surface view, aimed where the window says
+   *  (the parent from a moon with nothing overhead; the event when one is
+   *  on). The eclipse's clock sits at the event's first contact, where the
+   *  engine may not yet call it live — then the view is aimed at the event's
+   *  sky directly, as a jump does. Idempotent: a view already up stays up. */
+  private performTutorialLookUp(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || this.landedView === 'surface') return;
+    this.tutorialSpotlight.hide();
+    const event = TUTORIAL_STEPS[tutorial.stepIndex].stage === 'eclipse' ? tutorial.eclipse : null;
+    const landedInfo = this.surfaceLandedInfo();
+    if (event && landedInfo && !this.liveShadowEventNow()) {
+      this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', { suppressHint: true });
+      this.dismissSheetAfterDoorEntry();
+    } else {
+      this.toggleSurfaceView();
+    }
   }
 
   /** The user's own press on the awaited row has committed: their press is
@@ -11280,20 +11423,7 @@ export class PlanetariumMode {
         } else if (perform.kind === 'open-panel') {
           this.openObservatoryPanel();
         } else if (perform.kind === 'look-up') {
-          // The window's own action: the surface view, aimed where the
-          // window says (the parent from a moon with nothing overhead; the
-          // event when one is on). The eclipse's clock sits at the event's
-          // first contact, where the engine may not yet call it live — then
-          // the view is aimed at the event's sky directly, as a jump does.
-          this.tutorialSpotlight.hide();
-          const event = TUTORIAL_STEPS[tutorial.stepIndex].stage === 'eclipse' ? tutorial.eclipse : null;
-          const landedInfo = this.surfaceLandedInfo();
-          if (event && landedInfo && !this.liveShadowEventNow()) {
-            this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', { suppressHint: true });
-            this.dismissSheetAfterDoorEntry();
-          } else {
-            this.toggleSurfaceView();
-          }
+          this.performTutorialLookUp();
         }
         break;
       }
@@ -11336,7 +11466,9 @@ export class PlanetariumMode {
 
   /** A transient overlay has the screen: the hold waits for it to close. */
   private tutorialBeatsPaused(): boolean {
+    // A hold counts visible time, and nothing under an arrival veil is visible.
     return (
+      this.arrivalVeilUp() ||
       this.menuPanel.isOpen() ||
       this.isHelpOpen() ||
       this.isToolsMenuOpen() ||
@@ -11359,7 +11491,12 @@ export class PlanetariumMode {
       case 'arrive':
         return tutorial.arrived && !this.arrivalInFlight && !this.arrivalVeilUp();
       case 'rate-ladder':
-        return tutorial.ladderDone;
+        // Climbed by the tour, or put on the top rung by the user's own
+        // drag or tap on the rail (the beat asks for exactly that detent).
+        return (
+          tutorial.ladderDone ||
+          (!this.timeState.paused && Math.abs(this.timeState.rate - perform.rates[perform.rates.length - 1]) < 1e-9)
+        );
       case 'jump': {
         // The panel's jump parks the clock OBSERVATORY_JUMP_LEAD_MS before
         // the found event's peak at realtime. Only the showcase eclipse
@@ -11416,7 +11553,14 @@ export class PlanetariumMode {
     const row = this.isDeckOpen() ? this.findDeckRow(perform.name) : null;
     if (row && !this.arrivalVeilUp()) {
       this.tutorialVeilNote = veilNote ?? null;
-      row.click();
+      // The runner is in its perform stage here, where a press on the row
+      // is otherwise spent (commitDeckPick): this one is the tour's own.
+      this.tutorialOwnPress = true;
+      try {
+        row.click();
+      } finally {
+        this.tutorialOwnPress = false;
+      }
       return;
     }
     this.closeDeck();
@@ -11463,7 +11607,7 @@ export class PlanetariumMode {
         then();
       } finally {
         // Landed even if the scene work threw (arriveAtSystem logs it): the
-        // stop falls through to its card rather than holding "Arriving…".
+        // stop falls through to its card rather than holding Next forever.
         live.arrived = true;
         this.renderTutorialCard();
       }
@@ -11847,6 +11991,13 @@ export class PlanetariumMode {
       }
       return;
     }
+    // A Back pressed under an arrival veil waits here for the cover to clear.
+    if (tutorial.stageRequest !== null && !this.arrivalVeilUp()) {
+      const index = tutorial.stageRequest;
+      tutorial.stageRequest = null;
+      this.stageTutorialStep(index);
+      return;
+    }
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
     if (tutorial.phase === 'staging' && tutorial.beatRun) this.runTutorialBeats();
     // The runner may have ended the tutorial or re-staged it: read it again.
@@ -11881,7 +12032,7 @@ export class PlanetariumMode {
     // the card). One-shot — a user who scrubs the rate afterwards is left
     // alone. Gated past 'staging' so a pre-stage clock already sitting in 2027+
     // can't trip it before the staging has even set the time. The time
-    // controls stay live under "Watching…": a clock moved by hand out of
+    // controls stay live while Next is held: a clock moved by hand out of
     // the approach (Now, a date, a reverse run) frees Next without the
     // climax — totality is read only inside the six minutes of local totality
     // (eclipseClockPhase), so the climax card never shows over another sky.
@@ -12734,11 +12885,13 @@ export class PlanetariumMode {
     // The deck — cluster buttons open their tab; commits happen on the rows.
     document.getElementById('planetarium-btn-travel')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.tutorialChipPress('planetarium-btn-travel')) return;
       // No takeoff here: the tap that commits a destination handles it.
       this.toggleDeck('travel');
     });
     document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.tutorialChipPress('planetarium-btn-observatory')) return;
       this.observatoryAction();
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
@@ -15353,10 +15506,21 @@ export class PlanetariumMode {
     if (!verb) return;
     const fromPanel = this.deckOpenedFromPanel;
     this.closeDeck();
-    // A you-try beat waiting on this very row: the user's tap is the beat's
+    // A waiting beat ringing this very row: the user's tap is the beat's
     // perform. Recognised at its start, with the tour's caption on its veil;
     // a refused commit (a rival arrival's veil) leaves the beat waiting.
-    const awaited = verb === 'observe' ? this.tutorialAwaitedObserve(target) : null;
+    const awaited = this.tutorialAwaitedRow(verb, target);
+    // The press already under way (Show me's 180 ms, or their own landing):
+    // a second tap on the row would commit a second time. The tour's own
+    // click on the row, made from the perform stage, is the press itself.
+    if (awaited && !this.tutorialBeatWaiting() && !this.tutorialOwnPress) return;
+    if (awaited?.perform.kind === 'arrive') {
+      // The Saturn row: the tour's own composed arrival (the ship model and
+      // the labels out, the rings fitted into the free area), not the plain
+      // teleport the row would make — the stop must land in its own scene.
+      this.noteTutorialUserArrival(awaited);
+      return;
+    }
     if (awaited) this.tutorialVeilNote = awaited.veilNote ?? null;
     const accepted = this.commitBodyPick(verb, target, { fromPanel });
     if (awaited) {
@@ -18668,9 +18832,11 @@ export class PlanetariumMode {
             stage: tutorial.beatRun.stage,
             index: tutorial.beatRun.index,
             hasSpotlight: tutorial.beats[tutorial.beatRun.index]?.spotlight != null,
+            await: tutorial.beats[tutorial.beatRun.index]?.await ?? null,
           }
         : null,
       userActed: tutorial?.userActed ?? false,
+      stageRequest: tutorial?.stageRequest ?? null,
       arrived: tutorial?.arrived ?? false,
       panning: tutorial?.pan !== null && tutorial?.pan !== undefined,
       cameraOwned: tutorial?.cameraOwned ?? false,

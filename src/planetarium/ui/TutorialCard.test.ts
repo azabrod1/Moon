@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  TUTORIAL_ARRIVING_LABEL,
   TUTORIAL_SHOW_ME_LABEL,
   tutorialBodyFor,
   tutorialBodySegments,
@@ -23,27 +22,39 @@ describe('tutorialCardModel', () => {
     expect(m.kicker).toBe('Saturn');
   });
 
-  it('primary waits for ready and says why; ghost stays live until the restore runs', () => {
+  it('primary is held, under its own label, until ready; ghost stays live until the restore runs', () => {
     for (const phase of ['staging', 'settling'] as TutorialPhase[]) {
       const m = model('saturn', phase);
-      expect(m.primary.disabled).toBe(true);
-      expect(m.primary.busy).toBe(true);
-      expect(m.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
+      expect(m.primary).toEqual({ label: 'Next: the Moon', action: 'advance', disabled: true });
       expect(m.ghost?.disabled).toBe(false);
     }
     const ready = model('saturn', 'ready');
-    expect(ready.primary).toEqual({ label: 'Next: the Moon', action: 'advance', disabled: false, busy: false });
+    expect(ready.primary).toEqual({ label: 'Next: the Moon', action: 'advance', disabled: false });
     const ending = model('saturn', 'ending');
-    expect(ending.primary.disabled).toBe(true);
-    expect(ending.primary.busy).toBe(false);
-    expect(ending.primary.label).toBe('Next: the Moon');
+    expect(ending.primary).toEqual({ label: 'Next: the Moon', action: 'advance', disabled: true });
     expect(ending.ghost?.disabled).toBe(true);
   });
 
-  it('the card-only wrap is never busy: its label shows at once', () => {
-    const m = model('wrap', 'staging');
-    expect(m.primary.busy).toBe(false);
-    expect(m.primary.label).toBe(stepById('wrap').primaryLabel);
+  it('the primary reads the step’s own label in every phase and at every beat that does not wait', () => {
+    // No status in the button's place: it never claims an arrival that has
+    // landed, and it keeps one width while the stop plays.
+    TUTORIAL_STEPS.forEach((step, index) => {
+      for (const phase of ['staging', 'settling', 'ready', 'ending'] as TutorialPhase[]) {
+        expect(tutorialCardModel(step, index, phase).primary.label).toBe(step.primaryLabel);
+      }
+      for (const beat of step.beats ?? []) {
+        const label = tutorialCardModel(step, index, 'staging', { beat }).primary.label;
+        expect(label).toBe(beat.await ? TUTORIAL_SHOW_ME_LABEL : step.primaryLabel);
+      }
+    });
+  });
+
+  it('Back is live from a stop’s first frame — only the restore running dims it — and absent on the first stop', () => {
+    for (const phase of ['staging', 'settling', 'ready'] as TutorialPhase[]) {
+      expect(model('moon', phase).back).toEqual({ label: '‹ Back', disabled: false });
+      expect(model('saturn', phase).back).toBeNull();
+    }
+    expect(model('moon', 'ending').back).toEqual({ label: '‹ Back', disabled: true });
   });
 
   it('the body is the staging copy while the beats play, the settled copy from the arrival on', () => {
@@ -60,27 +71,34 @@ describe('tutorialCardModel', () => {
     expect(model('saturn', 'ready').body).toBe(saturn.body);
   });
 
-  it('a you-try beat makes the primary a live Show me, and a beat with its own copy shows it', () => {
+  it('a waiting beat makes the primary Show me, dimmed through the guard, live from the wait', () => {
     const moon = stepById('moon');
     const [chip, row, picture] = moon.beats!;
     const waiting = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row });
-    expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false, busy: false });
-    expect(waiting.body).toBe(moon.bodyDuring);
-    for (const beatStage of ['enter', 'hold', 'await'] as const) {
-      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage }).primary.action).toBe('show-me');
+    expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: false });
+    expect(waiting.body).toBe(row.body);
+    const first = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
+    expect(first.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: false });
+    expect(first.body).toBe(moon.bodyDuring);
+    for (const beat of [chip, row]) {
+      for (const beatStage of ['enter', 'hold'] as const) {
+        const guarded = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage }).primary;
+        expect(guarded.action).toBe('proceed');
+        expect(guarded.disabled).toBe(true);
+      }
+      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage: 'await' }).primary.disabled).toBe(false);
     }
-    // Once the press or the landing is under way, Show me has nothing left to offer.
-    for (const beatStage of ['press', 'perform'] as const) {
-      const pressed = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage });
-      expect(pressed.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
-      expect(pressed.primary.disabled).toBe(true);
+    // Once the press or the landing is under way, the wait has nothing left
+    // to offer: the primary is Next again, held.
+    const held = { label: moon.primaryLabel, action: 'advance', disabled: true };
+    for (const beat of [chip, row]) {
+      for (const beatStage of ['press', 'perform'] as const) {
+        expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage }).primary).toEqual(held);
+      }
     }
-    const ringing = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
-    expect(ringing.primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
-    expect(ringing.primary.disabled).toBe(true);
     const landed = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: picture });
     expect(landed.body).toBe(picture.body);
-    expect(landed.primary.busy).toBe(true);
+    expect(landed.primary).toEqual(held);
     // Once settled the beat no longer matters: the lesson and Next.
     const settled = tutorialCardModel(moon, indexOf('moon'), 'ready', { beat: row });
     expect(settled.body).toBe(moon.body);
@@ -89,19 +107,20 @@ describe('tutorialCardModel', () => {
     expect(tutorialBodyFor(moon, 'staging', null)).toBe(moon.bodyDuring);
   });
 
-  it('the eclipse holds as Watching… while it settles, and totality swaps in its own card', () => {
+  it('the eclipse holds Next through the approach, and totality swaps in its own card', () => {
     const eclipse = stepById('eclipse');
     const i = indexOf('eclipse');
-    expect(tutorialCardModel(eclipse, i, 'staging').primary.label).toBe(TUTORIAL_ARRIVING_LABEL);
+    const held = { label: 'Next: wrap up', action: 'advance', disabled: true };
+    expect(tutorialCardModel(eclipse, i, 'staging').primary).toEqual(held);
     const approaching = tutorialCardModel(eclipse, i, 'settling', { kicker: 'From Earth · peak in 1h 12m' });
-    expect(approaching.primary).toEqual({ label: 'Watching…', action: 'advance', disabled: true, busy: true });
+    expect(approaching.primary).toEqual(held);
     expect(approaching.body).toBe(eclipse.body);
     expect(approaching.kicker).toBe('From Earth · peak in 1h 12m');
     const totality = tutorialCardModel(eclipse, i, 'ready', { totality: true });
     expect(totality.title).toBe('Totality');
     expect(totality.kicker).toBe(eclipse.totality!.kicker);
     expect(totality.body).toBe(eclipse.totality!.body);
-    expect(totality.primary).toEqual({ label: 'Next: wrap up', action: 'advance', disabled: false, busy: false });
+    expect(totality.primary).toEqual({ label: 'Next: wrap up', action: 'advance', disabled: false });
     // A step without a climax ignores the flag.
     expect(tutorialCardModel(stepById('saturn'), indexOf('saturn'), 'ready', { totality: true }).title).toBe('Teleport');
   });
@@ -116,7 +135,7 @@ describe('tutorialCardModel', () => {
 
   it('the wrap card always takes you back: primary restores, no skip button, every stop done, three chips once ready', () => {
     const m = model('wrap', 'ready');
-    expect(m.primary).toEqual({ label: 'Back where I was', action: 'return', disabled: false, busy: false });
+    expect(m.primary).toEqual({ label: 'Back where I was', action: 'return', disabled: false });
     expect(m.ghost).toBeNull();
     expect(m.progress).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
     expect(m.chips.map((c) => c.id)).toEqual(['visit-mars', 'earth-from-moon', 'follow-voyager']);
@@ -129,14 +148,6 @@ describe('tutorialCardModel', () => {
       const m = model(step.id, 'ready');
       expect(m.primary.action).toBe('advance');
       expect(m.ghost).not.toBeNull();
-    }
-  });
-
-  it('Back appears from the Moon card on and waits for ready like Next', () => {
-    expect(model('saturn', 'ready').back).toBeNull();
-    for (const id of ['moon', 'timelapse', 'eclipse', 'wrap'] as const) {
-      expect(model(id, 'ready').back).toEqual({ label: '‹ Back', disabled: false });
-      expect(model(id, 'settling').back?.disabled).toBe(true);
     }
   });
 

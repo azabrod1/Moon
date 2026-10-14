@@ -1750,6 +1750,10 @@
     .tutorial-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
     /* Back sits apart on the left — the forward cluster keeps the right edge. */
     #tutorial-back { margin-right: auto; padding-left: 10px; padding-right: 10px; }
+    /* The primary's label changes as a stop plays (Continue, Show me, Next: …);
+       a floor the width of "Next: the Moon" keeps the short ones from moving
+       Skip between one and the next. */
+    #tutorial-primary { min-width: 116px; }
     .tutorial-btn {
       padding: 8px 14px;
       border: 1px solid var(--panel-border);

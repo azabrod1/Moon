@@ -2406,7 +2406,7 @@ export class PlanetariumMode {
     () => this.backTutorial(),
     () => this.stopTutorial({ restore: true, toast: 'skip' }),
     () => this.stopTutorial({ restore: true, toast: 'return', completed: true }),
-    () => this.tutorialShowMe(),
+    () => this.tutorialProceed(),
     (id) => this.tutorialChip(id),
   );
   /** The dimming mask, ring and coach bubble the beats point with. */
@@ -2543,9 +2543,13 @@ export class PlanetariumMode {
     beatRun: BeatRunState | null;
     beatFrameMs: number;
     /** The user pressed the awaited control themselves (set where the deck
-     *  commits, reset on every beat); "Show me" was pressed (one frame). */
+     *  commits, reset on every beat); the card's Continue or Show me was
+     *  pressed (one frame). */
     userActed: boolean;
-    showMe: boolean;
+    proceed: boolean;
+    /** A Back pressed while an arrival is in flight: the step to stage once
+     *  it lands (a staging's own arrival would be dropped behind it). */
+    stageRequest: number | null;
     /** The stop's arrival has landed (the 'arrive' perform's guard). */
     arrived: boolean;
     /** The rate ladder has been climbed, or left where the user put the clock. */
@@ -10712,7 +10716,8 @@ export class PlanetariumMode {
       beatRun: null,
       beatFrameMs: performance.now(),
       userActed: false,
-      showMe: false,
+      proceed: false,
+      stageRequest: null,
       arrived: false,
       ladderDone: false,
       overrides: { hideShip: false, hideLabels: false, declutter: false },
@@ -10738,12 +10743,22 @@ export class PlanetariumMode {
   }
 
   /** Back re-stages the previous stop (stagings are absolute, so this is just
-   *  the index math). The card hides Back on the first stop — see
+   *  the index math). Live from a stop's first frame, like skip: a stop seen
+   *  enough of is left mid-demonstration, and stageTutorialStep drops
+   *  everything it owned. The one wait is an arrival in flight (a teleport,
+   *  the Moon landing under its veil): the previous stop's own arrival would
+   *  be dropped behind it, so the request holds until it lands
+   *  (updateTutorial). The card hides Back on the first stop — see
    *  tutorialCardModel — but guard here too against a stale click. */
   private backTutorial(): void {
     const tutorial = this.tutorial;
-    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 1) return;
-    this.stageTutorialStep(tutorial.stepIndex - 1);
+    if (!tutorial || tutorial.phase === 'ending' || tutorial.stepIndex < 1) return;
+    const index = tutorial.stepIndex - 1;
+    if (this.arrivalInFlight) {
+      tutorial.stageRequest = index;
+      return;
+    }
+    this.stageTutorialStep(index);
   }
 
   /**
@@ -10948,6 +10963,7 @@ export class PlanetariumMode {
     if (!tutorial) return;
     tutorial.stepIndex = index;
     tutorial.phase = 'staging';
+    tutorial.stageRequest = null;
     tutorial.totalityReached = false;
     tutorial.totalityWaived = false;
     tutorial.climaxShown = false;
@@ -10965,7 +10981,7 @@ export class PlanetariumMode {
     tutorial.beats = null;
     tutorial.beatRun = null;
     tutorial.userActed = false;
-    tutorial.showMe = false;
+    tutorial.proceed = false;
     tutorial.arrived = false;
     tutorial.ladderDone = false;
     this.tutorialVeilNote = null;
@@ -11115,9 +11131,9 @@ export class PlanetariumMode {
       targetPresent: target !== null,
       performed: beat ? this.tutorialPerformed(beat) : true,
       userActed: tutorial.userActed,
-      showMe: tutorial.showMe,
+      proceed: tutorial.proceed,
     });
-    tutorial.showMe = false; // one-shot
+    tutorial.proceed = false; // one-shot
     if (state.index !== previous.index) tutorial.userActed = false; // per beat
     tutorial.beatRun = state;
     const generation = tutorial.generation;
@@ -11173,20 +11189,39 @@ export class PlanetariumMode {
     window.setTimeout(() => this.afterArrivalIdle(action, deadlineMs), 120);
   }
 
-  /** The card's "Show me": the runner presses the awaited control on the next frame. */
-  private tutorialShowMe(): void {
+  /** The card's Continue or Show me: the runner presses the waiting beat's
+   *  control on the next frame. */
+  private tutorialProceed(): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.phase !== 'staging' || !tutorial.beatRun) return;
-    tutorial.showMe = true;
+    tutorial.proceed = true;
   }
 
-  /** The beat a deck commit to `target` would satisfy, if a you-try on that
-   *  body is current. */
-  private tutorialAwaitedObserve(target: NonNullable<LandedTarget>): TutorialBeat | null {
+  /** The beat a deck commit to `target` on `verb` would satisfy, if a waiting
+   *  beat rings that very row right now. */
+  private tutorialAwaitedRow(verb: DeckVerb, target: NonNullable<LandedTarget>): TutorialBeat | null {
     const tutorial = this.tutorial;
     const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
-    if (!tutorial || !beat || beat.perform.kind !== 'observe') return null;
-    return beat.await && beat.perform.name === target.name && tutorial.phase === 'staging' ? beat : null;
+    if (!tutorial || !beat || !beat.await || tutorial.phase !== 'staging') return null;
+    if (verb === 'observe') {
+      return beat.perform.kind === 'observe' && beat.perform.name === target.name ? beat : null;
+    }
+    if (verb !== 'travel') return null;
+    const ring = beat.spotlight?.target;
+    return beat.perform.kind === 'arrive' && ring?.kind === 'deck-row' && ring.verb === 'travel' && ring.name === target.name
+      ? beat
+      : null;
+  }
+
+  /** The user's own tap on the awaited travel row: the tour's arrival runs in
+   *  its place, and the beat waits on its landing as it would on its own. */
+  private noteTutorialUserArrival(beat: TutorialBeat): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.userActed = true;
+    tutorial.everStaged = true;
+    this.tutorialSpotlight.hide();
+    this.performTutorialArrival(tutorial.generation, beat.veilNote);
   }
 
   /** The user's own press on the awaited row has committed: their press is
@@ -11845,6 +11880,13 @@ export class PlanetariumMode {
         tutorial.endRequest = null;
         this.executeTutorialStop(request.restore, false, request.toast, request.completed, request.after);
       }
+      return;
+    }
+    // A Back pressed under an in-flight arrival waits here for it to land.
+    if (tutorial.stageRequest !== null && !this.arrivalInFlight) {
+      const index = tutorial.stageRequest;
+      tutorial.stageRequest = null;
+      this.stageTutorialStep(index);
       return;
     }
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
@@ -15353,10 +15395,17 @@ export class PlanetariumMode {
     if (!verb) return;
     const fromPanel = this.deckOpenedFromPanel;
     this.closeDeck();
-    // A you-try beat waiting on this very row: the user's tap is the beat's
+    // A waiting beat ringing this very row: the user's tap is the beat's
     // perform. Recognised at its start, with the tour's caption on its veil;
     // a refused commit (a rival arrival's veil) leaves the beat waiting.
-    const awaited = verb === 'observe' ? this.tutorialAwaitedObserve(target) : null;
+    const awaited = this.tutorialAwaitedRow(verb, target);
+    if (awaited?.perform.kind === 'arrive') {
+      // The Saturn row: the tour's own composed arrival (the ship model and
+      // the labels out, the rings fitted into the free area), not the plain
+      // teleport the row would make — the stop must land in its own scene.
+      this.noteTutorialUserArrival(awaited);
+      return;
+    }
     if (awaited) this.tutorialVeilNote = awaited.veilNote ?? null;
     const accepted = this.commitBodyPick(verb, target, { fromPanel });
     if (awaited) {
@@ -18668,9 +18717,11 @@ export class PlanetariumMode {
             stage: tutorial.beatRun.stage,
             index: tutorial.beatRun.index,
             hasSpotlight: tutorial.beats[tutorial.beatRun.index]?.spotlight != null,
+            await: tutorial.beats[tutorial.beatRun.index]?.await ?? null,
           }
         : null,
       userActed: tutorial?.userActed ?? false,
+      stageRequest: tutorial?.stageRequest ?? null,
       arrived: tutorial?.arrived ?? false,
       panning: tutorial?.pan !== null && tutorial?.pan !== undefined,
       cameraOwned: tutorial?.cameraOwned ?? false,

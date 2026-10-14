@@ -3,7 +3,10 @@
  * the app's showcase scenes (Saturn's rings, standing on the Moon, time-lapse,
  * a total solar eclipse). Choosing the tour is the decision, so every entry
  * stages the first stop at once: there is no welcome card, and the first
- * stop's staging copy carries the one-line introduction. DOM-free so the step
+ * stop's staging copy carries the one-line introduction. The pace is the
+ * user's: each stop's demonstration pauses at every ringed control for a
+ * Continue (or the user's own press) before the tour presses it, and Back
+ * is live from a stop's first frame. DOM-free so the step
  * table, the beats, the phase machine, and the restore/settle decisions stay
  * unit-testable; PlanetariumMode owns the scene staging and the card widget.
  */
@@ -119,11 +122,15 @@ export interface TutorialBeat {
   minHoldMs: number;
   /** Caption on the arrival veil, shown from its first frame, when `perform` raises one. */
   veilNote?: string;
-  /** "You try": after its hold the beat waits, without a deadline, for the
-   *  user's own press on the control (recognised when it starts) — or for
-   *  "Show me", which the card's primary reads meanwhile and which presses
-   *  the control for them. Both end in the same perform and the same guard. */
-  await?: boolean;
+  /** A beat that waits for the user after its hold, without a deadline: the
+   *  tour sets the pace up to the ring, the user from there. 'pause': the
+   *  card's primary reads "Continue", and the tour presses the control on
+   *  it — a ringed control is a scene, read out at the user's own speed.
+   *  'you-try': the primary reads "Show me", and the control is theirs to
+   *  press (recognised when it starts). Either way the user's own press on
+   *  the control ends the wait, and the beat ends only once its perform has
+   *  landed. */
+  await?: 'pause' | 'you-try';
   /** Card copy while this beat is current, over the step's staging copy. */
   body?: string;
 }
@@ -131,8 +138,10 @@ export interface TutorialBeat {
 /** The visible press on the real control: scale and the chip's own on-colour. */
 export const TUTORIAL_PRESS_MS = 180;
 
-/** A beat's hold is a minimum readable time, never a deadline. */
-export const TUTORIAL_BEAT_HOLD_MS = 1400;
+/** A waiting beat's hold before its Continue or Show me goes live: a tap
+ *  guard, not a reading time — the primary was Next or Continue a moment
+ *  ago, under the same thumb, and a double tap must not skip a scene. */
+export const TUTORIAL_PAUSE_GUARD_MS = 700;
 
 const MOON_LANDED_BODY =
   'You’re standing on the Moon. The panel reads this sky: phases, distances, and what happens next.';
@@ -142,17 +151,19 @@ const MOON_BEATS: readonly TutorialBeat[] = [
     id: 'observatory-chip',
     spotlight: { target: { kind: 'chip', id: 'planetarium-btn-observatory' }, label: 'Observatory', key: 'O' },
     press: true,
+    await: 'pause',
     perform: { kind: 'open-deck', verb: 'observe', reveal: 'Moon' },
-    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
   },
   {
     id: 'moon-row',
     spotlight: { target: { kind: 'deck-row', name: 'Moon', verb: 'observe' }, label: 'Tap the Moon' },
     press: true,
-    await: true,
+    await: 'you-try',
     perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },
-    minHoldMs: 0,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     veilNote: 'Landing on the Moon…',
+    body: 'The {observatory} Observatory lands you on a world. Tap the Moon.',
   },
   // Picture first: two seconds of the Moon from orbit, then the panel.
   {
@@ -167,8 +178,9 @@ const MOON_BEATS: readonly TutorialBeat[] = [
     id: 'look-up',
     spotlight: { target: { kind: 'panel-window' }, label: 'Look up' },
     press: true,
+    await: 'pause',
     perform: { kind: 'look-up' },
-    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     body: MOON_LANDED_BODY,
   },
 ];
@@ -183,8 +195,9 @@ const JUPITER_BEATS: readonly TutorialBeat[] = [
     id: 'time-rail',
     spotlight: { target: { kind: 'time-rail' }, label: 'Time' },
     press: false,
+    await: 'pause',
     perform: { kind: 'rate-ladder', rates: TUTORIAL_RATE_LADDER, stepMs: 700 },
-    minHoldMs: 1200,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
   },
 ];
 
@@ -196,16 +209,18 @@ const ECLIPSE_BEATS: readonly TutorialBeat[] = [
     id: 'next-solar',
     spotlight: { target: { kind: 'panel-step', id: 'observatory-next-solar' }, label: 'Next eclipse' },
     press: true,
+    await: 'pause',
     perform: { kind: 'jump', type: 'solar-eclipse', direction: 1 },
-    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     body: 'From any world, the panel lists the eclipses to come. The arrow jumps to the next one.',
   },
+  // Narration between two presses: held long enough to read its one line.
   {
     id: 'jumped',
     spotlight: null,
     press: false,
     perform: { kind: 'none' },
-    minHoldMs: 2600,
+    minHoldMs: 3600,
     body: 'That parks you three minutes before the peak, on 2 August 2027.',
   },
   { id: 'rewind', spotlight: null, press: false, perform: { kind: 'rewind' }, minHoldMs: 400, body: ECLIPSE_REWIND_BODY },
@@ -213,8 +228,9 @@ const ECLIPSE_BEATS: readonly TutorialBeat[] = [
     id: 'look-up',
     spotlight: { target: { kind: 'panel-window' }, label: 'Look up' },
     press: true,
+    await: 'pause',
     perform: { kind: 'look-up' },
-    minHoldMs: 1800,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     body: ECLIPSE_REWIND_BODY,
   },
   { id: 'approach', spotlight: null, press: false, perform: { kind: 'approach', rate: 1200 }, minHoldMs: 0 },
@@ -225,15 +241,17 @@ const SATURN_BEATS: readonly TutorialBeat[] = [
     id: 'teleport-chip',
     spotlight: { target: { kind: 'chip', id: 'planetarium-btn-travel' }, label: 'Teleport', key: 'T' },
     press: true,
+    await: 'pause',
     perform: { kind: 'open-deck', verb: 'travel', reveal: 'Saturn' },
-    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
   },
   {
     id: 'saturn-row',
     spotlight: { target: { kind: 'deck-row', name: 'Saturn', verb: 'travel' }, label: 'Tap any planet or moon' },
     press: true,
+    await: 'pause',
     perform: { kind: 'arrive' },
-    minHoldMs: TUTORIAL_BEAT_HOLD_MS,
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     veilNote: 'Teleporting to Saturn…',
   },
 ];
@@ -269,7 +287,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'moon',
     title: 'Stand on a world',
     kicker: 'The Moon',
-    bodyDuring: 'The {observatory} Observatory lands you on a world. Tap the Moon.',
+    bodyDuring: 'The {observatory} Observatory lands you on a world.',
     // The kicker is live once the view is up: Earth's phase as the panel reads it.
     body: 'Look up, and there is Earth.',
     beats: MOON_BEATS,
@@ -375,8 +393,9 @@ export interface BeatSignals {
   /** The user pressed the awaited control themselves (their press is the
    *  perform, already under way). Read on await beats only. */
   userActed: boolean;
-  /** "Show me" was pressed this frame (one-shot). Read in the await stage only. */
-  showMe: boolean;
+  /** The card's Continue or Show me was pressed this frame (one-shot). Read
+   *  in the await stage only. */
+  proceed: boolean;
 }
 
 export type BeatEffect =
@@ -391,10 +410,11 @@ export type BeatEffect =
  * apply them. A beat ends only when its hold has passed AND its perform has
  * landed, never on the hold alone; a control that is not on screen skips the
  * spotlight and the press but keeps the hold (the card narrates on) and still
- * performs, so a missing element can never strand the stop. A you-try beat
- * waits after its hold for the user's own press (recognised at its start,
- * even mid-hold) or for "Show me"; both end in the same perform and the same
- * landed guard.
+ * performs, so a missing element can never strand the stop. A waiting beat
+ * (await) holds after its hold for the user: their own press on the control
+ * (recognised at its start, even mid-hold), the outcome already holding
+ * (they got there first), or the card's Continue / Show me, which ends in
+ * the runner's own press and perform. All end in the same landed guard.
  */
 export function stepBeatRun(
   beats: readonly TutorialBeat[],
@@ -432,8 +452,9 @@ export function stepBeatRun(
       next.heldMs = 0;
       break;
     case 'hold':
-      if (beat.await && signals.userActed) {
-        // Their press is the perform, already under way: wait for it to land.
+      if (beat.await && (signals.userActed || signals.performed)) {
+        // Their press is the perform, already under way (or landed): wait
+        // for it, with no press or perform of the runner's own.
         next.stage = 'perform';
         break;
       }
@@ -451,9 +472,9 @@ export function stepBeatRun(
       }
       break;
     case 'await':
-      if (signals.userActed) {
+      if (signals.userActed || signals.performed) {
         next.stage = 'perform';
-      } else if (signals.showMe) {
+      } else if (signals.proceed) {
         if (beat.press && beat.spotlight && signals.targetPresent) {
           next.stage = 'press';
           next.pressedMs = 0;
@@ -587,9 +608,11 @@ export type TutorialTransitionEvent = 'next' | 'back' | 'staged' | 'settled' | '
  *  (a timer or arrival callback landing late) can never move the phase backwards. */
 export function tutorialTransition(phase: TutorialPhase, event: TutorialTransitionEvent): TutorialPhase {
   switch (event) {
-    case 'next':
-    case 'back': // both directions re-stage; stagings are absolute, so which step is the driver's index math
+    case 'next': // held until the stop is ready
       return phase === 'ready' ? 'staging' : phase;
+    case 'back': // live from a stop's first frame, like skip: a stop seen enough of is left
+      // mid-demonstration (stagings are absolute, so which step is the driver's index math)
+      return phase === 'ending' ? phase : 'staging';
     case 'staged':
       return phase === 'staging' ? 'settling' : phase;
     case 'settled':

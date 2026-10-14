@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  TUTORIAL_CONTINUE_LABEL,
   TUTORIAL_SHOW_ME_LABEL,
   tutorialBodyFor,
   tutorialBodySegments,
@@ -35,7 +36,7 @@ describe('tutorialCardModel', () => {
     expect(ending.ghost?.disabled).toBe(true);
   });
 
-  it('outside Show me, every stop’s primary reads its own label in every phase and beat', () => {
+  it('the primary reads the step’s own label in every phase and at every beat that does not wait', () => {
     // No status in the button's place: it never claims an arrival that has
     // landed, and it keeps one width while the stop plays.
     TUTORIAL_STEPS.forEach((step, index) => {
@@ -43,10 +44,20 @@ describe('tutorialCardModel', () => {
         expect(tutorialCardModel(step, index, phase).primary.label).toBe(step.primaryLabel);
       }
       for (const beat of step.beats ?? []) {
-        if (beat.await) continue;
-        expect(tutorialCardModel(step, index, 'staging', { beat }).primary.label).toBe(step.primaryLabel);
+        const label = tutorialCardModel(step, index, 'staging', { beat }).primary.label;
+        if (beat.await === 'pause') expect(label).toBe(TUTORIAL_CONTINUE_LABEL);
+        else if (beat.await === 'you-try') expect(label).toBe(TUTORIAL_SHOW_ME_LABEL);
+        else expect(label).toBe(step.primaryLabel);
       }
     });
+  });
+
+  it('Back is live from a stop’s first frame — only the restore running dims it — and absent on the first stop', () => {
+    for (const phase of ['staging', 'settling', 'ready'] as TutorialPhase[]) {
+      expect(model('moon', phase).back).toEqual({ label: '‹ Back', disabled: false });
+      expect(model('saturn', phase).back).toBeNull();
+    }
+    expect(model('moon', 'ending').back).toEqual({ label: '‹ Back', disabled: true });
   });
 
   it('the body is the staging copy while the beats play, the settled copy from the arrival on', () => {
@@ -63,22 +74,31 @@ describe('tutorialCardModel', () => {
     expect(model('saturn', 'ready').body).toBe(saturn.body);
   });
 
-  it('a you-try beat makes the primary a live Show me, and a beat with its own copy shows it', () => {
+  it('a waiting beat makes the primary its Continue or Show me, dimmed through the guard, live from the wait', () => {
     const moon = stepById('moon');
     const [chip, row, picture] = moon.beats!;
     const waiting = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row });
-    expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'show-me', disabled: false });
-    expect(waiting.body).toBe(moon.bodyDuring);
-    for (const beatStage of ['enter', 'hold', 'await'] as const) {
-      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage }).primary.action).toBe('show-me');
+    expect(waiting.primary).toEqual({ label: TUTORIAL_SHOW_ME_LABEL, action: 'proceed', disabled: false });
+    expect(waiting.body).toBe(row.body);
+    const pausing = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip });
+    expect(pausing.primary).toEqual({ label: TUTORIAL_CONTINUE_LABEL, action: 'proceed', disabled: false });
+    expect(pausing.body).toBe(moon.bodyDuring);
+    for (const beat of [chip, row]) {
+      for (const beatStage of ['enter', 'hold'] as const) {
+        const guarded = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage }).primary;
+        expect(guarded.action).toBe('proceed');
+        expect(guarded.disabled).toBe(true);
+      }
+      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage: 'await' }).primary.disabled).toBe(false);
     }
-    // Once the press or the landing is under way, Show me has nothing left to
-    // offer: the primary is Next again, held.
+    // Once the press or the landing is under way, the wait has nothing left
+    // to offer: the primary is Next again, held.
     const held = { label: moon.primaryLabel, action: 'advance', disabled: true };
-    for (const beatStage of ['press', 'perform'] as const) {
-      expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: row, beatStage }).primary).toEqual(held);
+    for (const beat of [chip, row]) {
+      for (const beatStage of ['press', 'perform'] as const) {
+        expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat, beatStage }).primary).toEqual(held);
+      }
     }
-    expect(tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: chip }).primary).toEqual(held);
     const landed = tutorialCardModel(moon, indexOf('moon'), 'staging', { beat: picture });
     expect(landed.body).toBe(picture.body);
     expect(landed.primary).toEqual(held);
@@ -131,14 +151,6 @@ describe('tutorialCardModel', () => {
       const m = model(step.id, 'ready');
       expect(m.primary.action).toBe('advance');
       expect(m.ghost).not.toBeNull();
-    }
-  });
-
-  it('Back appears from the Moon card on and waits for ready like Next', () => {
-    expect(model('saturn', 'ready').back).toBeNull();
-    for (const id of ['moon', 'timelapse', 'eclipse', 'wrap'] as const) {
-      expect(model(id, 'ready').back).toEqual({ label: '‹ Back', disabled: false });
-      expect(model(id, 'settling').back?.disabled).toBe(true);
     }
   });
 

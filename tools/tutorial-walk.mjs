@@ -2,13 +2,19 @@
 // every beat and stop, and assert what each stop promises:
 //   - a beat's spotlight rings a control that is on screen, and its bubble and
 //     its cutout stay off the narrator card;
+//   - every ringed control waits for the user with Continue on the card (Show
+//     me on the Moon row): the phone presses the card each time, the desktop
+//     taps the real control at some — the Teleport chip, the Saturn row (which
+//     must still land in the tour's composed scene), the Moon row, Look up —
+//     and the beat goes on either way;
 //   - the Saturn stop composes its subject inside the free area between the
 //     chrome, with the ship model and the world labels out of the picture, a
 //     live kicker on the card and the settled copy once the scene is up;
-//   - the Moon stop waits for the user's own tap on the Moon row with "Show me"
-//     offered (the desktop taps the row, the phone presses Show me), lands
-//     quietly, opens the panel after the picture, presses Look up, and ends in
-//     surface view with Earth on screen and a live phase on the card;
+//   - the Moon stop lands quietly, opens the panel after the picture, presses
+//     Look up, and ends in surface view with Earth on screen and a live phase
+//     on the card;
+//   - Back is live mid-demonstration and re-stages the previous stop; pressed
+//     under the Moon landing's veil it waits for the landing, then re-stages;
 //   - Jupiter rings the time rail while the clock climbs three real detents to
 //     1 hr/s with the panel closed; the eclipse presses the panel's own
 //     next-solar arrow (parking three minutes before the 2027-08-02 peak),
@@ -134,6 +140,7 @@ try {
       count: text('tutorial-count'), title: text('tutorial-title'), kicker: text('tutorial-kicker'), body: text('tutorial-body'),
       back: text('tutorial-back'), ghost: text('tutorial-ghost'), primary: text('tutorial-primary'),
       primaryDisabled: primary?.disabled ?? null, dots,
+      backDisabled: document.getElementById('tutorial-back')?.disabled ?? null,
       primaryWidth: primary?.getBoundingClientRect().width ?? null,
       primaryAnimation: primary ? getComputedStyle(primary).animationName : null,
       rect: card && { x: card.x, y: card.y, w: card.width, h: card.height },
@@ -143,19 +150,26 @@ try {
   const recorded = (page) => page.evaluate(() => ({ veilNotes: [...window.__walk.veilNotes], presses: [...window.__walk.presses] }));
   const resetRecorder = (page) => page.evaluate(() => { window.__walk.veilNotes = []; window.__walk.presses = []; });
 
-  /** Wait for the stop to settle, screenshotting each new beat/stage on the way. */
+  /** Press the card's Continue / Show me for the waiting beat, after checking it is offered. */
+  const proceed = async (page, tag, stop, state) => {
+    const expected = state.beat.await === 'you-try' ? 'Show me' : 'Continue';
+    const card = await cardText(page);
+    check(card.primary === expected && card.primaryDisabled === false, `${tag} ${stop}/${state.beat.id}: the card offers ${expected} while it waits`, { primary: card.primary, disabled: card.primaryDisabled });
+    await page.click('#tutorial-primary');
+    note(`  acted: ${state.beat.id}: pressed ${expected}`);
+  };
+
+  /** Wait for the stop to settle, screenshotting each new beat/stage on the
+   *  way, and answering each waiting beat once: `act(state)` may take it (a
+   *  tap on the real control) and return true; else the card is pressed. */
   const waitReady = async (page, tag, stop, { shots = true, act = null } = {}) => {
     const started = Date.now();
     await resetRecorder(page);
     let lastBeat = null;
     let beatCount = 0;
-    let acted = false;
+    const answered = new Set();
     for (;;) {
       const state = await tstate(page);
-      if (state.beat?.stage === 'await' && act && !acted) {
-        acted = true;
-        await act(state);
-      }
       if (!state.active || state.phase === 'ready') {
         const seen = await recorded(page);
         note(`  ${stop}: ready after ${((Date.now() - started) / 1000).toFixed(1)}s phase=${state.phase} landed=${state.landedOn} veil=${JSON.stringify(seen.veilNotes)} presses=${JSON.stringify(seen.presses)}`);
@@ -166,10 +180,16 @@ try {
         lastBeat = key;
         beatCount++;
         if (shots) await shot(page, `${tag}-${stop}-beat-${beatCount}-${state.beat.id}-${state.beat.stage}`);
-        if (state.beat.stage === 'hold' && state.beat.hasSpotlight) await assertSpotlight(page, tag, stop, state);
+        if (state.beat.stage === 'hold' && state.beat.hasSpotlight && !state.beat.await) await assertSpotlight(page, tag, stop, state);
         if (state.beat.id === 'moon-picture' && state.beat.stage === 'hold') {
           check(state.landedOn === 'Moon' && !state.panelOpen && !state.surface, `${tag} ${stop}/moon-picture: landed on the Moon with the panel still closed`, { landed: state.landedOn, panel: state.panelOpen });
         }
+      }
+      if (state.beat?.stage === 'await' && !answered.has(state.beat.index)) {
+        answered.add(state.beat.index);
+        if (state.beat.hasSpotlight) await assertSpotlight(page, tag, stop, state);
+        const taken = act ? await act(state) : false;
+        if (!taken) await proceed(page, tag, stop, state);
       }
       if (Date.now() - started > 420_000) {
         check(false, `${tag} ${stop}: never settled`, state);
@@ -283,14 +303,27 @@ try {
     // Saturn stages at once: the demonstration, beat by beat, then the composed arrival.
     let card = await cardText(page);
     check(card.dots.length === 4 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
-    check(card.primaryDisabled === true && card.primary === 'Next: the Moon' && card.primaryAnimation === 'none', `${tag} saturn: the primary is held under its own label, no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation });
+    check(card.primary === 'Continue' && card.primaryDisabled === true && card.primaryAnimation === 'none', `${tag} saturn: the first scene's Continue is dimmed through the tap guard, no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation });
     const heldWidth = card.primaryWidth;
     check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
-    const saturn = await waitReady(page, tag, 'saturn');
+    // The desktop user gets there first at both scenes: the chip, then the
+    // row — whose plain teleport must give way to the tour's composed arrival.
+    const saturn = await waitReady(page, tag, 'saturn', {
+      act: async (state) => {
+        if (tag !== 'desktop') return false;
+        if (state.beat.id === 'teleport-chip') { await page.click('#planetarium-btn-travel'); note('  acted: tapped the Teleport chip'); return true; }
+        if (state.beat.id === 'saturn-row') { await page.click('#deck-list .pk-row[data-name="Saturn"]'); note('  acted: tapped the Saturn row'); return true; }
+        return false;
+      },
+    });
     // Polling can miss a one-frame stage; the recorder below proves the presses.
     check(saturn.beatCount >= 2, `${tag} saturn: the beats played`, saturn.beatCount);
-    check(saturn.seen.presses.includes('planetarium-btn-travel'), `${tag} saturn: the Teleport chip was visibly pressed`, saturn.seen.presses);
-    check(saturn.seen.presses.some((p) => /pk-row/.test(p)), `${tag} saturn: the Saturn row was visibly pressed`, saturn.seen.presses);
+    if (tag === 'desktop') {
+      check(!saturn.seen.presses.includes('planetarium-btn-travel') && !saturn.seen.presses.some((p) => /pk-row/.test(p)), `${tag} saturn: the user's own taps were taken, with no press of the tour's`, saturn.seen.presses);
+    } else {
+      check(saturn.seen.presses.includes('planetarium-btn-travel'), `${tag} saturn: Continue visibly pressed the Teleport chip`, saturn.seen.presses);
+      check(saturn.seen.presses.some((p) => /pk-row/.test(p)), `${tag} saturn: Continue visibly pressed the Saturn row`, saturn.seen.presses);
+    }
     check(saturn.seen.veilNotes.length === 0 || saturn.seen.veilNotes.every((n) => /Teleporting to Saturn/.test(n)), `${tag} saturn: every veil caption was the tour's own (or no veil was needed)`, saturn.seen.veilNotes);
     card = await cardText(page);
     note(`  card ${JSON.stringify(card)}`);
@@ -334,26 +367,60 @@ try {
     check((await pressedCount(page)) === 0, `${tag} saturn: no press class left on any control`);
     await shot(page, `${tag}-12-saturn`);
 
-    // The Moon: the chip beat, then the you-try. The desktop user taps the row
-    // themselves; the phone user presses Show me.
+    // Back is live mid-demonstration: from the Moon's first scene, straight
+    // back to Saturn, which re-stages from scratch.
+    await page.evaluate(() => window.__moon.tutorialNext());
+    await page.waitForFunction(() => window.__moon.tutorialState().beat?.stage === 'await', null, { timeout: 120_000 });
+    card = await cardText(page);
+    check(card.back === '‹ Back' && card.backDisabled === false, `${tag} back: live while the Moon's first scene waits for Continue`, { back: card.back, disabled: card.backDisabled });
+    await shot(page, `${tag}-13-back-live`);
+    await page.click('#tutorial-back');
+    await sleep(300);
+    const backed = await tstate(page);
+    check(backed.stepId === 'saturn' && backed.phase === 'staging', `${tag} back: Saturn re-stages at once`, { step: backed.stepId, phase: backed.phase });
+    const saturnAgain = await waitReady(page, tag, 'saturn', { shots: false });
+    check(saturnAgain.state.phase === 'ready' && saturnAgain.state.landedOn === null && !!saturnAgain.state.composition, `${tag} back: Saturn is composed again`, { landed: saturnAgain.state.landedOn, composed: !!saturnAgain.state.composition });
+    // Back under the Moon landing's own veil: the request waits for the
+    // landing, then re-stages — the stop is never stranded behind it.
+    await page.evaluate(() => window.__moon.tutorialNext());
+    await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.beat?.id === 'observatory-chip' && s.beat.stage === 'await'; }, null, { timeout: 120_000 });
+    await page.click('#tutorial-primary');
+    await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.beat?.id === 'moon-row' && s.beat.stage === 'await'; }, null, { timeout: 120_000 });
+    await page.click('#tutorial-primary');
+    await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.arrivalInFlight || s.landedOn === 'Moon'; }, null, { timeout: 120_000 });
+    await page.click('#tutorial-back');
+    const pressed = await tstate(page);
+    note(`  back mid-flight: ${JSON.stringify({ step: pressed.stepId, inFlight: pressed.arrivalInFlight, request: pressed.stageRequest })}`);
+    check(pressed.stepId === 'saturn' || pressed.stageRequest === 0, `${tag} back mid-flight: taken at once, or queued behind the landing`, { step: pressed.stepId, request: pressed.stageRequest });
+    await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'saturn', null, { timeout: 180_000 });
+    const saturnThird = await waitReady(page, tag, 'saturn', { shots: false });
+    check(saturnThird.state.phase === 'ready' && saturnThird.state.landedOn === null && !!saturnThird.state.composition, `${tag} back mid-flight: Saturn is composed again once the landing is down`, { landed: saturnThird.state.landedOn, composed: !!saturnThird.state.composition });
+
+    // The Moon: the chip pauses for Continue on both sizes; the row is the
+    // you-try (the desktop taps it, the phone presses Show me); Look up pauses
+    // too, and the desktop taps the window itself.
     await page.evaluate(() => window.__moon.tutorialNext());
     await sleep(150);
     card = await cardText(page);
-    check(/Tap the Moon/.test(card.body) && card.primary === 'Next: speed up time' && card.primaryDisabled === true, `${tag} moon: the staging copy and the held primary`, { body: card.body, primary: card.primary, disabled: card.primaryDisabled });
+    check(/Observatory lands you/.test(card.body) && !/Tap the Moon/.test(card.body) && card.primary === 'Continue' && card.primaryDisabled === true, `${tag} moon: the staging copy and the first scene's dimmed Continue`, { body: card.body, primary: card.primary, disabled: card.primaryDisabled });
     const moon = await waitReady(page, tag, 'moon', {
       act: async (state) => {
-        const waiting = await cardText(page);
-        check(waiting.primary === 'Show me' && waiting.primaryDisabled === false, `${tag} moon/moon-row: the primary offers Show me while it waits`, waiting.primary);
-        check(state.spotlight !== null, `${tag} moon/moon-row: the Moon row is ringed while it waits`);
-        await assertSpotlight(page, tag, 'moon', state);
-        await shot(page, `${tag}-moon-await`);
-        if (tag === 'desktop') {
+        if (state.beat.id === 'moon-row') {
+          const waiting = await cardText(page);
+          check(/Tap the Moon/.test(waiting.body), `${tag} moon/moon-row: the copy asks for the tap`, waiting.body);
+          check(state.spotlight !== null, `${tag} moon/moon-row: the Moon row is ringed while it waits`);
+          await shot(page, `${tag}-moon-await`);
+          if (tag !== 'desktop') return false;
           await page.click('#deck-list .pk-row[data-name="Moon"]');
           note('  acted: tapped the Moon row');
-        } else {
-          await page.click('#tutorial-primary');
-          note('  acted: pressed Show me');
+          return true;
         }
+        if (state.beat.id === 'look-up' && tag === 'desktop') {
+          await page.click('#observatory-lookup');
+          note('  acted: tapped Look up');
+          return true;
+        }
+        return false;
       },
     });
     const m = moon.state;
@@ -394,6 +461,7 @@ try {
       const started = Date.now();
       await resetRecorder(page);
       let lastBeat = null;
+      const answered = new Set();
       for (;;) {
         const state = await tstate(page);
         if (!state.active || state.phase !== 'staging') return { state, seen: await recorded(page) };
@@ -401,9 +469,14 @@ try {
         if (key && key !== lastBeat) {
           lastBeat = key;
           await shot(page, `${tag}-eclipse-${state.beat.id}-${state.beat.stage}`);
-          if (state.beat.stage === 'hold' && state.beat.hasSpotlight) await assertSpotlight(page, tag, 'eclipse', state);
+          if (state.beat.stage === 'hold' && state.beat.hasSpotlight && !state.beat.await) await assertSpotlight(page, tag, 'eclipse', state);
           if (state.beat.id === 'jumped' && state.beat.stage === 'hold') jumpedState = state;
           if (state.beat.id === 'look-up' && state.beat.stage === 'hold') rewoundState = state;
+        }
+        if (state.beat?.stage === 'await' && !answered.has(state.beat.index)) {
+          answered.add(state.beat.index);
+          if (state.beat.hasSpotlight) await assertSpotlight(page, tag, 'eclipse', state);
+          await proceed(page, tag, 'eclipse', state);
         }
         if (Date.now() - started > 420_000) { check(false, `${tag} eclipse: never left staging`, state); return { state, seen: await recorded(page) }; }
         await sleep(120);

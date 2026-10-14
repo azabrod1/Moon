@@ -11855,8 +11855,8 @@ export class PlanetariumMode {
     // can't trip it before the staging has even set the time. The time
     // controls stay live under "Watching…": a clock moved by hand out of
     // the approach (Now, a date, a reverse run) frees Next without the
-    // climax — totality is read only inside this event's own window, so the
-    // climax card never shows over another sky.
+    // climax — totality is read only inside the six minutes of local totality
+    // (eclipseClockPhase), so the climax card never shows over another sky.
     const eclipse = tutorial.eclipse;
     const nowUtcMs = this.timeState.currentUtcMs;
     const eclipseLive =

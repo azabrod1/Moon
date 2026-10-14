@@ -14,8 +14,8 @@
 //     next-solar arrow (parking three minutes before the 2027-08-02 peak),
 //     rewinds to first contact, presses Look up, declutters the surface view
 //     and approaches at 20 min/s, holding "Watching…" until totality's card,
-//     which follows the clock: a run past the event takes it down, the clock
-//     brought back shows it again;
+//     which follows the clock: six minutes on, or a run past the event, takes
+//     it down, and the clock brought back shows it again;
 //   - Next re-enables within a bound at every stop;
 //   - ending the tour puts the ship, its heading, the landing and a live clock
 //     back where the tour began;
@@ -406,6 +406,11 @@ try {
     // to the approach copy with a live kicker and leaves Next free, and the
     // clock brought back shows the climax again without touching the rate.
     const totalityMs = eclipse.state.timeMs;
+    await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs + 10 * 60_000);
+    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === false, null, { timeout: 30_000 }).catch(() => {});
+    const lingered = await tstate(page);
+    card = await cardText(page);
+    check(lingered.climaxShown === false && card.title === 'A total solar eclipse' && /ends in/.test(card.kicker), `${tag} eclipse: ten minutes on, the Sun is back from behind the Moon and the climax card is down`, { climax: lingered.climaxShown, title: card.title, kicker: card.kicker });
     await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs + 6 * 3600_000);
     await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === false, null, { timeout: 30_000 }).catch(() => {});
     const moved = await tstate(page);

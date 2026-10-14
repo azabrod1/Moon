@@ -6,6 +6,7 @@ import {
   TUTORIAL_ECLIPSE_APPROACH_RATE,
   TUTORIAL_SETTLE_DWELL_MS,
   totalitySettleUtcMs,
+  totalityEndUtcMs,
   eclipseClockPhase,
   TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS,
   tutorialTransition,
@@ -518,6 +519,12 @@ describe('the showcase eclipse', () => {
     expect(settle).toBeLessThan(event!.peakUtcMs);
   });
 
+  it('local totality ends inside the event, after the peak, well before the partial tail runs out', () => {
+    const end = totalityEndUtcMs(event!.peakUtcMs);
+    expect(end).toBeGreaterThan(event!.peakUtcMs);
+    expect(end).toBeLessThan(event!.endUtcMs - 60 * MIN);
+  });
+
   it('the tutorial rates render as clean rate labels', () => {
     // The eclipse approach rides the "20 min/s" preset; the time-lapse rate is
     // deliberately off the preset ladder (see its comment), which the UI
@@ -542,13 +549,17 @@ describe('eclipseClockPhase', () => {
     expect(eclipseClockPhase(settle - 1, event)).toBe('approach');
   });
 
-  it('is totality from the settle instant to the event’s end', () => {
+  it('is totality from the settle instant to the end of local totality, the same lead past the peak', () => {
     expect(eclipseClockPhase(settle, event)).toBe('totality');
     expect(eclipseClockPhase(peak, event)).toBe('totality');
-    expect(eclipseClockPhase(event.endUtcMs, event)).toBe('totality');
+    expect(eclipseClockPhase(totalityEndUtcMs(peak), event)).toBe('totality');
+    expect(totalityEndUtcMs(peak) - peak).toBe(peak - settle);
   });
 
-  it('is away before the approach and after the event: a Now press, a date in 2028, a reverse run', () => {
+  it('is away past totality — the partial tail where the Sun is back — and before the approach: a Now press, a date in 2028, a reverse run', () => {
+    expect(eclipseClockPhase(totalityEndUtcMs(peak) + 1, event)).toBe('away');
+    expect(eclipseClockPhase(peak + 30 * MIN, event)).toBe('away');
+    expect(eclipseClockPhase(event.endUtcMs, event)).toBe('away');
     expect(eclipseClockPhase(Date.parse('2026-10-13T12:00:00Z'), event)).toBe('away');
     expect(eclipseClockPhase(Date.parse('2028-01-26T12:00:00Z'), event)).toBe('away');
     expect(eclipseClockPhase(event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS - 1, event)).toBe('away');
@@ -568,10 +579,13 @@ describe('eclipseClimaxShown', () => {
   it('shows while the reached totality still stands on the clock', () => {
     expect(eclipseClimaxShown(true, settle, event)).toBe(true);
     expect(eclipseClimaxShown(true, peak, event)).toBe(true);
-    expect(eclipseClimaxShown(true, event.endUtcMs, event)).toBe(true);
+    expect(eclipseClimaxShown(true, totalityEndUtcMs(peak), event)).toBe(true);
   });
 
-  it('comes down when a Now press, a date or a fast run carries the clock out, and back when the clock returns', () => {
+  it('comes down when six minutes of realtime, a Now press, a date or a fast run carry the clock out, and back when the clock returns', () => {
+    expect(eclipseClimaxShown(true, totalityEndUtcMs(peak) + 1, event)).toBe(false);
+    expect(eclipseClimaxShown(true, peak + 10 * MIN, event)).toBe(false);
+    expect(eclipseClimaxShown(true, event.endUtcMs, event)).toBe(false);
     expect(eclipseClimaxShown(true, Date.parse('2026-10-14T08:00:00Z'), event)).toBe(false);
     expect(eclipseClimaxShown(true, event.endUtcMs + 1, event)).toBe(false);
     expect(eclipseClimaxShown(true, settle - 1, event)).toBe(false);

@@ -512,13 +512,22 @@ export const TUTORIAL_ECLIPSE_APPROACH_RATE = 1200;
  * second/third-contact times — so this lead comes from the published
  * circumstances of the one fixed event above: at the point of greatest
  * eclipse, totality begins ≈191.5 s before peak (EclipseWise). Settling just
- * inside that means the Sun is already fully covered when realtime resumes,
- * and the umbral-spot-riding surface camera keeps it covered for as long as
- * the user lingers. Frame granularity at 1200× overshoots by ≤ ~20 s of sim
- * time — still deep inside totality. Validated visually in QA, not by the
- * pin test.
+ * inside that means the Sun is already fully covered when realtime resumes.
+ * The observer stands still on the spot of greatest eclipse
+ * (computeSpotAnchorLocal in surfaceView.ts), where totality lasts 6m23s
+ * about the peak, so it ends the same lead after the peak — the window the
+ * climax card is read inside (eclipseClockPhase). The render loop caps a
+ * frame at 100 ms, so the approach at 1200× steps at most 120 s of sim time
+ * a frame and cannot step over that window. Validated visually in QA, not
+ * by the pin test.
  */
 export const TUTORIAL_TOTALITY_SETTLE_LEAD_MS = 190_000;
+
+/** The instant local totality ends at the standing spot: symmetric with the
+ *  lead about the peak, just inside the published 6m23s. */
+export function totalityEndUtcMs(peakUtcMs: number): number {
+  return peakUtcMs + TUTORIAL_TOTALITY_SETTLE_LEAD_MS;
+}
 
 /** The instant the eclipse step settles to realtime (single definition of the sign). */
 export function totalitySettleUtcMs(peakUtcMs: number): number {
@@ -533,17 +542,19 @@ export const TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS = 60 * 60_000;
  * Where the eclipse stop's clock stands against its event, since the time
  * controls stay live while the card reads "Watching…": 'approach' from a
  * little before first contact up to the settle instant, 'totality' from
- * there to the event's end, and 'away' once the clock has been moved
- * before the approach or past the event by hand — a Now press, a date, a
- * reverse run. Away, the stop stops waiting for a totality that may never
- * come; it never shows the climax over the wrong sky.
+ * there to the end of local totality at the standing spot, and 'away' once
+ * the clock stands before the approach or past totality — the event's
+ * partial tail included, where the Sun is back from behind the Moon —
+ * whether it ran there or was moved by hand (a Now press, a date, a reverse
+ * run). Away, the stop stops waiting for a totality that may never come,
+ * and the climax card is never shown over the wrong sky.
  */
 export function eclipseClockPhase(
   nowUtcMs: number,
-  event: { startUtcMs: number; peakUtcMs: number; endUtcMs: number },
+  event: { startUtcMs: number; peakUtcMs: number },
 ): 'approach' | 'totality' | 'away' {
   const settle = totalitySettleUtcMs(event.peakUtcMs);
-  if (nowUtcMs >= settle && nowUtcMs <= event.endUtcMs) return 'totality';
+  if (nowUtcMs >= settle && nowUtcMs <= totalityEndUtcMs(event.peakUtcMs)) return 'totality';
   if (nowUtcMs >= event.startUtcMs - TUTORIAL_ECLIPSE_APPROACH_MARGIN_MS && nowUtcMs < settle) return 'approach';
   return 'away';
 }
@@ -551,16 +562,17 @@ export function eclipseClockPhase(
 /**
  * Whether the eclipse card shows the climax right now: totality has been
  * reached (the one-shot that dropped the clock to realtime and released
- * Next) and the clock still stands inside the event's window. A Now press,
- * a date or a fast run that carries the clock out afterwards takes the
- * climax card down — the approach card with its live kicker ("ended 2h
- * ago") is honest about the sky the user moved to — and a clock brought
- * back in shows it again, without touching the rate a second time.
+ * Next) and the clock still stands inside local totality. A Now press, a
+ * date, a fast run, or six minutes of realtime that carry the clock out
+ * afterwards take the climax card down — the approach card with its live
+ * kicker ("ends in 2h 30m", "ended 2h ago") is honest about the sky the
+ * user is looking at — and a clock brought back in shows it again, without
+ * touching the rate a second time.
  */
 export function eclipseClimaxShown(
   totalityReached: boolean,
   nowUtcMs: number,
-  event: { startUtcMs: number; peakUtcMs: number; endUtcMs: number },
+  event: { startUtcMs: number; peakUtcMs: number },
 ): boolean {
   return totalityReached && eclipseClockPhase(nowUtcMs, event) === 'totality';
 }

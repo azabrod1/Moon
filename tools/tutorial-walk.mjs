@@ -406,18 +406,20 @@ try {
     // to the approach copy with a live kicker and leaves Next free, and the
     // clock brought back shows the climax again without touching the rate.
     const totalityMs = eclipse.state.timeMs;
+    // Each move waits on the card's own kicker, which the next frame renders:
+    // the climax flag alone is already down after the first move.
     await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs + 10 * 60_000);
-    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === false, null, { timeout: 30_000 }).catch(() => {});
+    await page.waitForFunction(() => /ends in/.test(document.getElementById('tutorial-kicker')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => {});
     const lingered = await tstate(page);
     card = await cardText(page);
     check(lingered.climaxShown === false && card.title === 'A total solar eclipse' && /ends in/.test(card.kicker), `${tag} eclipse: ten minutes on, the Sun is back from behind the Moon and the climax card is down`, { climax: lingered.climaxShown, title: card.title, kicker: card.kicker });
     await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs + 6 * 3600_000);
-    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === false, null, { timeout: 30_000 }).catch(() => {});
+    await page.waitForFunction(() => /ended .* ago/.test(document.getElementById('tutorial-kicker')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => {});
     const moved = await tstate(page);
     card = await cardText(page);
     check(moved.climaxShown === false && card.title === 'A total solar eclipse' && /ended .* ago/.test(card.kicker) && card.primary === 'Next: wrap up', `${tag} eclipse: a run past the event takes the climax card down, Next stays free`, { climax: moved.climaxShown, title: card.title, kicker: card.kicker, primary: card.primary });
     await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs);
-    await page.waitForFunction(() => window.__moon.tutorialState().climaxShown === true, null, { timeout: 30_000 }).catch(() => {});
+    await page.waitForFunction(() => document.getElementById('tutorial-title')?.textContent === 'Totality', null, { timeout: 30_000 }).catch(() => {});
     const back = await tstate(page);
     card = await cardText(page);
     check(back.climaxShown === true && card.title === 'Totality' && back.rate === 1, `${tag} eclipse: the clock brought back shows the climax again at realtime`, { climax: back.climaxShown, title: card.title, rate: back.rate });

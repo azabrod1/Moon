@@ -2558,12 +2558,16 @@ export class PlanetariumMode {
     /** A live kicker for the card (a distance, a phase); null = the step's own. */
     kicker: string | null;
     /** The composed subject and the free area it was fitted into (the walk's assertion). */
-    composition: { subject: ScreenRect; free: ScreenRect } | null;
+    composition: { subject: ScreenRect; free: ScreenRect; planet: string } | null;
     /** The element that had focus when the tour began: ending hands it back. */
     returnFocus: Element | null;
     /** The Saturn stop's slow pan: when it began, or null once it has run
      *  its course or the user took the view. */
     pan: { startMs: number; lastMs: number } | null;
+    /** The user took the camera at the composed stop (a drag or a flight
+     *  key): the pan stops, and a resize keeps their framing instead of
+     *  recomposing the stop's. */
+    cameraOwned: boolean;
   } | null = null;
   /** A caption for the next arrival veil the tour's own press raises through
    *  a real control (the deck row's commit): taken by arriveThen. */
@@ -5202,6 +5206,10 @@ export class PlanetariumMode {
     this.mapHud.measurePanel();
     this.mapHud.measureCard();
     this.systemMap?.onResize();
+    // A composed tour stop follows the viewport: the card and the bars have
+    // moved with it, so the subject is fitted into the new free area again
+    // (unless the user has taken the camera at the stop).
+    this.recomposeTutorialStop();
   }
 
   /**
@@ -10712,6 +10720,7 @@ export class PlanetariumMode {
       composition: null,
       returnFocus,
       pan: null,
+      cameraOwned: false,
     };
     // The card narrates from here; stray banners would talk over it (on
     // phones they share the same top strip).
@@ -10963,6 +10972,7 @@ export class PlanetariumMode {
     tutorial.kicker = null;
     tutorial.composition = null;
     tutorial.pan = null;
+    tutorial.cameraOwned = false;
     this.tutorialSpotlight.clear();
     this.clearTutorialOverrides();
     // A user-opened deck may hold a search filter that would hide the
@@ -11535,12 +11545,18 @@ export class PlanetariumMode {
    *  with it. The first drag or steer is the user's, and the pan stops. */
   private updateTutorialPan(): void {
     const tutorial = this.tutorial;
-    const pan = tutorial?.pan;
-    if (!tutorial || !pan) return;
-    if (this.orbitDragging || this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.player.moving) {
+    if (!tutorial) return;
+    // The user's first drag or flight key at the composed stop takes the
+    // camera: the pan stops, and from here a resize keeps their framing
+    // rather than recomposing the stop's (recomposeTutorialStop).
+    if ((tutorial.pan || (tutorial.composition && !tutorial.cameraOwned))
+      && (this.orbitDragging || this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.player.moving)) {
+      tutorial.cameraOwned = true;
       tutorial.pan = null;
       return;
     }
+    const pan = tutorial.pan;
+    if (!pan) return;
     const now = performance.now();
     const total = PlanetariumMode.TUTORIAL_PAN_MS;
     const ease = (t: number) => 1 - (1 - t) * (1 - t);
@@ -11715,7 +11731,19 @@ export class PlanetariumMode {
       if (round === 7) place();
     }
     this.resetCruiseCamera();
-    tutorial.composition = { subject, free };
+    tutorial.composition = { subject, free, planet: planet.name };
+  }
+
+  /** The composed stop fitted again after a resize or a rotation: the card,
+   *  the cluster and the bars have moved, and a pose measured against the
+   *  old free area can put the subject under them. Only while the tour still
+   *  owns the camera; the user's own framing (cameraOwned) rides a resize
+   *  untouched. */
+  private recomposeTutorialStop(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || !tutorial.composition || tutorial.cameraOwned) return;
+    const planet = PLANETARIUM_BODIES.find((b) => b.name === tutorial.composition?.planet);
+    if (planet) this.composeTutorialPlanet(planet);
   }
 
   /** The largest rectangle of the canvas clear of the card, the cluster and
@@ -18645,6 +18673,7 @@ export class PlanetariumMode {
       userActed: tutorial?.userActed ?? false,
       arrived: tutorial?.arrived ?? false,
       panning: tutorial?.pan !== null && tutorial?.pan !== undefined,
+      cameraOwned: tutorial?.cameraOwned ?? false,
       missionActive: this.isMissionActive(),
       declutter: document.body.classList.contains('tutorial-declutter'),
       earthOnScreen: this.devBodyOnScreen('Earth'),

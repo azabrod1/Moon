@@ -305,6 +305,26 @@ try {
       const fill = Math.max(subject.w, subject.h) / Math.min(free.w, free.h);
       check(fill > 0.5 && fill < 0.75, `${tag} saturn: the subject spans about three fifths of the free area`, fill.toFixed(2));
     }
+    // The composition follows the viewport: a resize (a rotation on the
+    // phone) fits the subject into the new free area again while the tour
+    // still owns the camera, and the size put back fits it once more.
+    if (s.composition) {
+      const size = tag === 'phone' ? PHONE : DESKTOP;
+      const turned = tag === 'phone' ? { width: PHONE.h, height: PHONE.w } : { width: 1000, height: 640 };
+      const changed = (before) => page.waitForFunction((b) => {
+        const c = window.__moon.tutorialState().composition;
+        return !!c && (c.free.w !== b.w || c.free.h !== b.h || c.free.x !== b.x || c.free.y !== b.y);
+      }, before, { timeout: 30_000 }).then(() => true, () => false);
+      await page.setViewportSize(turned);
+      const recomposed = await changed(s.composition.free);
+      const t = (await tstate(page)).composition;
+      check(recomposed && !!t && inside(t.subject, t.free, 2) && inside(t.free, { x: 0, y: 0, w: turned.width, h: turned.height }), `${tag} saturn: a resize recomposes the subject into the new free area`, { before: s.composition.free, after: t });
+      await shot(page, `${tag}-12-saturn-resized`);
+      await page.setViewportSize({ width: size.w, height: size.h });
+      const restored = await changed(t ? t.free : s.composition.free);
+      const r = (await tstate(page)).composition;
+      check(restored && !!r && inside(r.subject, r.free, 2), `${tag} saturn: the size put back recomposes once more`, { after: r });
+    }
     check(s.spotlight === null, `${tag} saturn: no ring once the scene is the focal point`);
     check((await pressedCount(page)) === 0, `${tag} saturn: no press class left on any control`);
     await shot(page, `${tag}-12-saturn`);

@@ -10,7 +10,9 @@
 //     the beat goes on either way; Show me on the desktop is covered by the
 //     Back re-stages of Saturn; the desktop taps Look up and the eclipse's
 //     arrow twice in a row, and neither double tap toggles back out or jumps
-//     past the event;
+//     past the event; Back from Jupiter re-stages the Moon while landed on
+//     Jupiter, where the ringed Observatory chip must open the Observe deck,
+//     not Jupiter's panel;
 //   - the Saturn stop composes its subject inside the free area between the
 //     chrome, with the ship model and the world labels out of the picture, a
 //     live kicker on the card and the settled copy once the scene is up;
@@ -501,6 +503,40 @@ try {
     card = await cardText(page);
     check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
     await shot(page, `${tag}-15-timelapse`);
+
+    // Back from Jupiter: the Moon re-stages while landed on Jupiter, and the
+    // ringed Observatory chip must open the Observe deck (its own action
+    // while landed opens the panel). The desktop taps it; the phone's Show
+    // me covers the tour's own opening. Then on to Jupiter again.
+    await page.click('#tutorial-back');
+    await sleep(300);
+    const backedToMoon = await tstate(page);
+    check(backedToMoon.stepId === 'moon' && backedToMoon.phase === 'staging' && backedToMoon.landedOn === 'Jupiter', `${tag} back from Jupiter: the Moon re-stages while still landed on Jupiter`, { step: backedToMoon.stepId, landed: backedToMoon.landedOn });
+    const moonAgain = await waitReady(page, tag, 'moon', {
+      shots: false,
+      act: async (state) => {
+        if (tag !== 'desktop') return false;
+        if (state.beat.id === 'observatory-chip') {
+          await page.click('#planetarium-btn-observatory');
+          await sleep(400);
+          const deck = await page.evaluate(() => ({
+            open: document.getElementById('deck')?.classList.contains('visible') ?? false,
+            panel: window.__moon.tutorialState().panelOpen,
+            moonRow: !!document.querySelector('#deck-list .pk-row[data-name="Moon"]'),
+          }));
+          check(deck.open && deck.moonRow && !deck.panel, `${tag} back from Jupiter: the chip opened the Observe deck with the Moon row, not Jupiter's panel`, deck);
+          note('  acted: tapped the Observatory chip while landed on Jupiter');
+          return true;
+        }
+        if (state.beat.id === 'moon-row') { await page.click('#deck-list .pk-row[data-name="Moon"]'); note('  acted: tapped the Moon row'); return true; }
+        if (state.beat.id === 'look-up') { await page.click('#observatory-lookup'); note('  acted: tapped Look up'); return true; }
+        return false;
+      },
+    });
+    check(moonAgain.state.landedOn === 'Moon' && moonAgain.state.surface && moonAgain.state.earthOnScreen === true, `${tag} back from Jupiter: the Moon stop ends on the Moon with Earth overhead`, { landed: moonAgain.state.landedOn, surface: moonAgain.state.surface, earth: moonAgain.state.earthOnScreen });
+    await page.evaluate(() => window.__moon.tutorialNext());
+    const jupiterAgain = await waitReady(page, tag, 'timelapse', { shots: false });
+    check(jupiterAgain.state.landedOn === 'Jupiter' && jupiterAgain.state.rate === 3600, `${tag} back from Jupiter: Jupiter again at 1 hr/s`, { landed: jupiterAgain.state.landedOn, rate: jupiterAgain.state.rate });
 
     // The eclipse: the panel's own arrow, the rewind, Look up, the approach, totality.
     await page.evaluate(() => window.__moon.tutorialNext());

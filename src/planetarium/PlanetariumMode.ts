@@ -10238,8 +10238,11 @@ export class PlanetariumMode {
     const key = e.key.toLowerCase();
     if ((key === 't' || key === 'o' || key === 'p') && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (this.isMissionActive() || this.isHelpOpen()) return;
-      if (key === 't') this.toggleDeck('travel');
-      else if (key === 'o') this.observatoryAction();
+      if (key === 't') {
+        if (!this.tutorialChipPress('planetarium-btn-travel')) this.toggleDeck('travel');
+      } else if (key === 'o') {
+        if (!this.tutorialChipPress('planetarium-btn-observatory')) this.observatoryAction();
+      }
       else this.toggleAutopilot();
       // Opening the deck focuses its search; without this the same keystroke
       // then types into it and the list opens pre-filtered.
@@ -11243,35 +11246,67 @@ export class PlanetariumMode {
     return stage === 'enter' || stage === 'hold' || stage === 'await';
   }
 
-  /** The panel's Look up window. While a beat waits on it, the user's press
-   *  is the beat's perform, aimed as the tour aims it (the eclipse's sky at
+  /** The panel's Look up window. While the tour is staging or settling a
+   *  scene stop, the window is the tour's: ringed and waiting, a press is
+   *  the beat's perform, aimed as the tour aims it (the eclipse's sky at
    *  first contact, where the window's own aim may not yet find the event);
-   *  a press while that entry is already under way is spent (a double tap
-   *  must not toggle back out and strand the beat); otherwise the window's
-   *  own action. */
+   *  any other press is spent — a double tap's second half lands after the
+   *  runner has taken the first, and the window's own action would then
+   *  walk back out of the view the stop is settling into (or out of the
+   *  eclipse's approach). Once the stop is ready it is the user's again. */
   private handlePanelLookUp(): void {
     const tutorial = this.tutorial;
-    const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
-    if (tutorial && beat?.await && beat.perform.kind === 'look-up' && tutorial.phase === 'staging') {
-      if (!this.tutorialBeatWaiting()) return;
-      tutorial.userActed = true;
-      tutorial.everStaged = true;
-      this.performTutorialLookUp();
+    if (
+      tutorial &&
+      (tutorial.phase === 'staging' || tutorial.phase === 'settling') &&
+      TUTORIAL_STEPS[tutorial.stepIndex].stage !== 'none'
+    ) {
+      const beat = tutorial.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
+      if (beat?.await && beat.perform.kind === 'look-up' && this.tutorialBeatWaiting()) {
+        tutorial.userActed = true;
+        tutorial.everStaged = true;
+        this.performTutorialLookUp();
+      }
       return;
     }
     this.toggleSurfaceView();
   }
 
-  /** The eclipse arrow, once its beat's jump has landed on the showcase
-   *  event, is spent until the beat moves on: a second press (a double tap,
-   *  or one under Show me's own) would jump past the event the stop is built
-   *  on, and nothing could bring it back. */
-  private tutorialJumpLanded(): boolean {
+  /** The cluster's Teleport and Observatory chips (and their T and O keys)
+   *  while a stop's demonstration runs. Ringed, a press is the beat's own:
+   *  the tour's deck opening, on the tab the beat means — the chip's own
+   *  action while landed would open the panel instead, and the beat would
+   *  wait on a deck that never opens. While the deck row they opened is the
+   *  waiting beat, a press is spent: it would close the deck under the ring.
+   *  Returns true when the press was taken. */
+  private tutorialChipPress(id: 'planetarium-btn-travel' | 'planetarium-btn-observatory'): boolean {
     const tutorial = this.tutorial;
     const beat = tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
-    return (
-      tutorial !== null && beat !== null && beat.perform.kind === 'jump' && tutorial.phase === 'staging' && this.tutorialPerformed(beat)
-    );
+    if (!tutorial || !beat || tutorial.phase !== 'staging') return false;
+    const ring = beat.spotlight?.target;
+    if (ring?.kind === 'chip' && ring.id === id && beat.perform.kind === 'open-deck') {
+      if (!this.tutorialBeatWaiting()) return true;
+      tutorial.userActed = true;
+      this.openDeck(beat.perform.verb);
+      this.revealDeckRow(beat.perform.reveal);
+      return true;
+    }
+    return ring?.kind === 'deck-row' && beat.await === true;
+  }
+
+  /** The eclipse arrow is spent from the moment its beat's jump has landed on
+   *  the showcase event until the stop has finished staging: a second press
+   *  (a double tap, whose second half lands after the runner has moved on)
+   *  would jump past the event the stop is built on. */
+  private tutorialJumpLanded(): boolean {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.phase !== 'staging' || !tutorial.beats || !tutorial.beatRun) return false;
+    const jumpIndex = tutorial.beats.findIndex((b) => b.perform.kind === 'jump');
+    if (jumpIndex < 0) return false;
+    const current = tutorial.beatRun.index;
+    if (current > jumpIndex) return true;
+    const beat = tutorial.beats[current];
+    return current === jumpIndex && beat !== undefined && this.tutorialPerformed(beat);
   }
 
   /** The window's own action: the surface view, aimed where the window says
@@ -12839,11 +12874,13 @@ export class PlanetariumMode {
     // The deck — cluster buttons open their tab; commits happen on the rows.
     document.getElementById('planetarium-btn-travel')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.tutorialChipPress('planetarium-btn-travel')) return;
       // No takeoff here: the tap that commits a destination handles it.
       this.toggleDeck('travel');
     });
     document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.tutorialChipPress('planetarium-btn-observatory')) return;
       this.observatoryAction();
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {

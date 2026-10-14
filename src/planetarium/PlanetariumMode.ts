@@ -1166,6 +1166,10 @@ export class PlanetariumMode {
   private static readonly ATMOSPHERE_BAKE_DELAY_MS = 6000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
+  /** Set around the tour's own click on a deck row (performTutorialObserve),
+   *  which lands in commitDeckPick in the runner's perform stage, where a
+   *  user's press on that row is spent. */
+  private tutorialOwnPress = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
    *  previous arrival's lift timer can't uncover a newer arrival mid-flight.
    *  Reachable whenever a new veiled arrival starts inside the last one's
@@ -11549,7 +11553,14 @@ export class PlanetariumMode {
     const row = this.isDeckOpen() ? this.findDeckRow(perform.name) : null;
     if (row && !this.arrivalVeilUp()) {
       this.tutorialVeilNote = veilNote ?? null;
-      row.click();
+      // The runner is in its perform stage here, where a press on the row
+      // is otherwise spent (commitDeckPick): this one is the tour's own.
+      this.tutorialOwnPress = true;
+      try {
+        row.click();
+      } finally {
+        this.tutorialOwnPress = false;
+      }
       return;
     }
     this.closeDeck();
@@ -15500,8 +15511,9 @@ export class PlanetariumMode {
     // a refused commit (a rival arrival's veil) leaves the beat waiting.
     const awaited = this.tutorialAwaitedRow(verb, target);
     // The press already under way (Show me's 180 ms, or their own landing):
-    // a second tap on the row would commit a second time.
-    if (awaited && !this.tutorialBeatWaiting()) return;
+    // a second tap on the row would commit a second time. The tour's own
+    // click on the row, made from the perform stage, is the press itself.
+    if (awaited && !this.tutorialBeatWaiting() && !this.tutorialOwnPress) return;
     if (awaited?.perform.kind === 'arrive') {
       // The Saturn row: the tour's own composed arrival (the ship model and
       // the labels out, the rings fitted into the free area), not the plain

@@ -8,7 +8,9 @@
 //     the tour's composed scene), the Moon row, Look up, the rail at 1 hr/s,
 //     the eclipse's arrow and its Look up (aimed as the tour aims it) — and
 //     the beat goes on either way; Show me on the desktop is covered by the
-//     Back re-stages of Saturn;
+//     Back re-stages of Saturn; the desktop taps Look up and the eclipse's
+//     arrow twice in a row, and neither double tap toggles back out or jumps
+//     past the event;
 //   - the Saturn stop composes its subject inside the free area between the
 //     chrome, with the ship model and the world labels out of the picture, a
 //     live kicker on the card and the settled copy once the scene is up;
@@ -443,8 +445,11 @@ try {
           return true;
         }
         if (state.beat.id === 'look-up' && tag === 'desktop') {
+          // Twice: the second tap lands before the runner has seen the first,
+          // and must not toggle the surface view back out.
           await page.click('#observatory-lookup');
-          note('  acted: tapped Look up');
+          await page.click('#observatory-lookup');
+          note('  acted: tapped Look up, twice');
           return true;
         }
         return false;
@@ -517,11 +522,14 @@ try {
           answered.add(state.beat.index);
           if (state.beat.hasSpotlight) await assertSpotlight(page, tag, 'eclipse', state);
           if (tag === 'desktop' && state.beat.id === 'next-solar') {
+            // Twice: a second press must not jump past the showcase event.
             await page.click('#observatory-next-solar');
-            note('  acted: tapped the next-eclipse arrow');
+            await page.click('#observatory-next-solar');
+            note('  acted: tapped the next-eclipse arrow, twice');
           } else if (tag === 'desktop' && state.beat.id === 'look-up') {
             await page.click('#observatory-lookup');
-            note('  acted: tapped Look up');
+            await page.click('#observatory-lookup');
+            note('  acted: tapped Look up, twice');
           } else {
             await proceed(page, tag, 'eclipse', state);
           }

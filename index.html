@@ -1750,6 +1750,10 @@
     .tutorial-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
     /* Back sits apart on the left — the forward cluster keeps the right edge. */
     #tutorial-back { margin-right: auto; padding-left: 10px; padding-right: 10px; }
+    /* The primary's label changes as a stop plays (Continue, Show me, Next: …);
+       a floor the width of "Next: the Moon" keeps the short ones from moving
+       Skip between one and the next. */
+    #tutorial-primary { min-width: 116px; }
     .tutorial-btn {
       padding: 8px 14px;
       border: 1px solid var(--panel-border);
@@ -1765,13 +1769,15 @@
     .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
     .tutorial-btn-ghost { background: transparent; color: var(--t2); }
     .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
-    /* The held primary while a stop's scene is on its way: it reads as waiting,
-       not as disabled — the label says why, the slow breathing is the only motion. */
-    @keyframes tutorial-busy {
-      0%, 100% { opacity: 0.55; }
-      50% { opacity: 0.95; }
+    /* Held while a stop plays, the primary keeps its own label in the plain
+       disabled look; when it goes live (the stop done, or Show me offered) one
+       soft ring marks the user's turn. The selector starting to match plays it,
+       so a re-render of the label never replays it. */
+    @keyframes tutorial-ready {
+      from { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.5); }
+      to { box-shadow: 0 0 0 8px rgba(var(--accent-rgb), 0); }
     }
-    .tutorial-btn.busy:disabled { opacity: 0.8; color: var(--t2); animation: tutorial-busy 1.8s ease-in-out infinite; }
+    .tutorial-btn-primary:not(:disabled) { animation: tutorial-ready 0.9s var(--ease); }
     /* The spotlight's visible press on the real control: a dip plus the
        control's own on-colour, for the press's 180 ms. */
     .act-btn.tutorial-press {
@@ -1786,7 +1792,7 @@
     }
     @media (prefers-reduced-motion: reduce) {
       #tutorial-card { transition: opacity 0.22s var(--ease), visibility 0s linear 0.22s; transform: none; }
-      .tutorial-btn.busy:disabled { animation: none; opacity: 0.7; }
+      .tutorial-btn-primary:not(:disabled) { animation: none; }
       .act-btn.tutorial-press, .pk-row.tutorial-press { transform: none; }
       .tutorial-dot { transition: none; }
     }

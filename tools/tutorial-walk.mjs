@@ -27,7 +27,14 @@
 //     Show me; the popover's first row is the live map, the tool rows stay
 //     dimmed, and the popover sits clear of the card), opens the chart from
 //     Jupiter with no veil, with the ring the ship docked at Jupiter, and
-//     climbs the clock itself to 1 mo/s; Back from the map re-stages Jupiter
+//     climbs the clock itself to 1 mo/s; on the desktop a double tap on
+//     Tools (its second half folds the popover), a tap outside the popover at
+//     its row, Tools pressed during the picture and the map's own close
+//     during the climb each step the run back to the ring that reopens what
+//     was closed, the climb starting over from 1 hr/s, M with Help open is
+//     refused without being taken for a press, and the chart's body card
+//     offers no Look inside mid-tour; the popover draws over the glare flood
+//     and under the spotlight; Back from the map re-stages Jupiter
 //     with the chart and the popover folded, and Back from the eclipse's
 //     first wait re-stages the map from Earth under the tour's own Jupiter
 //     veil; the eclipse presses the panel's own
@@ -176,7 +183,7 @@ try {
   /** Wait for the stop to settle, screenshotting each new beat/stage on the
    *  way, and answering each waiting beat once: `act(state)` may take it (a
    *  tap on the real control) and return true; else the card is pressed. */
-  const waitReady = async (page, tag, stop, { shots = true, act = null } = {}) => {
+  const waitReady = async (page, tag, stop, { shots = true, act = null, onBeat = null } = {}) => {
     const started = Date.now();
     await resetRecorder(page);
     let lastBeat = null;
@@ -194,6 +201,7 @@ try {
         lastBeat = key;
         beatCount++;
         if (shots) await shot(page, `${tag}-${stop}-beat-${beatCount}-${state.beat.id}-${state.beat.stage}`);
+        if (onBeat) await onBeat(state);
         if (state.beat.stage === 'hold' && state.beat.hasSpotlight && !state.beat.await) await assertSpotlight(page, tag, stop, state);
         if (state.beat.id === 'moon-picture' && state.beat.stage === 'hold') {
           check(state.landedOn === 'Moon' && !state.panelOpen && !state.surface, `${tag} ${stop}/moon-picture: landed on the Moon with the panel still closed`, { landed: state.landedOn, panel: state.panelOpen });
@@ -568,14 +576,52 @@ try {
     await page.waitForFunction(() => window.__moon.tutorialState().beat?.id === 'tools-chip', null, { timeout: 60_000 });
     card = await cardText(page);
     check(/Tools holds the map/.test(card.body) && card.primary === 'Show me', `${tag} map: the staging copy names the Tools button`, { body: card.body, primary: card.primary });
+    const centre = (page, selector) => page.evaluate((s) => {
+      const r = document.querySelector(s).getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, selector);
+    const ringedNear = (state, selector) => page.evaluate(({ s, cut }) => {
+      const r = document.querySelector(s)?.getBoundingClientRect();
+      return !!r && !!cut && Math.abs(cut.x + cut.w / 2 - (r.x + r.width / 2)) < 12 && Math.abs(cut.y + cut.h / 2 - (r.y + r.height / 2)) < 12;
+    }, { s: selector, cut: state.spotlight?.cutout ?? null });
+    const waitState = (page, test, arg) => page.waitForFunction(test, arg, { timeout: 120_000 }).then(() => true, () => false);
+    const recover = { doubleTap: false, outside: false, toolsMidPicture: false, closeMidClimb: false };
     const map = await waitReady(page, tag, 'map', {
       act: async (state) => {
         if (state.beat.id === 'tools-chip' && tag === 'desktop') {
+          if (!recover.doubleTap) {
+            // A double tap: the second half lands on the popover's catcher,
+            // which folds it before the run sees it open. The run plays the
+            // Tools ring again rather than waiting on a popover that is gone.
+            recover.doubleTap = true;
+            const at = await centre(page, '#planetarium-btn-tools');
+            await page.mouse.click(at.x, at.y);
+            await page.mouse.click(at.x, at.y);
+            const back = await waitState(page, () => {
+              const s = window.__moon.tutorialState();
+              return s.beat?.id === 'tools-chip' && s.beat.stage !== 'perform' && !s.userActed && !s.toolsOpen && s.spotlight !== null;
+            });
+            const s = await tstate(page);
+            check(back && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: a double tap on Tools folds the popover, and the Tools ring plays again`, { beat: s.beat, tools: s.toolsOpen, userActed: s.userActed });
+            await shot(page, `${tag}-map-double-tap`);
+          }
           await page.click('#planetarium-btn-tools');
           note('  acted: tapped the Tools button');
           return true;
         }
         if (state.beat.id === 'map-row') {
+          const stack = await page.evaluate(() => {
+            const menu = document.getElementById('tools-menu');
+            const flood = document.getElementById('sun-glare-flood');
+            const spot = document.getElementById('tutorial-spotlight');
+            const z = (el) => getComputedStyle(el).zIndex;
+            return {
+              menu: z(menu), flood: z(flood), spot: z(spot),
+              overFlood: !!(flood.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING),
+              underSpot: !!(menu.compareDocumentPosition(spot) & Node.DOCUMENT_POSITION_FOLLOWING),
+            };
+          });
+          check(stack.menu === stack.flood && stack.overFlood && stack.menu === stack.spot && stack.underSpot, `${tag} map/map-row: the popover draws over the glare flood and under the spotlight`, stack);
           const popover = await popoverState(page);
           const waiting = await cardText(page);
           check(popover.open && popover.rows[0]?.tool === 'map' && popover.rows[0].text === 'System map' && popover.rows[0].disabled === false, `${tag} map/map-row: the popover's first row is the live System map`, popover.rows);
@@ -584,13 +630,69 @@ try {
           check(/Tap System map/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
           await shot(page, `${tag}-map-await`);
           if (tag !== 'desktop') return false;
+          if (!recover.outside) {
+            // A tap outside the popover folds it: the ring goes back to the
+            // Tools button, whose press opens it again with the row ringed.
+            recover.outside = true;
+            await page.mouse.click(700, 700);
+            const toTools = await waitState(page, () => {
+              const s = window.__moon.tutorialState();
+              return s.beat?.id === 'tools-chip' && !s.toolsOpen && s.spotlight !== null;
+            });
+            const s = await tstate(page);
+            check(toTools && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: the popover folded at its row puts the ring back on Tools`, { beat: s.beat, tools: s.toolsOpen });
+            await page.click('#planetarium-btn-tools');
+            const toRow = await waitState(page, () => {
+              const s = window.__moon.tutorialState();
+              return s.beat?.id === 'map-row' && s.toolsOpen && s.spotlight !== null;
+            });
+            const r = await tstate(page);
+            check(toRow && (await ringedNear(r, '#tools-menu-list .tools-row[data-tool="map"]')), `${tag} map: Tools reopens the popover with the System map row ringed`, { beat: r.beat, tools: r.toolsOpen });
+          }
           await page.click('#tools-menu-list .tools-row[data-tool="map"]');
           note('  acted: tapped the System map row');
           return true;
         }
         return false;
       },
+      onBeat: async (state) => {
+        if (tag !== 'desktop') return;
+        if (state.beat.id === 'map-picture' && !recover.toolsMidPicture) {
+          // Tools mid-demonstration folds the chart into the popover: the run
+          // steps back to the System map ring rather than playing on without it.
+          recover.toolsMidPicture = true;
+          await page.click('#planetarium-btn-tools');
+          const toRow = await waitState(page, () => {
+            const s = window.__moon.tutorialState();
+            return s.beat?.id === 'map-row' && s.toolsOpen && !s.mapOpen && s.spotlight !== null;
+          });
+          const s = await tstate(page);
+          check(toRow && (await ringedNear(s, '#tools-menu-list .tools-row[data-tool="map"]')), `${tag} map: Tools during the picture folds the chart into the popover and the row is ringed again`, { beat: s.beat, map: s.mapOpen, tools: s.toolsOpen });
+          await shot(page, `${tag}-map-tools-mid-picture`);
+          await page.click('#tools-menu-list .tools-row[data-tool="map"]');
+          note('  acted: Tools during the picture, then the System map row again');
+        } else if (state.beat.id === 'map-rate' && !recover.closeMidClimb) {
+          // The map's own close during the climb: back to the Tools ring, the
+          // clock back on the rung the climb starts from.
+          recover.closeMidClimb = true;
+          await page.click('#map-close');
+          const toTools = await waitState(page, () => {
+            const s = window.__moon.tutorialState();
+            return s.beat?.id === 'tools-chip' && !s.mapOpen && !s.toolsOpen && s.spotlight !== null;
+          });
+          const s = await tstate(page);
+          check(toTools && s.rate === 3600 && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: the chart closed during the climb puts the ring back on Tools, the clock back at 1 hr/s`, { beat: s.beat, rate: s.rate, map: s.mapOpen });
+          await page.click('#planetarium-btn-tools');
+          await waitState(page, () => window.__moon.tutorialState().beat?.id === 'map-row' && window.__moon.tutorialState().toolsOpen);
+          await page.click('#tools-menu-list .tools-row[data-tool="map"]');
+          note('  acted: closed the chart during the climb, then Tools and the row again');
+        }
+      },
     });
+    if (tag === 'desktop') {
+      check(recover.toolsMidPicture, `${tag} map: the picture beat was caught for the Tools press`);
+      if (!recover.closeMidClimb) note('  the climb was too quick to catch for the close (software frames); its recovery is covered by the unit tests');
+    }
     const mp = map.state;
     check(mp.mapOpen === true && mp.toolsOpen === false && mp.landedOn === 'Jupiter', `${tag} map: the chart is open from Jupiter, the popover folded`, { map: mp.mapOpen, tools: mp.toolsOpen, landed: mp.landedOn });
     check(mp.rate === 2592000 && !mp.paused, `${tag} map: the clock climbed to 1 mo/s`, { rate: mp.rate, paused: mp.paused });
@@ -607,6 +709,15 @@ try {
     check(card.dots[2] === 'done' && card.dots[3] === 'current', `${tag} map: the fourth dot is lit`, card.dots);
     check(mp.spotlight === null && (await pressedCount(page)) === 0, `${tag} map: no ring or press once the chart is the focal point`);
     await shot(page, `${tag}-16-map`);
+    if (tag === 'desktop') {
+      // Mid-tour the body card offers no Look inside: the tool waits for the
+      // tour's end, and the press would only have closed the chart.
+      await page.evaluate(() => window.__moon.mapPick('Jupiter'));
+      await sleep(600);
+      const actions = await page.evaluate(() => Array.from(document.querySelectorAll('#map-card-actions button')).map((b) => b.textContent.trim()));
+      check(actions.includes('Focus') && !actions.some((a) => /Look inside/.test(a)), `${tag} map: the body card offers no Look inside during the tour`, actions);
+      await shot(page, `${tag}-16b-map-card`);
+    }
     // Back from the map: Jupiter re-stages with the chart and the popover
     // folded; then the map again, still with no veil.
     await page.click('#tutorial-back');
@@ -616,7 +727,29 @@ try {
     const jupiterThird = await waitReady(page, tag, 'timelapse', { shots: false });
     check(jupiterThird.state.landedOn === 'Jupiter' && jupiterThird.state.rate === 3600 && jupiterThird.state.mapOpen === false, `${tag} back from the map: Jupiter again at 1 hr/s`, { landed: jupiterThird.state.landedOn, rate: jupiterThird.state.rate, map: jupiterThird.state.mapOpen });
     await page.evaluate(() => window.__moon.tutorialNext());
-    const mapAgain = await waitReady(page, tag, 'map', { shots: false });
+    let helpChecked = false;
+    const mapAgain = await waitReady(page, tag, 'map', {
+      shots: false,
+      act: async (state) => {
+        if (tag !== 'desktop' || state.beat.id !== 'tools-chip' || helpChecked) return false;
+        // M with Help open: the chart refuses, and the press is not taken
+        // for one — the Tools ring keeps waiting, with Show me live.
+        helpChecked = true;
+        await page.click('#planetarium-btn-menu');
+        await sleep(300);
+        await page.click('#planetarium-btn-help');
+        await waitState(page, () => document.getElementById('planetarium-help')?.classList.contains('visible'));
+        await page.keyboard.press('m');
+        await sleep(800);
+        const during = await tstate(page);
+        check(during.beat?.id === 'tools-chip' && during.beat.stage === 'await' && !during.userActed && !during.mapOpen, `${tag} map: M with Help open is refused and not taken for a press`, { beat: during.beat, userActed: during.userActed, map: during.mapOpen });
+        await page.keyboard.press('Escape');
+        await waitState(page, () => !document.getElementById('planetarium-help')?.classList.contains('visible'));
+        const after = await tstate(page);
+        check(after.active && after.beat?.id === 'tools-chip' && after.spotlight !== null, `${tag} map: Esc closes Help and the Tools ring still waits`, { active: after.active, beat: after.beat });
+        return false;
+      },
+    });
     check(mapAgain.state.mapOpen === true && mapAgain.state.rate === 2592000 && mapAgain.seen.veilNotes.length === 0, `${tag} map again: open at 1 mo/s, no veil`, { map: mapAgain.state.mapOpen, rate: mapAgain.state.rate, veil: mapAgain.seen.veilNotes });
 
     // Back from the eclipse's first wait: the map re-stages from Earth with

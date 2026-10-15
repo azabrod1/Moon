@@ -136,7 +136,19 @@ export interface TutorialBeat {
   await?: boolean;
   /** Card copy while this beat is current, over the step's staging copy. */
   body?: string;
+  /** The beat plays on this surface — the chart, for the map stop's picture
+   *  and climb. Taken down under it, the run steps back to the beat that
+   *  opens it (recoverBeatRun). A deck row or a Tools row stands on its
+   *  container without saying so: its ring says it. */
+  scene?: 'map';
 }
+
+/** A surface a beat stands on or opens: the deck on one of its tabs, the
+ *  Tools popover, or the full-screen chart. */
+export type TutorialSurface =
+  | { kind: 'deck'; verb: 'travel' | 'observe' }
+  | { kind: 'tools' }
+  | { kind: 'map' };
 
 /** The visible press on the real control: scale and the chip's own on-colour. */
 export const TUTORIAL_PRESS_MS = 180;
@@ -242,7 +254,7 @@ const MAP_BEATS: readonly TutorialBeat[] = [
   // find the ring. Then the clock, climbed by the tour itself — no ring,
   // since the chart is the thing to watch while the rail's readout flashes
   // each rung and the planets answer.
-  { id: 'map-picture', spotlight: null, press: false, perform: { kind: 'none' }, minHoldMs: 2500, body: MAP_PICTURE_BODY },
+  { id: 'map-picture', spotlight: null, press: false, perform: { kind: 'none' }, minHoldMs: 2500, body: MAP_PICTURE_BODY, scene: 'map' },
   {
     id: 'map-rate',
     spotlight: null,
@@ -250,6 +262,7 @@ const MAP_BEATS: readonly TutorialBeat[] = [
     perform: { kind: 'rate-ladder', rates: TUTORIAL_MAP_RATE_LADDER, stepMs: 700 },
     minHoldMs: 0,
     body: 'Now the clock, up to a month every second.',
+    scene: 'map',
   },
 ];
 
@@ -451,8 +464,9 @@ export function initialBeatRun(): BeatRunState {
 export interface BeatSignals {
   /** Visible wall time since the last frame (clamped by the host; zero while hidden). */
   dtMs: number;
-  /** A transient overlay (☰, the time panel, stats, Tools, the map) has the
-   *  screen: the hold waits for it to close rather than fighting the user. */
+  /** A transient overlay (☰, the time panel, stats, Tools, the map — a
+   *  stop's own surfaces aside) has the screen: the hold waits for it to
+   *  close rather than fighting the user. */
   paused: boolean;
   /** The beat's control exists on screen right now. */
   targetPresent: boolean;
@@ -564,6 +578,80 @@ export function stepBeatRun(
       break;
   }
   return { state: next, effects };
+}
+
+/** The surface a beat stands on: its declared scene, else its ring's container. */
+function surfaceNeeded(beat: TutorialBeat): TutorialSurface | null {
+  if (beat.scene === 'map') return { kind: 'map' };
+  const ring = beat.spotlight?.target;
+  if (ring?.kind === 'deck-row') return { kind: 'deck', verb: ring.verb };
+  if (ring?.kind === 'tools-row') return { kind: 'tools' };
+  return null;
+}
+
+/** The surface a beat's perform opens, when it is one of the openers. */
+function surfaceOpened(beat: TutorialBeat): TutorialSurface | null {
+  const perform = beat.perform;
+  if (perform.kind === 'open-deck') return { kind: 'deck', verb: perform.verb };
+  if (perform.kind === 'open-tools') return { kind: 'tools' };
+  if (perform.kind === 'open-map') return { kind: 'map' };
+  return null;
+}
+
+function sameSurface(a: TutorialSurface, b: TutorialSurface): boolean {
+  if (a.kind === 'deck' || b.kind === 'deck') return a.kind === 'deck' && b.kind === 'deck' && a.verb === b.verb;
+  return a.kind === b.kind;
+}
+
+/**
+ * Where the run goes when the user takes down a surface a stop's
+ * demonstration stands on, or null when nothing it needs is lost.
+ *
+ * - An opener (the deck, the Tools popover, the chart) whose surface is gone
+ *   before the run saw it land plays again. Its perform is immediate, so a
+ *   perform that does not hold was undone: a double tap on the Tools button,
+ *   whose second half lands on the popover's catcher and folds it.
+ * - A row whose container closes under its ring while it waits (the deck's
+ *   backdrop, the popover's catcher, ☰ opening over it) steps back to the
+ *   beat that opens the container, so the ring returns to the control that
+ *   opens it again. A row the user has pressed, or whose outcome already
+ *   holds, is left alone: its own press takes the container down.
+ * - A beat that plays on the chart steps back to the beat that opens the
+ *   chart for as long as it plays, and from there to the popover's opener
+ *   if that is closed too.
+ *
+ * Each restart begins at 'enter', so the ring and the tap guard come back
+ * with it. `performed` and `userActed` are the current beat's signals;
+ * `open` says whether a surface is up right now.
+ */
+export function recoverBeatRun(
+  beats: readonly TutorialBeat[],
+  run: BeatRunState,
+  signals: { performed: boolean; userActed: boolean; open: (surface: TutorialSurface) => boolean },
+): BeatRunState | null {
+  const beat = beats[run.index];
+  if (!beat || run.stage === 'done') return null;
+  const restart = (index: number): BeatRunState => ({ index, stage: 'enter', heldMs: 0, pressedMs: 0 });
+  if (run.stage === 'perform' && surfaceOpened(beat) !== null && !signals.performed) return restart(run.index);
+  const need = surfaceNeeded(beat);
+  if (!need || signals.open(need)) return null;
+  const waiting = run.stage === 'enter' || run.stage === 'hold' || run.stage === 'await';
+  if (!beat.scene && (!waiting || signals.userActed || signals.performed)) return null;
+  for (let index = run.index - 1; index >= 0; index--) {
+    const opened = surfaceOpened(beats[index]);
+    if (!opened || !sameSurface(opened, need)) continue;
+    // The opener may stand on a surface of its own (the System map row on
+    // the popover), lost too when that is closed.
+    return recoverBeatRun(beats, restart(index), { ...signals, performed: false, userActed: false }) ?? restart(index);
+  }
+  return null;
+}
+
+/** The rung a ladder climbs from: the preset just below its first rung,
+ *  realtime below the first. A replayed climb starts from here again. */
+export function tutorialLadderBase(rates: readonly number[]): number {
+  const first = TIME_RATE_PRESETS.indexOf(rates[0]);
+  return first > 0 ? TIME_RATE_PRESETS[first - 1] : 1;
 }
 
 /**

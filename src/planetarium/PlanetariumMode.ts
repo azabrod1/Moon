@@ -406,6 +406,8 @@ import {
   eclipseClimaxShown,
   initialBeatRun,
   stepBeatRun,
+  recoverBeatRun,
+  tutorialLadderBase,
   clockWasLive,
   restoredClockUtcMs,
   type TutorialPhase,
@@ -413,6 +415,7 @@ import {
   type BeatRunState,
   type TutorialBeat,
   type TutorialChipId,
+  type TutorialSurface,
   type TutorialTargetRef,
 } from './tutorialLogic';
 import {
@@ -11130,8 +11133,11 @@ export class PlanetariumMode {
   // frame (stepBeatRun in tutorialLogic.ts), in visible wall time: a hidden
   // tab delivers no frames, so a hold waits for the user to come back, and a
   // transient overlay (☰, the time panel, stats, Tools, the map) pauses it
-  // rather than fighting the user for the screen. The runner owns every ring,
-  // bubble and press class, and drops them on every stop, skip and re-stage.
+  // rather than fighting the user for the screen — except a stop's own
+  // surfaces (the map stop's popover and chart), which are its scene. A
+  // surface a beat stands on, taken down under it, steps the run back to the
+  // beat that opens it (recoverBeatRun). The runner owns every ring, bubble
+  // and press class, and drops them on every stop, skip and re-stage.
 
   /** A frame longer than this counts for this much: a slow machine still
    *  shows each beat for several frames instead of one. */
@@ -11157,12 +11163,22 @@ export class PlanetariumMode {
     tutorial.beatFrameMs = now;
     const previous = tutorial.beatRun;
     const beat = tutorial.beats[previous.index];
+    const performed = beat ? this.tutorialPerformed(beat) : true;
+    const recovered = recoverBeatRun(tutorial.beats, previous, {
+      performed,
+      userActed: tutorial.userActed,
+      open: (surface) => this.tutorialSurfaceOpen(surface),
+    });
+    if (recovered) {
+      this.restartTutorialBeatsAt(recovered, previous.index);
+      return;
+    }
     const target = beat?.spotlight ? this.resolveTutorialTarget(beat.spotlight.target) : null;
     const { state, effects } = stepBeatRun(tutorial.beats, previous, {
       dtMs,
       paused: this.tutorialBeatsPaused(),
       targetPresent: target !== null,
-      performed: beat ? this.tutorialPerformed(beat) : true,
+      performed,
       userActed: tutorial.userActed,
       proceed: tutorial.proceed,
     });
@@ -11178,6 +11194,44 @@ export class PlanetariumMode {
     if (tutorial.beatRun && (tutorial.beatRun.index !== previous.index || tutorial.beatRun.stage !== previous.stage)) {
       this.renderTutorialCard();
     }
+  }
+
+  /** Whether a surface a beat stands on or opens is up right now. */
+  private tutorialSurfaceOpen(surface: TutorialSurface): boolean {
+    switch (surface.kind) {
+      case 'deck':
+        return this.isDeckOpen() && this.deckVerb === surface.verb;
+      case 'tools':
+        return this.isToolsMenuOpen();
+      case 'map':
+        return this.isMapOpen();
+    }
+  }
+
+  /** Step the run back to `run` (recoverBeatRun's answer) from the beat at
+   *  `fromIndex`: the ring and the press go, and the replayed beat brings
+   *  its own back from 'enter'. A climb the steps passed over stops where it
+   *  is and the clock returns to the rung below it, so the replay climbs
+   *  from there again — the rate alone, so a pause the ☰ menu or Help holds
+   *  stays theirs to give back. */
+  private restartTutorialBeatsAt(run: BeatRunState, fromIndex: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial?.beats) return;
+    const ladder = tutorial.beats.slice(run.index, fromIndex + 1).find((b) => b.perform.kind === 'rate-ladder');
+    if (ladder?.perform.kind === 'rate-ladder') {
+      if (tutorial.timer !== null) {
+        clearTimeout(tutorial.timer);
+        tutorial.timer = null;
+      }
+      tutorial.ladderDone = false;
+      this.timeState = { ...this.timeState, rate: tutorialLadderBase(ladder.perform.rates) };
+      this.updateTimeUI({ flash: true });
+    }
+    tutorial.beatRun = run;
+    tutorial.userActed = false;
+    tutorial.proceed = false;
+    this.tutorialSpotlight.clear();
+    this.renderTutorialCard();
   }
 
   /**
@@ -11325,9 +11379,10 @@ export class PlanetariumMode {
   /** A press on the Tools button while a stop's demonstration runs. Ringed,
    *  the press is the beat's own: the popover opens as the tour's would.
    *  While the System map row it holds is the waiting beat, a press is
-   *  spent: it would fold the popover under the ring. At any other beat the
-   *  popover opens as it does outside the tour, its tool rows dimmed.
-   *  Returns true when the press was taken. */
+   *  spent: it would fold the popover under the ring (and a popover already
+   *  folded puts the ring back on this button the next frame, recoverBeatRun).
+   *  At any other beat the popover opens as it does outside the tour, its
+   *  tool rows dimmed. Returns true when the press was taken. */
   private tutorialToolsPress(): boolean {
     const tutorial = this.tutorial;
     const beat = this.tutorialCurrentBeat();
@@ -11350,9 +11405,8 @@ export class PlanetariumMode {
   private tutorialMapRowPress(): boolean {
     const tutorial = this.tutorial;
     if (!tutorial) return false;
-    if (TUTORIAL_STEPS[tutorial.stepIndex].stage !== 'map') return true;
-    tutorial.userActed = true;
-    this.openTutorialMap();
+    if (!this.tutorialAtMapStop()) return true;
+    if (this.openTutorialMap()) tutorial.userActed = true;
     return true;
   }
 
@@ -11362,21 +11416,31 @@ export class PlanetariumMode {
    *  is every press at any other stop (the chart's own refusal). */
   private tutorialMapKey(): void {
     const tutorial = this.tutorial;
-    if (!tutorial || TUTORIAL_STEPS[tutorial.stepIndex].stage !== 'map') return;
+    if (!tutorial || !this.tutorialAtMapStop()) return;
     if (!this.isMapOpen()) {
-      tutorial.userActed = true;
-      this.openTutorialMap();
+      if (this.openTutorialMap()) tutorial.userActed = true;
     } else if (tutorial.phase !== 'staging') {
       this.closeMap();
     }
   }
 
-  /** The tour's way into the chart, and the user's at the map stop: the ring
-   *  and the popover fold, and the map opens past its tutorial refusal. */
-  private openTutorialMap(): void {
-    this.tutorialSpotlight.hide();
-    this.closeToolsMenu();
+  /** The tour's way into the chart, and the user's at the map stop: the map
+   *  opens past its tutorial refusal (folding the popover, as every entry
+   *  does), and the ring goes with it. The chart's other refusals stand —
+   *  Help open, a veil up — and then nothing changes: the ring stays and the
+   *  beat keeps waiting, so a press the chart refused is never taken for one
+   *  that landed. True when the chart is open. */
+  private openTutorialMap(): boolean {
     this.openMap({ tour: true });
+    if (!this.isMapOpen()) return false;
+    this.tutorialSpotlight.hide();
+    return true;
+  }
+
+  /** The tour stands at its map stop, where the Tools popover and the chart
+   *  are the stop's own scene. */
+  private tutorialAtMapStop(): boolean {
+    return this.tutorial !== null && TUTORIAL_STEPS[this.tutorial.stepIndex].stage === 'map';
   }
 
   /** The eclipse arrow is spent from the moment its beat's jump has landed on
@@ -11559,7 +11623,7 @@ export class PlanetariumMode {
    *  the map stop the Tools popover and the chart are the stop's own scene,
    *  not overlays over it. */
   private tutorialBeatsPaused(): boolean {
-    const atMapStop = this.tutorial !== null && TUTORIAL_STEPS[this.tutorial.stepIndex].stage === 'map';
+    const atMapStop = this.tutorialAtMapStop();
     // A hold counts visible time, and nothing under an arrival veil is visible.
     return (
       this.arrivalVeilUp() ||
@@ -11764,6 +11828,11 @@ export class PlanetariumMode {
         const frame = () => {
           this.closeObservatoryPanel();
           this.setTutorialOverrides({ hideShip: true, hideLabels: true });
+          // The chart opens at the time stop's hour a second and the climb
+          // starts there, whatever the clock was left at (paused, another rung).
+          if (this.timeState.paused || this.timeState.rate !== TUTORIAL_TIMELAPSE_RATE) {
+            this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
+          }
         };
         if (this.landedOn?.name === 'Jupiter' && !this.arrivalInFlight) {
           landed(frame);
@@ -11771,7 +11840,6 @@ export class PlanetariumMode {
         }
         this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => landed(() => {
           frame();
-          this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
           this.frameTutorialJupiter();
         }), veilNote);
         break;
@@ -12456,7 +12524,7 @@ export class PlanetariumMode {
     // row is the stop's control) and dimmed through the rest of a tour, with
     // the tool rows; outside a tour it is the chart's third front door,
     // beside M and the ☰ row.
-    const atMapStop = this.tutorial !== null && TUTORIAL_STEPS[this.tutorial.stepIndex].stage === 'map';
+    const atMapStop = this.tutorialAtMapStop();
     const mapRow = document.createElement('button');
     mapRow.className = 'pk-row tools-row' + (running && !atMapStop ? ' tools-dim' : '');
     mapRow.dataset.tool = 'map';
@@ -14606,7 +14674,11 @@ export class PlanetariumMode {
     // A body is a different answer to "where do you want to go": the offer of
     // a bare point steps aside for it.
     this.dismissMapTeleportChip();
-    const actions = mapCardActions(target, this.landedOn);
+    // Mid-tour the card offers no Look inside: the tools wait for the tour's
+    // end (enterTool refuses), and the press would only close the chart.
+    const actions = mapCardActions(target, this.landedOn).filter(
+      (action) => action.kind !== 'inside' || this.tutorial === null,
+    );
     // A card with a Look inside button is the tool's other door.
     if (actions.some((action) => action.kind === 'inside')) this.warmToolChunks();
     const color = this.bodyTintCss(name);
@@ -14801,7 +14873,8 @@ export class PlanetariumMode {
    * the journey snapshot and the tutorial and mission refusals like any other.
    */
   private insideMapCard(): boolean {
-    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked) return false;
+    // The tour refuses the tool, so it must not close the chart first.
+    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked || this.tutorial !== null) return false;
     const bodyId = this.mapPicked.name;
     if (bodyId === 'Sun') return false;
     this.closeMap();

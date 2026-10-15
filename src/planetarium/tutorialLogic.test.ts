@@ -26,6 +26,8 @@ import {
   tutorialProgress,
   initialBeatRun,
   stepBeatRun,
+  recoverBeatRun,
+  tutorialLadderBase,
   TUTORIAL_PAUSE_GUARD_MS,
 } from './tutorialLogic';
 import type {
@@ -35,6 +37,7 @@ import type {
   SettleSignals,
   TutorialBeat,
   TutorialPhase,
+  TutorialSurface,
   TutorialTransitionEvent,
 } from './tutorialLogic';
 import { findShadowEvent } from '../astronomy/shadows';
@@ -195,6 +198,11 @@ describe('TUTORIAL_STEPS', () => {
     expect(map.bodyDuring).toMatch(/\{tools\} Tools holds the map/);
     expect(map.body).toMatch(/three seconds/);
     expect(map.primaryLabel).toBe('Next: an eclipse');
+    // The picture and the climb play on the chart; nothing else declares a scene.
+    expect(map.beats!.filter((b) => b.scene === 'map').map((b) => b.id)).toEqual(['map-picture', 'map-rate']);
+    for (const step of TUTORIAL_STEPS) {
+      if (step.id !== 'map') for (const beat of step.beats ?? []) expect(beat.scene).toBeUndefined();
+    }
   });
 
   it('the eclipse: land on Earth, press the panel’s next-solar arrow, say what it did, rewind, Look up, then approach; totality gets its own card', () => {
@@ -415,6 +423,99 @@ describe('canStartTutorial', () => {
     expect(
       canStartTutorial({ missionActive: false, resumePromptVisible: false, alreadyActive: true }),
     ).toBe(false);
+  });
+});
+
+describe('recoverBeatRun', () => {
+  const beatsOf = (id: string) => TUTORIAL_STEPS.find((s) => s.id === id)!.beats!;
+  const map = beatsOf('map');
+  const saturn = beatsOf('saturn');
+  const moon = beatsOf('moon');
+  const at = (beats: readonly TutorialBeat[], id: string, stage: BeatRunState['stage']): BeatRunState => ({
+    index: beats.findIndex((b) => b.id === id),
+    stage,
+    heldMs: 300,
+    pressedMs: 0,
+  });
+  const key = (s: TutorialSurface) => (s.kind === 'deck' ? `deck:${s.verb}` : s.kind);
+  const signals = (open: string[], extra: { performed?: boolean; userActed?: boolean } = {}) => ({
+    performed: extra.performed ?? false,
+    userActed: extra.userActed ?? false,
+    open: (s: TutorialSurface) => open.includes(key(s)),
+  });
+  const recovered = (beats: readonly TutorialBeat[], run: BeatRunState, s: ReturnType<typeof signals>) => {
+    const next = recoverBeatRun(beats, run, s);
+    return next && { id: beats[next.index].id, stage: next.stage, heldMs: next.heldMs };
+  };
+
+  it('a row whose container closes under its ring while it waits steps back to the beat that opens it', () => {
+    // The popover's catcher, or ☰ opening over it, folds the System map row away.
+    for (const stage of ['enter', 'hold', 'await'] as const) {
+      expect(recovered(map, at(map, 'map-row', stage), signals([]))).toEqual({ id: 'tools-chip', stage: 'enter', heldMs: 0 });
+    }
+    expect(recovered(map, at(map, 'map-row', 'await'), signals(['tools']))).toBeNull();
+    // The deck is the same: the row's own tab, not the other one.
+    expect(recovered(saturn, at(saturn, 'saturn-row', 'await'), signals(['deck:observe']))?.id).toBe('teleport-chip');
+    expect(recovered(saturn, at(saturn, 'saturn-row', 'await'), signals(['deck:travel']))).toBeNull();
+    expect(recovered(moon, at(moon, 'moon-row', 'hold'), signals([]))?.id).toBe('observatory-chip');
+  });
+
+  it('a row the user pressed, or whose outcome already holds, is left to land: its own press takes the container down', () => {
+    expect(recovered(map, at(map, 'map-row', 'await'), signals([], { userActed: true }))).toBeNull();
+    // M at the Tools ring opened the chart past the popover: the row's outcome holds.
+    expect(recovered(map, at(map, 'map-row', 'enter'), signals(['map'], { performed: true }))).toBeNull();
+    // Pressed (by the user or Show me), the row's own perform folds the
+    // popover into the chart: the chart is up and the outcome holds.
+    for (const stage of ['press', 'perform'] as const) {
+      expect(recovered(map, at(map, 'map-row', stage), signals(['map'], { performed: true }))).toBeNull();
+      expect(recovered(saturn, at(saturn, 'saturn-row', stage), signals([]))).toBeNull();
+    }
+  });
+
+  it('the chart closed under the map stop’s picture or climb steps back to the row, or to the Tools ring when the popover is shut too', () => {
+    for (const id of ['map-picture', 'map-rate']) {
+      for (const stage of ['enter', 'hold', 'perform'] as const) {
+        // The map's own close, a T or O chip, a teleport from its card: nothing is left open.
+        expect(recovered(map, at(map, id, stage), signals([]))?.id).toBe('tools-chip');
+        // The Tools button: the chart folds into the popover, its row ready.
+        expect(recovered(map, at(map, id, stage), signals(['tools']))?.id).toBe('map-row');
+        expect(recovered(map, at(map, id, stage), signals(['map']))).toBeNull();
+      }
+    }
+    // A scene beat stands on its chart however it got there, acted on or not.
+    expect(recovered(map, at(map, 'map-rate', 'perform'), signals([], { performed: true, userActed: true }))?.id).toBe('tools-chip');
+  });
+
+  it('an opener whose surface was taken down before the run saw it land plays again', () => {
+    // A double tap on the Tools button: the second half lands on the catcher.
+    expect(recovered(map, at(map, 'tools-chip', 'perform'), signals([]))).toEqual({ id: 'tools-chip', stage: 'enter', heldMs: 0 });
+    expect(recovered(map, at(map, 'tools-chip', 'perform'), signals(['tools'], { performed: true }))).toBeNull();
+    expect(recovered(saturn, at(saturn, 'teleport-chip', 'perform'), signals([]))?.id).toBe('teleport-chip');
+    // Before its perform the opener is still waiting: nothing to undo.
+    expect(recovered(map, at(map, 'tools-chip', 'hold'), signals([]))).toBeNull();
+    expect(recovered(map, at(map, 'tools-chip', 'await'), signals([]))).toBeNull();
+  });
+
+  it('beats that stand on nothing never step back', () => {
+    for (const beats of [map, saturn, moon, beatsOf('timelapse'), beatsOf('eclipse')]) {
+      for (const beat of beats) {
+        const standsOn = beat.scene !== undefined || beat.spotlight?.target.kind === 'deck-row' || beat.spotlight?.target.kind === 'tools-row';
+        const opens = ['open-deck', 'open-tools', 'open-map'].includes(beat.perform.kind);
+        if (standsOn || opens) continue;
+        for (const stage of ['enter', 'hold', 'await', 'press', 'perform'] as const) {
+          expect(recoverBeatRun(beats, at(beats, beat.id, stage), signals([]))).toBeNull();
+        }
+      }
+    }
+    expect(recoverBeatRun(map, { index: map.length, stage: 'done', heldMs: 0, pressedMs: 0 }, signals([]))).toBeNull();
+  });
+});
+
+describe('tutorialLadderBase', () => {
+  it('is the rung just below a ladder’s first: realtime under Jupiter’s climb, an hour a second under the map’s', () => {
+    expect(tutorialLadderBase(TUTORIAL_RATE_LADDER)).toBe(1);
+    expect(tutorialLadderBase(TUTORIAL_MAP_RATE_LADDER)).toBe(3600);
+    expect(tutorialLadderBase(TUTORIAL_MAP_RATE_LADDER)).toBe(TUTORIAL_TIMELAPSE_RATE);
   });
 });
 

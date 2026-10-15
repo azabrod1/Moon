@@ -2991,8 +2991,9 @@
     /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
        chrome itself — the HUD washes toward white while staying clickable
        underneath (pointer-events pass through). Above the everyday chrome
-       (deck 27, action cluster 28), level with the tutorial spotlight (29, later
-       in the DOM, so the ring draws over the flood), below the tutorial card (30), the ☰
+       (deck 27, action cluster 28), level with the Tools popover and the
+       tutorial spotlight (29, both later in the DOM, so the popover and the
+       ring draw over the flood), below the tutorial card (30), the ☰
        menu (34), the veils (50), and help (70): deliberate reading surfaces
        never drown. Opacity is driven per frame by the mode controller. */
     #sun-glare-flood {
@@ -3362,15 +3363,18 @@
        the live button rect (the cluster's left edge moves with the autopilot
        label and Leave/Observatory visibility); right:14px is only the static
        fallback, and `top` drops under the tutorial's card when the two would
-       overlap. At the cluster's own z (28) and later in the document, so a
-       second Tools-button click lands on the catcher and closes rather than
-       re-opening; under the tutorial's spotlight (29) and card (30), so the
-       tour can ring the System map row and dim the rest, as it does the deck. */
+       overlap. At z 29, above the cluster (28), so a second Tools-button
+       click lands on the catcher and closes rather than re-opening. Level
+       with the Sun glare flood and the tutorial spotlight and between them
+       in the document, so the popover draws over the flood (a reading
+       surface never drowns) and under the spotlight, which can ring its
+       System map row and dim the rest as it does the deck; under the
+       tutorial card (30) and the veils (50). */
     #tools-menu {
       display: none;
       position: fixed;
       inset: 0;
-      z-index: 28;
+      z-index: 29;
       pointer-events: auto;
     }
     #tools-menu.visible { display: block; }

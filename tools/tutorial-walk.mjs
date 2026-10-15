@@ -787,8 +787,10 @@ try {
           lastBeat = key;
           await shot(page, `${tag}-eclipse-${state.beat.id}-${state.beat.stage}`);
           if (state.beat.stage === 'hold' && state.beat.hasSpotlight && !state.beat.await) await assertSpotlight(page, tag, 'eclipse', state);
-          if (state.beat.id === 'jumped' && state.beat.stage === 'hold') jumpedState = state;
-          if (state.beat.id === 'look-up' && state.beat.stage === 'hold') rewoundState = state;
+          // Read at a beat's first sighting: a short hold can fall between
+          // two polls, and the jump and the rewind have both landed by then.
+          if (state.beat.id === 'jumped' && !jumpedState) jumpedState = state;
+          if (state.beat.id === 'look-up' && !rewoundState) rewoundState = state;
         }
         if (state.beat?.stage === 'await' && !answered.has(state.beat.index)) {
           answered.add(state.beat.index);

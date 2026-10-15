@@ -106,17 +106,87 @@ vec2 lensUnwarpOutputNdc(vec2 outputNdc) {
 `;
 
 /**
+ * The point-sprite disc kernel's sampling rule, shared by the GLSL below and
+ * its TypeScript mirror (pinned together by lensShader.test.ts).
+ *
+ * A fragment of a point sprite integrates the disc profile over its own
+ * pixel square with an N×N midpoint grid. The grid is chosen so the fine
+ * lattice it forms has at least POINT_SPRITE_SAMPLES_ACROSS samples across
+ * the star's diameter: N = ceil(8·σ/D), where D is the star's diameter in
+ * output pixels and σ the output pixels one source pixel spans at that star
+ * (the lens magnifies the frame centre about 1.3× and shrinks its edges), so
+ * a star D output px wide is D/σ fragments wide. Capped at
+ * POINT_SPRITE_MAX_SAMPLES_PER_AXIS per axis; the cap only binds for stars
+ * under one source pixel (a 1× monitor at Low), where it leaves a 2 % swing.
+ * N = 1 — a star of 8σ px or more — is the plain centre sample.
+ */
+export const POINT_SPRITE_SAMPLES_ACROSS = 8;
+export const POINT_SPRITE_MAX_SAMPLES_PER_AXIS = 8;
+
+/** Sub-samples per axis for a target `diameterPx` output px wide where one
+ *  source pixel spans `sourcePxScale` output px. The vertex GLSL mirrors it. */
+export function pointSpriteSamplesPerAxis(diameterPx: number, sourcePxScale: number): number {
+  const wanted = Math.ceil(POINT_SPRITE_SAMPLES_ACROSS * sourcePxScale / Math.max(diameterPx, 1e-6));
+  return Math.min(POINT_SPRITE_MAX_SAMPLES_PER_AXIS, Math.max(1, wanted));
+}
+
+/** The disc profile at `d` diameters from the centre: full to a fifth of the
+ *  diameter, smooth to nothing at the rim (1 − smoothstep(0.2, 0.5, d)). */
+export function pointSpriteProfile(d: number): number {
+  const t = Math.min(1, Math.max(0, (d - 0.2) / 0.3));
+  return 1 - t * t * (3 - 2 * t);
+}
+
+/**
+ * The fragment kernel, as the GLSL computes it: the falloff of a fragment
+ * whose centre sits `outputOffsetPx` from the star's warped centre, for a
+ * star `diameterPx` wide, sampled `samplesPerAxis` × `samplesPerAxis` times
+ * over the fragment's source pixel. `sourceToOutputPx` is the pair of output-
+ * pixel vectors one source pixel spans along source x and along source y,
+ * [xx, xy, yx, yy] — the lens's local Jacobian, the identity with the lens
+ * off. One sample per axis is the plain centre sample, the kernel as it was.
+ */
+export function pointSpriteFalloff(
+  diameterPx: number,
+  outputOffsetPx: readonly [number, number],
+  sourceToOutputPx: readonly [number, number, number, number],
+  samplesPerAxis: number,
+): number {
+  const invD = 1 / Math.max(diameterPx, 1e-6);
+  if (samplesPerAxis <= 1) {
+    const d = Math.hypot(outputOffsetPx[0], outputOffsetPx[1]) * invD;
+    return d > 0.5 ? 0 : pointSpriteProfile(d);
+  }
+  const n = samplesPerAxis;
+  const [xx, xy, yx, yy] = sourceToOutputPx;
+  let sum = 0;
+  for (let a = 0; a < n; a++) {
+    const sx = (a + 0.5) / n - 0.5;
+    const rowX = outputOffsetPx[0] + xx * sx;
+    const rowY = outputOffsetPx[1] + xy * sx;
+    for (let b = 0; b < n; b++) {
+      const sy = (b + 0.5) / n - 0.5;
+      sum += pointSpriteProfile(Math.hypot(rowX + yx * sy, rowY + yy * sy) * invD);
+    }
+  }
+  return sum / (n * n);
+}
+
+/**
  * Point-sprite pre-distortion, vertex side — the statement block a lens-aware
  * Points shader runs after writing gl_Position. Warps the centre into output
- * space, then bounds gl_PointSize conservatively by unwarping the four
- * corners of the desired output quad (the source-space footprint of a warped
- * disc is anisotropic; the max over the corners always covers it). ONE
- * definition for every point-sprite consumer (moon dots, starfield) — the
- * pre-distortion contract must never drift between them.
+ * space, measures the lens's local scale at the star (one source pixel each
+ * way, as output pixels, by central differences of the warp), picks the
+ * kernel's sample count from it, then bounds gl_PointSize conservatively by
+ * unwarping the four corners of the desired output quad (the source-space
+ * footprint of a warped disc is anisotropic; the max over the corners always
+ * covers it). ONE definition for every point-sprite consumer (moon dots,
+ * starfield) — the pre-distortion contract must never drift between them.
  *
  * The surrounding shader declares `attribute float size`, `uniform float
- * pixelRatio`, the pair of varyings `vec2 vLensOutputCentre` / `float
- * vLensTargetDiameterPx`, and interpolates a block providing
+ * pixelRatio`, the varyings `vec2 vLensOutputCentre`, `float
+ * vLensTargetDiameterPx`, `vec4 vLensSourceToOutputPx` and `float
+ * vLensSamplesPerAxis`, and interpolates a block providing
  * lensWarpSourceNdc/lensUnwarpOutputNdc (lensShaderGLSL, or a superset like
  * the sun-glare mask block).
  */
@@ -124,10 +194,20 @@ export const lensPointSpriteVertexGLSL = /* glsl */ `
           vec2 sourceCentre = gl_Position.xy / gl_Position.w;
           vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
           vLensTargetDiameterPx = size * pixelRatio;
-          // The fragment kernel's footprint in output px: the disc itself, or
-          // for targets under 2 px the splat's tent (width D + 1) plus a pixel
-          // so every fragment whose centre it reaches is rasterised.
-          float footprintPx = vLensTargetDiameterPx < 2.0 ? vLensTargetDiameterPx + 2.0 : vLensTargetDiameterPx;
+          // One source pixel each way as output px: the lens's local scale
+          // here. Central differences; the warp is smooth, so a one-pixel
+          // step is exact to float precision. The identity with the lens off.
+          vec2 stepX = vec2(2.0 / max(uLensFramebufferPx.x, 1.0), 0.0);
+          vec2 stepY = vec2(0.0, 2.0 / max(uLensFramebufferPx.y, 1.0));
+          vec2 alongX = (lensWarpSourceNdc(sourceCentre + stepX) - lensWarpSourceNdc(sourceCentre - stepX)) * uLensFramebufferPx * 0.25;
+          vec2 alongY = (lensWarpSourceNdc(sourceCentre + stepY) - lensWarpSourceNdc(sourceCentre - stepY)) * uLensFramebufferPx * 0.25;
+          vLensSourceToOutputPx = vec4(alongX, alongY);
+          float sourcePxScale = max(length(alongX), length(alongY));
+          vLensSamplesPerAxis = clamp(ceil(${POINT_SPRITE_SAMPLES_ACROSS.toFixed(1)} * sourcePxScale / max(vLensTargetDiameterPx, 1e-6)), 1.0, ${POINT_SPRITE_MAX_SAMPLES_PER_AXIS.toFixed(1)});
+          // The kernel's footprint in output px: the disc, plus one source
+          // pixel each way when fragments integrate over their pixel square
+          // (a fragment whose centre lies just outside the rim still overlaps it).
+          float footprintPx = vLensSamplesPerAxis > 1.5 ? vLensTargetDiameterPx + 2.0 * sourcePxScale : vLensTargetDiameterPx;
           vec2 halfOutputNdc = vec2(
             footprintPx / max(uLensFramebufferPx.x, 1.0),
             footprintPx / max(uLensFramebufferPx.y, 1.0)
@@ -149,24 +229,31 @@ export const lensPointSpriteVertexGLSL = /* glsl */ `
 
 /**
  * Point-sprite disc kernel, fragment side — pairs with
- * lensPointSpriteVertexGLSL. Measures each fragment's distance from the
- * warped centre in OUTPUT pixels (so the drawn disc is round after the lens
- * pass), discards outside the disc, and leaves `falloff` (and `d`) for the
- * shader's own colour/alpha line.
+ * lensPointSpriteVertexGLSL. Measures each fragment's offset from the warped
+ * centre in OUTPUT pixels (so the drawn disc is round after the lens pass),
+ * discards outside the disc, and leaves `falloff` (and `d`, the centre's
+ * distance in diameters) for the shader's own colour/alpha line.
  *
- * Targets under 2 output px take a different path. The disc profile is
- * sampled at fragment centres, so a 1-px target (every floor-sized star on
- * a 1× monitor) reads 1.0 from its one fragment while the same star at 2
- * device px on a 2× display spreads ≈0.5 over four — twice as bright per
- * CSS pixel, and it flickers to nothing as it crosses a pixel edge. Those
- * targets instead splat a tent of half-width D/2 + 0.5 (the disc plus half a
- * pixel of box filter) carrying the disc kernel's mean energy, 0.4·D²
- * (2π∫₀^0.5 falloff(u)·u du = 0.399, so the two paths meet at D = 2 on
- * average). The tent's discrete sum over the fragment grid is normalised
- * per axis for the centre's sub-pixel phase, so every position carries the
- * same energy (no shimmer) and no fragment exceeds ~0.6. That is what a
- * 1.5× supersample used to do for them. Targets of 2 px and up are byte-
- * identical to before, so a 2× display's stars never change.
+ * The profile is full to a fifth of the diameter and smooth to nothing at
+ * the rim. Each fragment takes its MEAN over its own pixel square — an N×N
+ * midpoint grid in source pixels, each point carried to output pixels by
+ * the lens's local scale from the vertex — rather than one reading at its
+ * centre. Summed over the pixel lattice, a pixel-averaged profile adds up to
+ * the profile's whole integral (0.399·D²) wherever the star's centre falls
+ * between pixels; a profile read at pixel centres does not, and a 2-px star
+ * (every floor-sized star on a 2× display at Medium) read that way carried
+ * up to twice the light at one sub-pixel position as at another, so the
+ * whole faint sky pulsed as the view panned. With at least eight fine
+ * samples across the star (POINT_SPRITE_SAMPLES_ACROSS) the remaining swing
+ * is under half a percent; stars of 8σ px and more take the single centre
+ * reading, which is that accurate on its own and is the kernel as it was,
+ * byte for byte. The one size rule replaces an earlier two-path kernel (a
+ * square tent splat under 2 px) and its seam.
+ *
+ * This conserves the star's light in the scene target. The output pass then
+ * resamples that target and tone-maps it, and both weigh a star's light by
+ * how it is spread over pixels; what the eye finally sees is theirs to keep
+ * steady, not this kernel's.
  */
 export const lensPointSpriteFragmentGLSL = /* glsl */ `
           vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
@@ -174,18 +261,25 @@ export const lensPointSpriteFragmentGLSL = /* glsl */ `
           vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
           float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
           float falloff;
-          if (vLensTargetDiameterPx < 2.0) {
-            float h = 0.5 * vLensTargetDiameterPx + 0.5;
-            // Fragment centres sit at integer offsets minus the centre's phase.
-            vec2 phase = fract((vLensOutputCentre * 0.5 + 0.5) * uLensFramebufferPx - 0.5);
-            vec2 sum = vec2(0.0);
-            for (int k = -2; k <= 3; k++) sum += max(vec2(0.0), 1.0 - abs(float(k) - phase) / h);
-            vec2 tent = max(vec2(0.0), 1.0 - abs(outputOffsetPx) / h);
-            falloff = min(1.0, 0.4 * vLensTargetDiameterPx * vLensTargetDiameterPx * tent.x * tent.y / max(sum.x * sum.y, 1e-4));
-            if (falloff <= 0.0) discard;
-          } else {
+          int samplesPerAxis = int(vLensSamplesPerAxis + 0.5);
+          if (samplesPerAxis <= 1) {
             if (d > 0.5) discard;
             falloff = 1.0 - smoothstep(0.2, 0.5, d);
+          } else {
+            float n = float(samplesPerAxis);
+            float invD = 1.0 / max(vLensTargetDiameterPx, 1e-6);
+            float sum = 0.0;
+            for (int a = 0; a < ${POINT_SPRITE_MAX_SAMPLES_PER_AXIS}; a++) {
+              if (a >= samplesPerAxis) break;
+              vec2 row = outputOffsetPx + vLensSourceToOutputPx.xy * ((float(a) + 0.5) / n - 0.5);
+              for (int b = 0; b < ${POINT_SPRITE_MAX_SAMPLES_PER_AXIS}; b++) {
+                if (b >= samplesPerAxis) break;
+                vec2 o = row + vLensSourceToOutputPx.zw * ((float(b) + 0.5) / n - 0.5);
+                sum += 1.0 - smoothstep(0.2, 0.5, length(o) * invD);
+              }
+            }
+            falloff = sum / (n * n);
+            if (falloff <= 0.0) discard;
           }
 `;
 

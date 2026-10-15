@@ -62,6 +62,8 @@ export class MoonDots {
         varying float vAlpha;
         varying vec2 vLensOutputCentre;
         varying float vLensTargetDiameterPx;
+        varying vec4 vLensSourceToOutputPx;
+        varying float vLensSamplesPerAxis;
         uniform float pixelRatio;
         ${lensShaderGLSL}
         void main() {
@@ -77,6 +79,8 @@ export class MoonDots {
         varying float vAlpha;
         varying vec2 vLensOutputCentre;
         varying float vLensTargetDiameterPx;
+        varying vec4 vLensSourceToOutputPx;
+        varying float vLensSamplesPerAxis;
         ${lensShaderGLSL}
         void main() {
           ${lensPointSpriteFragmentGLSL}

@@ -492,7 +492,7 @@ try {
     note(`  card ${JSON.stringify(card)}`);
     check(card.dots[0] === 'done' && card.dots[1] === 'current', `${tag} moon: the dots advance`, card.dots);
     check(/Earth · \d+% lit/.test(card.kicker), `${tag} moon: the kicker is Earth's live phase`, card.kicker);
-    check(card.body === 'That’s Earth. Seen from the Moon, it goes through phases too.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
+    check(card.body === 'That’s Earth. From the Moon, it goes through phases too.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
     await shot(page, `${tag}-14-moon`);
     // Jupiter: the arrival, then the rail ringed while the clock climbs.
     await page.evaluate(() => window.__moon.tutorialNext());
@@ -627,7 +627,7 @@ try {
           check(popover.open && popover.rows[0]?.tool === 'map' && popover.rows[0].text === 'System map' && popover.rows[0].disabled === false, `${tag} map/map-row: the popover's first row is the live System map`, popover.rows);
           check(popover.rows.filter((r) => r.tool === 'volumeCompare' || r.tool === 'interior').every((r) => r.disabled), `${tag} map/map-row: the tool rows stay dimmed through the tour`, popover.rows);
           check(!!popover.rect && !!waiting.rect && !overlaps(popover.rect, waiting.rect), `${tag} map/map-row: the popover is clear of the card`, { popover: popover.rect, card: waiting.rect });
-          check(/Tap System map/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
+          check(/Tap System\smap/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
           await shot(page, `${tag}-map-await`);
           if (tag !== 'desktop') return false;
           if (!recover.outside) {

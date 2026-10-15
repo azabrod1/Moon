@@ -89,7 +89,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(lookUp.spotlight?.target).toEqual({ kind: 'panel-window' });
     expect(lookUp.perform).toEqual({ kind: 'look-up' });
     expect(lookUp.body?.startsWith(picture.body!)).toBe(true);
-    expect(lookUp.body).toMatch(/Tap Look up/);
+    expect(lookUp.body).toMatch(/Tap Look\sup/);
     expect(lookUp.spotlight?.label).toBe('Tap Look up');
     expect(moon.bodyDuring).not.toMatch(/Tap the Moon/);
     expect(moon.body).toMatch(/Earth/);
@@ -178,7 +178,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(row.spotlight?.key).toBe('M');
     expect(row.await).toBe(true);
     expect(row.perform).toEqual({ kind: 'open-map' });
-    expect(row.body).toMatch(/Tap System map/);
+    expect(row.body).toMatch(/Tap System\smap/);
     // The chart alone for a moment, then the climb — the tour's own, with no
     // ring, since the chart is the thing to watch.
     expect(picture.spotlight).toBeNull();

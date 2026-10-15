@@ -159,7 +159,8 @@ export const TUTORIAL_PRESS_MS = 180;
 export const TUTORIAL_PAUSE_GUARD_MS = 700;
 
 const MOON_LANDED_BODY = 'You’re on the Moon. This panel tells you what’s in the sky here and what’s coming up.';
-const MOON_LOOKUP_BODY = `${MOON_LANDED_BODY} Tap Look up.`;
+// A no-break space holds a two-word control name on one line.
+const MOON_LOOKUP_BODY = `${MOON_LANDED_BODY} Tap Look\u00a0up.`;
 
 const MOON_BEATS: readonly TutorialBeat[] = [
   {
@@ -247,7 +248,7 @@ const MAP_BEATS: readonly TutorialBeat[] = [
     await: true,
     perform: { kind: 'open-map' },
     minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
-    body: 'The other tools in here are worth a look later. Tap System map.',
+    body: 'There’s more in here to try later. Tap System\u00a0map.',
   },
   // The chart first, still at the time stop's hour a second: long enough to
   // find the ring. Then the clock, climbed by the tour itself — no ring,
@@ -266,7 +267,7 @@ const MAP_BEATS: readonly TutorialBeat[] = [
 ];
 
 const ECLIPSE_REWIND_BODY = 'Let’s go back to when the Moon first touches the Sun.';
-const ECLIPSE_LOOKUP_BODY = 'Now tap Look up to watch from the ground.';
+const ECLIPSE_LOOKUP_BODY = 'Now tap Look\u00a0up to watch from the ground.';
 
 const ECLIPSE_BEATS: readonly TutorialBeat[] = [
   { id: 'earth-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Earth…' },
@@ -356,7 +357,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     bodyDuring: '{observatory} Observatory lands you on a planet or moon, so you can see its sky. Tap it.',
     // The kicker is live once the view is up: Earth's phase as the panel
     // reads it, which the copy explains.
-    body: 'That’s Earth. Seen from the Moon, it goes through phases too.',
+    body: 'That’s Earth. From the Moon, it goes through phases too.',
     beats: MOON_BEATS,
     primaryLabel: 'Next: speed up time',
     ghostLabel: 'Skip tour',
@@ -396,12 +397,12 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     bodyDuring: 'For the last stop, we’re heading back to Earth.',
     // Settling is the approach: the kicker counts down to the peak live, and
     // the clock drops to realtime at totality, as the copy promises.
-    body: 'Time is running at 20 minutes a second while the Moon slides across the Sun. It will slow back to normal for totality.',
+    body: 'Time is running at 20 minutes a second while the Moon slides across the Sun. It slows down for totality.',
     beats: ECLIPSE_BEATS,
     totality: {
       title: 'Totality',
       kicker: '6 minutes · the longest on land this century',
-      body: 'That glow is the Sun’s corona, its outer atmosphere. You can only see it like this during totality. Drag to look around.',
+      body: 'That glow is the corona, the Sun’s outer atmosphere. Drag to look around.',
     },
     primaryLabel: 'Finish',
     ghostLabel: 'Skip tour',

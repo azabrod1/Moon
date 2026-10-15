@@ -563,7 +563,9 @@ try {
       return { ship: s?.ship ?? null, jupiter: j && { x: j.screenX, y: j.screenY, drawn: j.drawn } };
     });
     await page.evaluate(() => window.__moon.tutorialNext());
-    await page.waitForFunction(() => window.__moon.tutorialState().beat !== null, null, { timeout: 60_000 });
+    // The first beat is the arrival, one frame long from Jupiter; the card's
+    // Show me belongs to the Tools ring after it.
+    await page.waitForFunction(() => window.__moon.tutorialState().beat?.id === 'tools-chip', null, { timeout: 60_000 });
     card = await cardText(page);
     check(/Tools holds the map/.test(card.body) && card.primary === 'Show me', `${tag} map: the staging copy names the Tools button`, { body: card.body, primary: card.primary });
     const map = await waitReady(page, tag, 'map', {

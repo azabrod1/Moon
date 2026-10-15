@@ -382,7 +382,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     kicker: 'From Jupiter · 1 mo/s',
     bodyDuring: 'The map shows the whole solar system at once. It’s in {tools} Tools. Tap it.',
     // Periods at a month a second: Mercury 88 days, Earth a year, Jupiter 11.9 years.
-    body: 'Mercury now goes around the Sun every 3 seconds and Earth every 12. Jupiter takes about two and a half minutes. Drag to turn the map, and pinch or scroll to zoom.',
+    body: 'Mercury now circles the Sun every 3 seconds and Earth every 12. Jupiter takes about two and a half minutes. Drag to turn the map, and pinch or scroll to zoom.',
     beats: MAP_BEATS,
     primaryLabel: 'Next: an eclipse',
     ghostLabel: 'Skip tour',
@@ -412,7 +412,9 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'wrap',
     title: 'That’s the tour',
     kicker: null,
-    body: '{teleport} Teleport takes you anywhere and {observatory} Observatory lands you there. The slider at the bottom speeds up time, and {tools} Tools has the map and more. Help is in the ☰ menu.',
+    // A no-break space keeps ☰ on the line of "menu" (the glyph tokens are
+    // bound to their names by the card itself, see tutorialBodySegments).
+    body: '{teleport} Teleport takes you anywhere and {observatory} Observatory lands you there. The slider at the bottom speeds up time, and {tools} Tools has the map and more. Help is in the ☰\u00a0menu.',
     // A door, not a summary: three things to try next, each from where you
     // started — one the tour taught, two it only pointed at (a tool, a mission).
     chips: [

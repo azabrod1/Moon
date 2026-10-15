@@ -1735,6 +1735,8 @@
        SVGs (see TutorialCard.renderBody). A bare 20 px glyph in the text, not a
        button replica: the real control is the one under the spotlight. */
     .tutorial-body .tutorial-inline-icon { width: 20px; height: 20px; vertical-align: -5px; margin: 0 2px 0 1px; color: var(--t1); }
+    /* A glyph and the name after it break as one word: no line ends on the glyph. */
+    .tutorial-body .tutorial-icon-word { white-space: nowrap; }
     /* The wrap's doors: three things to try next, as pills under the copy. */
     .tutorial-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .tutorial-chip {
@@ -5230,7 +5232,7 @@
             <button class="tutorial-hero-btn" id="tutorial-hero-tour">Take the tour <span class="tutorial-hero-mins">· 3 min</span></button>
             <button class="tutorial-hero-btn" id="tutorial-hero-explore">Explore on my own</button>
           </div>
-          <p class="tutorial-hero-note">You can take the tour later from the ☰ menu. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
+          <p class="tutorial-hero-note">You can take the tour later from the ☰&nbsp;menu. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
         </div>
       </div>
 

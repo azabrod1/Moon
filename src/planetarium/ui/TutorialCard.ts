@@ -46,25 +46,36 @@ export const TUTORIAL_SHOW_ME_LABEL = 'Show me';
 /** The action-cluster buttons a card body can quote by their glyph. */
 export type TutorialIcon = 'teleport' | 'observatory' | 'tools';
 
-/** A run of body text, or one of the action-cluster button glyphs inline. */
+/** A run of body text, or one of the action-cluster button glyphs inline with
+ *  `word`, the word after its token (the button's name, with its leading
+ *  space and any punctuation), which the card keeps on the glyph's line. */
 export type TutorialBodySegment =
   | { kind: 'text'; text: string }
-  | { kind: 'icon'; icon: TutorialIcon };
+  | { kind: 'icon'; icon: TutorialIcon; word: string };
 
 /**
  * Split a card body on its {teleport}/{observatory}/{tools} tokens. The card
  * renders icon segments as clones of the live action-button SVGs, so the
- * glyph the copy points at is exactly the glyph on screen.
+ * glyph the copy points at is exactly the glyph on screen. Each glyph takes
+ * the word after it along: Chromium breaks after an inline SVG even before a
+ * no-break space, so only a nowrap run keeps a line from ending on the glyph
+ * with its name on the next.
  */
 export function tutorialBodySegments(body: string): TutorialBodySegment[] {
-  return body
-    .split(/(\{teleport\}|\{observatory\}|\{tools\})/)
-    .filter((part) => part.length > 0)
-    .map((part) =>
-      part === '{teleport}' || part === '{observatory}' || part === '{tools}'
-        ? { kind: 'icon' as const, icon: part.slice(1, -1) as TutorialIcon }
-        : { kind: 'text' as const, text: part },
-    );
+  const segments: TutorialBodySegment[] = [];
+  const parts = body.split(/(\{teleport\}|\{observatory\}|\{tools\})/);
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex];
+    if (part === '{teleport}' || part === '{observatory}' || part === '{tools}') {
+      const [, word, rest] = /^(\s*\S*)([\s\S]*)$/.exec(parts[partIndex + 1] ?? '') ?? ['', '', ''];
+      segments.push({ kind: 'icon', icon: part.slice(1, -1) as TutorialIcon, word });
+      if (rest.length > 0) segments.push({ kind: 'text', text: rest });
+      partIndex++;
+    } else if (part.length > 0) {
+      segments.push({ kind: 'text', text: part });
+    }
+  }
+  return segments;
 }
 
 /** The body a step shows in a phase: while staging, the current beat's own
@@ -260,11 +271,11 @@ export class TutorialCard {
     });
   }
 
-  /** Body text with each icon token replaced by a clone of the real button SVG
-   *  (a missing source just drops the glyph — the button name beside it still
-   *  carries the meaning). The clone is decoration: the real control is the
-   *  one under the spotlight, so it carries no button styling and is hidden
-   *  from assistive tech. */
+  /** Body text with each icon token replaced by a clone of the real button SVG,
+   *  bound to the word after it in a nowrap run (a missing source just drops
+   *  the glyph — the button name beside it still carries the meaning). The
+   *  clone is decoration: the real control is the one under the spotlight, so
+   *  it carries no button styling and is hidden from assistive tech. */
   private renderBody(body: string): void {
     if (!this.bodyEl) return;
     this.bodyEl.textContent = '';
@@ -274,11 +285,17 @@ export class TutorialCard {
         continue;
       }
       const src = this.icons[seg.icon];
-      if (!src) continue;
+      if (!src) {
+        this.bodyEl.appendChild(document.createTextNode(seg.word));
+        continue;
+      }
       const svg = src.cloneNode(true) as Element;
       svg.setAttribute('class', 'tutorial-inline-icon');
       svg.setAttribute('aria-hidden', 'true');
-      this.bodyEl.appendChild(svg);
+      const bound = document.createElement('span');
+      bound.className = 'tutorial-icon-word';
+      bound.append(svg, seg.word);
+      this.bodyEl.appendChild(bound);
     }
   }
 

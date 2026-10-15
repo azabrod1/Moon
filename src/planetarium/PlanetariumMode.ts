@@ -10877,7 +10877,7 @@ export class PlanetariumMode {
         this.refreshTourEntries();
       }
       if (toast === 'skip') {
-        this.notification.show('Tour ended. You can take it again from the ☰ menu.', { force: true });
+        this.notification.show('Tour ended. You can take it again from the ☰\u00a0menu.', { force: true });
       } else if (toast === 'return') {
         this.notification.show('Back where you started.', { force: true });
       }

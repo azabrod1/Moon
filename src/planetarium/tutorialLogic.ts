@@ -40,7 +40,7 @@ export interface SettleNeeds {
 
 export interface TutorialStep {
   id: TutorialStepId;
-  /** Card headline (the eyebrow is always "Tutorial"). */
+  /** Card headline (the eyebrow is always "Tour"). */
   title: string;
   /** Mono line under the title for the place or the date; null for none. A
    *  stop that states a fact about the sky overrides it live (PlanetariumMode). */
@@ -158,8 +158,7 @@ export const TUTORIAL_PRESS_MS = 180;
  *  same thumb, and a double tap must not skip a scene. */
 export const TUTORIAL_PAUSE_GUARD_MS = 700;
 
-const MOON_LANDED_BODY =
-  'You’re standing on the Moon. The panel reads this sky: phases, distances, and what happens next.';
+const MOON_LANDED_BODY = 'You’re on the Moon. This panel tells you what’s in the sky here and what’s coming up.';
 const MOON_LOOKUP_BODY = `${MOON_LANDED_BODY} Tap Look up.`;
 
 const MOON_BEATS: readonly TutorialBeat[] = [
@@ -179,7 +178,7 @@ const MOON_BEATS: readonly TutorialBeat[] = [
     perform: { kind: 'observe', name: 'Moon', parentPlanet: 'Earth' },
     minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
     veilNote: 'Landing on the Moon…',
-    body: 'The {observatory} Observatory lands you on a world. Tap the Moon.',
+    body: 'You can land anywhere on this list. Tap the Moon.',
   },
   // Picture first: two seconds of the Moon from orbit, then the panel.
   {
@@ -227,7 +226,7 @@ const JUPITER_BEATS: readonly TutorialBeat[] = [
   },
 ];
 
-const MAP_PICTURE_BODY = 'The whole solar system, on the same clock. The ring is you, at Jupiter.';
+const MAP_PICTURE_BODY = 'Here it is. That orange ring around Jupiter is you.';
 
 const MAP_BEATS: readonly TutorialBeat[] = [
   // Jupiter, where the time stop left the ship: on the way forward nothing
@@ -248,7 +247,7 @@ const MAP_BEATS: readonly TutorialBeat[] = [
     await: true,
     perform: { kind: 'open-map' },
     minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
-    body: 'The map and the side quests live here. Tap System map.',
+    body: 'The other tools in here are worth a look later. Tap System map.',
   },
   // The chart first, still at the time stop's hour a second: long enough to
   // find the ring. Then the clock, climbed by the tour itself — no ring,
@@ -261,13 +260,13 @@ const MAP_BEATS: readonly TutorialBeat[] = [
     press: false,
     perform: { kind: 'rate-ladder', rates: TUTORIAL_MAP_RATE_LADDER, stepMs: 700 },
     minHoldMs: 0,
-    body: 'Now the clock, up to a month every second.',
+    body: 'Now watch the planets as time speeds up to a month a second.',
     scene: 'map',
   },
 ];
 
-const ECLIPSE_REWIND_BODY = 'Let’s rewind to first contact.';
-const ECLIPSE_LOOKUP_BODY = 'Back at first contact. Tap Look up and watch it begin.';
+const ECLIPSE_REWIND_BODY = 'Let’s go back to when the Moon first touches the Sun.';
+const ECLIPSE_LOOKUP_BODY = 'Now tap Look up to watch from the ground.';
 
 const ECLIPSE_BEATS: readonly TutorialBeat[] = [
   { id: 'earth-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Earth…' },
@@ -278,7 +277,7 @@ const ECLIPSE_BEATS: readonly TutorialBeat[] = [
     await: true,
     perform: { kind: 'jump', type: 'solar-eclipse', direction: 1 },
     minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
-    body: 'From any world, the panel lists the eclipses to come. Tap the arrow to jump to the next one.',
+    body: 'Wherever you are, this panel lists the eclipses coming up. Tap the arrow to jump to the next one.',
   },
   // Narration between two presses: held long enough to read its one line.
   {
@@ -287,7 +286,7 @@ const ECLIPSE_BEATS: readonly TutorialBeat[] = [
     press: false,
     perform: { kind: 'none' },
     minHoldMs: 3600,
-    body: 'That parks you three minutes before the peak, on 2 August 2027.',
+    body: 'That jumped the clock to 2 August 2027, three minutes before the peak.',
   },
   { id: 'rewind', spotlight: null, press: false, perform: { kind: 'rewind' }, minHoldMs: 400, body: ECLIPSE_REWIND_BODY },
   {
@@ -340,26 +339,27 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'saturn',
     title: 'Teleport',
     kicker: 'Saturn',
-    bodyDuring: 'Five stops, about two minutes. First, {teleport} Teleport: this button jumps you to any planet or moon. Tap it.',
-    body: 'One tap, anywhere in the solar system. Drag to look around.',
+    bodyDuring: 'Five stops, about three minutes. First up is {teleport} Teleport, which takes you to any planet or moon. Tap it.',
+    body: 'Here’s Saturn, rings and all. Drag to look around.',
     beats: SATURN_BEATS,
-    // Skip reads "Skip tutorial" here too: a skip before the first arrival
+    // Skip reads "Skip tour" here too: a skip before the first arrival
     // restores nothing, because nothing has moved yet (everStaged).
     primaryLabel: 'Next: the Moon',
-    ghostLabel: 'Skip tutorial',
+    ghostLabel: 'Skip tour',
     stage: 'saturn',
     settle: SCENE_SETTLE,
   },
   {
     id: 'moon',
-    title: 'Stand on a world',
+    title: 'Land on the Moon',
     kicker: 'The Moon',
-    bodyDuring: 'The {observatory} Observatory lands you on a world. Tap it.',
-    // The kicker is live once the view is up: Earth's phase as the panel reads it.
-    body: 'Look up, and there is Earth.',
+    bodyDuring: '{observatory} Observatory lands you on a planet or moon, so you can see its sky. Tap it.',
+    // The kicker is live once the view is up: Earth's phase as the panel
+    // reads it, which the copy explains.
+    body: 'That’s Earth. Seen from the Moon, it goes through phases too.',
     beats: MOON_BEATS,
     primaryLabel: 'Next: speed up time',
-    ghostLabel: 'Skip tutorial',
+    ghostLabel: 'Skip tour',
     stage: 'moon',
     settle: LOOKUP_SETTLE,
   },
@@ -367,24 +367,25 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'timelapse',
     title: 'Speed up time',
     kicker: 'Jupiter · 1 hr/s',
-    bodyDuring: 'Next, time. The clock at the bottom of the screen sets the speed. Drag it right to 1 hr/s.',
-    body: 'An hour passes every second. Jupiter turns once in ten seconds; Io laps it in forty-two. Tap a notch on the rail for any speed, or tap the date to jump.',
+    bodyDuring: 'Next stop, Jupiter. The slider at the bottom of the screen sets how fast time runs. Drag it right to 1 hr/s.',
+    // Jupiter's day is 9.9 hours and Io's orbit 42.5, so at an hour a second.
+    body: 'Every second is now an hour, so Jupiter spins once in about 10 seconds and its moon Io circles it in 42. Drag further to go faster, or tap the date to change it.',
     beats: JUPITER_BEATS,
     primaryLabel: 'Next: the map',
-    ghostLabel: 'Skip tutorial',
+    ghostLabel: 'Skip tour',
     stage: 'timelapse',
     settle: SCENE_SETTLE,
   },
   {
     id: 'map',
-    title: 'The whole system',
+    title: 'The map',
     kicker: 'From Jupiter · 1 mo/s',
-    bodyDuring: 'Where are you? {tools} Tools holds the map. Tap it.',
+    bodyDuring: 'The map shows the whole solar system at once. It’s in {tools} Tools. Tap it.',
     // Periods at a month a second: Mercury 88 days, Earth a year, Jupiter 11.9 years.
-    body: 'A month every second: Mercury laps the Sun in three seconds, Earth in twelve, Jupiter in two and a half minutes. Drag to turn the map, pinch or scroll to zoom.',
+    body: 'Mercury now goes around the Sun every 3 seconds and Earth every 12. Jupiter takes about two and a half minutes. Drag to turn the map, and pinch or scroll to zoom.',
     beats: MAP_BEATS,
     primaryLabel: 'Next: an eclipse',
-    ghostLabel: 'Skip tutorial',
+    ghostLabel: 'Skip tour',
     stage: 'map',
     settle: SCENE_SETTLE,
   },
@@ -392,17 +393,18 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'eclipse',
     title: 'A total solar eclipse',
     kicker: 'From Earth · 2 August 2027',
-    bodyDuring: 'Last stop: Earth, and the sky’s best show.',
-    // Settling is the approach: the kicker counts down to the peak live.
-    body: 'The Moon is crossing the Sun at twenty minutes a second. Stay with it.',
+    bodyDuring: 'For the last stop, we’re heading back to Earth.',
+    // Settling is the approach: the kicker counts down to the peak live, and
+    // the clock drops to realtime at totality, as the copy promises.
+    body: 'Time is running at 20 minutes a second while the Moon slides across the Sun. It will slow back to normal for totality.',
     beats: ECLIPSE_BEATS,
     totality: {
       title: 'Totality',
       kicker: '6 minutes · the longest on land this century',
-      body: 'The Sun’s corona, from the ground. You can drag to look around; the clock is back to realtime.',
+      body: 'That glow is the Sun’s corona, its outer atmosphere. You can only see it like this during totality. Drag to look around.',
     },
-    primaryLabel: 'Next: wrap up',
-    ghostLabel: 'Skip tutorial',
+    primaryLabel: 'Finish',
+    ghostLabel: 'Skip tour',
     stage: 'eclipse',
     settle: SURFACE_SETTLE,
   },
@@ -410,7 +412,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'wrap',
     title: 'That’s the tour',
     kicker: null,
-    body: '{teleport} Teleport jumps. {observatory} Observatory lands and reads the sky. The clock bends time. {tools} Tools holds the map and the side quests. Help is in the ☰ menu.',
+    body: '{teleport} Teleport takes you anywhere and {observatory} Observatory lands you there. The slider at the bottom speeds up time, and {tools} Tools has the map and more. Help is in the ☰ menu.',
     // A door, not a summary: three things to try next, each from where you
     // started — one the tour taught, two it only pointed at (a tool, a mission).
     chips: [

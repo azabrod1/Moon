@@ -17,7 +17,7 @@ describe('tutorialCardModel', () => {
   it('the first card is Saturn, staging at once: the first dot lit, skip live, no Back', () => {
     const m = model('saturn', 'staging');
     expect(m.progress).toEqual({ count: 5, current: 1, done: 0, label: 'Stop 1 of 5' });
-    expect(m.ghost).toEqual({ label: 'Skip tutorial', disabled: false });
+    expect(m.ghost).toEqual({ label: 'Skip tour', disabled: false });
     expect(m.back).toBeNull();
     expect(m.kicker).toBe('Saturn');
   });
@@ -110,7 +110,7 @@ describe('tutorialCardModel', () => {
   it('the eclipse holds Next through the approach, and totality swaps in its own card', () => {
     const eclipse = stepById('eclipse');
     const i = indexOf('eclipse');
-    const held = { label: 'Next: wrap up', action: 'advance', disabled: true };
+    const held = { label: 'Finish', action: 'advance', disabled: true };
     expect(tutorialCardModel(eclipse, i, 'staging').primary).toEqual(held);
     const approaching = tutorialCardModel(eclipse, i, 'settling', { kicker: 'From Earth · peak in 1h 12m' });
     expect(approaching.primary).toEqual(held);
@@ -120,7 +120,7 @@ describe('tutorialCardModel', () => {
     expect(totality.title).toBe('Totality');
     expect(totality.kicker).toBe(eclipse.totality!.kicker);
     expect(totality.body).toBe(eclipse.totality!.body);
-    expect(totality.primary).toEqual({ label: 'Next: wrap up', action: 'advance', disabled: false });
+    expect(totality.primary).toEqual({ label: 'Finish', action: 'advance', disabled: false });
     // A step without a climax ignores the flag.
     expect(tutorialCardModel(stepById('saturn'), indexOf('saturn'), 'ready', { totality: true }).title).toBe('Teleport');
   });

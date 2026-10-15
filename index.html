@@ -3361,13 +3361,16 @@
        card anchored under the Tools button — openToolsMenu sets `left` from
        the live button rect (the cluster's left edge moves with the autopilot
        label and Leave/Observatory visibility); right:14px is only the static
-       fallback. z above the cluster (28) so a second Tools-button click lands
-       on the catcher and closes rather than re-opening. */
+       fallback, and `top` drops under the tutorial's card when the two would
+       overlap. At the cluster's own z (28) and later in the document, so a
+       second Tools-button click lands on the catcher and closes rather than
+       re-opening; under the tutorial's spotlight (29) and card (30), so the
+       tour can ring the System map row and dim the rest, as it does the deck. */
     #tools-menu {
       display: none;
       position: fixed;
       inset: 0;
-      z-index: 60;
+      z-index: 28;
       pointer-events: auto;
     }
     #tools-menu.visible { display: block; }
@@ -5258,11 +5261,11 @@
             </section>
             <section class="help-section">
               <h4>The whole system at once (<kbd>M</kbd>)</h4>
-              <p>Press <kbd>M</kbd> for a map of the solar system with your ship on it, running on the same clock &mdash; speed time up and everything wheels around the Sun. Drag to turn the view, scroll to zoom, and switch between a compressed layout and true distances. <kbd>M</kbd> or Esc drops you back into the ship.</p>
+              <p>Press <kbd>M</kbd>, or pick <strong>System map</strong> under the Tools button, for a map of the solar system with your ship on it, running on the same clock &mdash; speed time up and everything wheels around the Sun. Drag to turn the view, scroll to zoom, and switch between a compressed layout and true distances. <kbd>M</kbd> or Esc drops you back into the ship.</p>
             </section>
             <section class="help-section">
               <h4>Tools</h4>
-              <p>The Tools button holds the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Hover a layer to see it, click to read about it, and open any claim to see the evidence and how its score is made. <strong>Temperature</strong> swaps the materials for the heat, on that world's own scale; hatching means nobody knows. Where two models fit the data, both are there to switch between. The Sun is there too, from its fusion core out to the photosphere. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
+              <p>The Tools button holds the system map and the side quests. <strong>How many fit?</strong> pours one world into another and counts. <strong>Look inside</strong> cuts a world open: its layers at their real depths, glowing with their own heat, and a key that says what each is made of and how well we know it. Hover a layer to see it, click to read about it, and open any claim to see the evidence and how its score is made. <strong>Temperature</strong> swaps the materials for the heat, on that world's own scale; hatching means nobody knows. Where two models fit the data, both are there to switch between. The Sun is there too, from its fusion core out to the photosphere. Pick any planet or moon from its chip, or use <strong>Look inside</strong> on a body's map card. <strong>Leave</strong> (or Esc) puts you back exactly where you were.</p>
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>

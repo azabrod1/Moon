@@ -22,7 +22,15 @@
 //   - Back is live mid-demonstration and re-stages the previous stop; pressed
 //     under the Moon landing's veil it waits for the landing, then re-stages;
 //   - Jupiter rings the time rail while the clock climbs three real detents to
-//     1 hr/s with the panel closed; the eclipse presses the panel's own
+//     1 hr/s with the panel closed; the map stop rings the Tools button and
+//     the popover's System map row (the desktop taps both, the phone presses
+//     Show me; the popover's first row is the live map, the tool rows stay
+//     dimmed, and the popover sits clear of the card), opens the chart from
+//     Jupiter with no veil, with the ring the ship docked at Jupiter, and
+//     climbs the clock itself to 1 mo/s; Back from the map re-stages Jupiter
+//     with the chart and the popover folded, and Back from the eclipse's
+//     first wait re-stages the map from Earth under the tour's own Jupiter
+//     veil; the eclipse presses the panel's own
 //     next-solar arrow (parking three minutes before the 2027-08-02 peak),
 //     rewinds to first contact, presses Look up, declutters the surface view
 //     and approaches at 20 min/s, holding Next until totality's card,
@@ -37,7 +45,7 @@
 //   - on the phone, Back where I was from a surface view with the sheet
 //     parked full brings the surface view and the park back;
 //   - the wrap's three chips each restore the journey and then do what they
-//     say: a teleport to Mars, the Moon landing with Earth overhead, the
+//     say: the Moon landing with Earth overhead, Look inside on Earth, the
 //     Voyager 1 mission;
 //   - the first run opens on the welcome, under which a held flight key does
 //     not steer the ship, and whose three ways out all mark it
@@ -311,10 +319,10 @@ try {
     // Saturn stages at once: the demonstration, beat by beat, then the composed arrival.
     let card = await cardText(page);
     let firstBeat = (await tstate(page)).beat;
-    check(card.dots.length === 4 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
+    check(card.dots.length === 5 && card.dots[0] === 'current' && card.back === '', `${tag} saturn: the first dot is lit at once, no Back`, card.dots);
     check(card.primary === 'Show me' && (firstBeat.stage === 'await' || (card.primaryDisabled === true && card.primaryAnimation === 'none')), `${tag} saturn: the first scene's Show me, dimmed through the tap guard with no ring`, { primary: card.primary, disabled: card.primaryDisabled, animation: card.primaryAnimation, stage: firstBeat.stage });
     const heldWidth = card.primaryWidth;
-    check(/Four stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
+    check(/Five stops/.test(card.body), `${tag} saturn: the staging copy introduces the tour`, card.body);
     // The desktop user gets there first at both scenes: the chip, then the
     // row — whose plain teleport must give way to the tour's composed arrival.
     const saturn = await waitReady(page, tag, 'saturn', {
@@ -501,7 +509,7 @@ try {
     check(ground === 'Jupiter', `${tag} timelapse: the bottom bar names the ground, not the last system cruised`, ground);
     check(timelapse.seen.veilNotes.length === 0 || timelapse.seen.veilNotes.every((n) => /Landing on Jupiter/.test(n)), `${tag} timelapse: the veil caption was the tour's`, timelapse.seen.veilNotes);
     card = await cardText(page);
-    check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
+    check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: the map', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
     await shot(page, `${tag}-15-timelapse`);
 
     // Back from Jupiter: the Moon re-stages while landed on Jupiter, and the
@@ -537,6 +545,91 @@ try {
     await page.evaluate(() => window.__moon.tutorialNext());
     const jupiterAgain = await waitReady(page, tag, 'timelapse', { shots: false });
     check(jupiterAgain.state.landedOn === 'Jupiter' && jupiterAgain.state.rate === 3600, `${tag} back from Jupiter: Jupiter again at 1 hr/s`, { landed: jupiterAgain.state.landedOn, rate: jupiterAgain.state.rate });
+
+    // The map: the Tools button and its System map row (the desktop taps
+    // both, the phone presses Show me), the chart held at 1 hr/s, then the
+    // tour's own climb to a month a second. Forward from Jupiter nothing
+    // moves, so no veil.
+    const popoverState = (page) => page.evaluate(() => {
+      const c = document.querySelector('#tools-menu .tools-card')?.getBoundingClientRect();
+      const rows = Array.from(document.querySelectorAll('#tools-menu-list .tools-row')).map((r) => ({
+        tool: r.dataset.tool ?? null, text: r.querySelector('b')?.textContent ?? '', disabled: r.disabled,
+      }));
+      return { open: document.getElementById('tools-menu')?.classList.contains('visible') ?? false, rect: c && { x: c.x, y: c.y, w: c.width, h: c.height }, rows };
+    });
+    const chartState = (page) => page.evaluate(() => {
+      const s = window.__moon.mapState();
+      const j = window.__moon.mapProbe('Jupiter');
+      return { ship: s?.ship ?? null, jupiter: j && { x: j.screenX, y: j.screenY, drawn: j.drawn } };
+    });
+    await page.evaluate(() => window.__moon.tutorialNext());
+    await page.waitForFunction(() => window.__moon.tutorialState().beat !== null, null, { timeout: 60_000 });
+    card = await cardText(page);
+    check(/Tools holds the map/.test(card.body) && card.primary === 'Show me', `${tag} map: the staging copy names the Tools button`, { body: card.body, primary: card.primary });
+    const map = await waitReady(page, tag, 'map', {
+      act: async (state) => {
+        if (state.beat.id === 'tools-chip' && tag === 'desktop') {
+          await page.click('#planetarium-btn-tools');
+          note('  acted: tapped the Tools button');
+          return true;
+        }
+        if (state.beat.id === 'map-row') {
+          const popover = await popoverState(page);
+          const waiting = await cardText(page);
+          check(popover.open && popover.rows[0]?.tool === 'map' && popover.rows[0].text === 'System map' && popover.rows[0].disabled === false, `${tag} map/map-row: the popover's first row is the live System map`, popover.rows);
+          check(popover.rows.filter((r) => r.tool === 'volumeCompare' || r.tool === 'interior').every((r) => r.disabled), `${tag} map/map-row: the tool rows stay dimmed through the tour`, popover.rows);
+          check(!!popover.rect && !!waiting.rect && !overlaps(popover.rect, waiting.rect), `${tag} map/map-row: the popover is clear of the card`, { popover: popover.rect, card: waiting.rect });
+          check(/Tap System map/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
+          await shot(page, `${tag}-map-await`);
+          if (tag !== 'desktop') return false;
+          await page.click('#tools-menu-list .tools-row[data-tool="map"]');
+          note('  acted: tapped the System map row');
+          return true;
+        }
+        return false;
+      },
+    });
+    const mp = map.state;
+    check(mp.mapOpen === true && mp.toolsOpen === false && mp.landedOn === 'Jupiter', `${tag} map: the chart is open from Jupiter, the popover folded`, { map: mp.mapOpen, tools: mp.toolsOpen, landed: mp.landedOn });
+    check(mp.rate === 2592000 && !mp.paused, `${tag} map: the clock climbed to 1 mo/s`, { rate: mp.rate, paused: mp.paused });
+    check(map.seen.veilNotes.length === 0, `${tag} map: no veil on the way forward from Jupiter`, map.seen.veilNotes);
+    if (tag === 'desktop') {
+      check(!map.seen.presses.includes('planetarium-btn-tools') && !map.seen.presses.some((p) => /tools-row/.test(p)), `${tag} map: the user's own taps were taken, with no press of the tour's`, map.seen.presses);
+    } else {
+      check(map.seen.presses.includes('planetarium-btn-tools') && map.seen.presses.some((p) => /tools-row/.test(p)), `${tag} map: Show me visibly pressed the Tools button and the row`, map.seen.presses);
+    }
+    const chart = await chartState(page);
+    check(!!chart.ship && !!chart.jupiter && chart.ship.docked === true && Math.hypot(chart.ship.screenX - chart.jupiter.x, chart.ship.screenY - chart.jupiter.y) < 24, `${tag} map: the ring is the ship, docked at Jupiter`, chart);
+    card = await cardText(page);
+    check(card.kicker === 'From Jupiter · 1 mo/s' && /three seconds/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} map: the settled card`, { kicker: card.kicker, body: card.body, primary: card.primary });
+    check(card.dots[2] === 'done' && card.dots[3] === 'current', `${tag} map: the fourth dot is lit`, card.dots);
+    check(mp.spotlight === null && (await pressedCount(page)) === 0, `${tag} map: no ring or press once the chart is the focal point`);
+    await shot(page, `${tag}-16-map`);
+    // Back from the map: Jupiter re-stages with the chart and the popover
+    // folded; then the map again, still with no veil.
+    await page.click('#tutorial-back');
+    await sleep(300);
+    const backedToJupiter = await tstate(page);
+    check(backedToJupiter.stepId === 'timelapse' && backedToJupiter.mapOpen === false && backedToJupiter.toolsOpen === false, `${tag} back from the map: Jupiter re-stages with the chart and the popover folded`, { step: backedToJupiter.stepId, map: backedToJupiter.mapOpen, tools: backedToJupiter.toolsOpen });
+    const jupiterThird = await waitReady(page, tag, 'timelapse', { shots: false });
+    check(jupiterThird.state.landedOn === 'Jupiter' && jupiterThird.state.rate === 3600 && jupiterThird.state.mapOpen === false, `${tag} back from the map: Jupiter again at 1 hr/s`, { landed: jupiterThird.state.landedOn, rate: jupiterThird.state.rate, map: jupiterThird.state.mapOpen });
+    await page.evaluate(() => window.__moon.tutorialNext());
+    const mapAgain = await waitReady(page, tag, 'map', { shots: false });
+    check(mapAgain.state.mapOpen === true && mapAgain.state.rate === 2592000 && mapAgain.seen.veilNotes.length === 0, `${tag} map again: open at 1 mo/s, no veil`, { map: mapAgain.state.mapOpen, rate: mapAgain.state.rate, veil: mapAgain.seen.veilNotes });
+
+    // Back from the eclipse's first wait: the map re-stages from Earth with
+    // the time stop's landing on Jupiter, under the tour's own veil.
+    await page.evaluate(() => window.__moon.tutorialNext());
+    await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.beat?.id === 'next-solar' && s.beat.stage === 'await'; }, null, { timeout: 180_000 });
+    await page.click('#tutorial-back');
+    await sleep(300);
+    const backedToMap = await tstate(page);
+    check(backedToMap.stepId === 'map' && backedToMap.phase === 'staging' && backedToMap.mapOpen === false, `${tag} back from the eclipse: the map re-stages`, { step: backedToMap.stepId, phase: backedToMap.phase, map: backedToMap.mapOpen });
+    const mapFromEarth = await waitReady(page, tag, 'map', { shots: false });
+    check(mapFromEarth.state.landedOn === 'Jupiter' && mapFromEarth.state.mapOpen === true && mapFromEarth.state.rate === 2592000, `${tag} back from the eclipse: the map stop lands on Jupiter again and opens the chart at 1 mo/s`, { landed: mapFromEarth.state.landedOn, map: mapFromEarth.state.mapOpen, rate: mapFromEarth.state.rate });
+    check(mapFromEarth.seen.veilNotes.length > 0 && mapFromEarth.seen.veilNotes.every((n) => /Landing on Jupiter/.test(n)), `${tag} back from the eclipse: the veil caption was the tour's`, mapFromEarth.seen.veilNotes);
+    const chartAgain = await chartState(page);
+    check(!!chartAgain.ship && !!chartAgain.jupiter && chartAgain.ship.docked === true && Math.hypot(chartAgain.ship.screenX - chartAgain.jupiter.x, chartAgain.ship.screenY - chartAgain.jupiter.y) < 24, `${tag} back from the eclipse: the ring is the ship at Jupiter again`, chartAgain);
 
     // The eclipse: the panel's own arrow, the rewind, Look up, the approach, totality.
     await page.evaluate(() => window.__moon.tutorialNext());
@@ -627,7 +720,7 @@ try {
     card = await cardText(page);
     check(card.dots.every((d) => d === 'done'), `${tag} wrap: every dot done`, card.dots);
     const chips = await page.evaluate(() => Array.from(document.querySelectorAll('#tutorial-chips .tutorial-chip')).map((b) => [b.textContent, b.getBoundingClientRect().height]));
-    check(chips.map((c) => c[0]).join('|') === 'Visit Mars|Earth from the Moon|Follow Voyager 1', `${tag} wrap: the three doors`, chips);
+    check(chips.map((c) => c[0]).join('|') === 'Earth from the Moon|Look inside Earth|Follow Voyager 1', `${tag} wrap: the three doors`, chips);
     if (tag === 'phone') check(chips.every((c) => c[1] >= 44), `${tag} wrap: the chips are 44 px targets`, chips);
     const ghostShown = await page.evaluate(() => (document.getElementById('tutorial-ghost')?.offsetParent ?? null) !== null);
     check(card.primary === 'Back where I was' && !ghostShown, `${tag} wrap: Back where I was, no skip`, { primary: card.primary, ghostShown });
@@ -727,7 +820,7 @@ try {
     check(before.sheetPark === 'full' && before.panelOpen && before.surface, 'return sheet: starting in surface view with the sheet parked full', { park: before.sheetPark, panel: before.panelOpen, surface: before.surface });
     await page.evaluate(() => window.__moon.tutorialStart());
     await page.waitForFunction(() => window.__moon.tutorialState().active, null, { timeout: 60_000 });
-    const staged = await page.evaluate(() => window.__moon.tutorialStage(4));
+    const staged = await page.evaluate(() => window.__moon.tutorialStage(5));
     await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'wrap' && window.__moon.tutorialState().phase === 'ready', null, { timeout: 120_000 });
     check(staged, 'return sheet: the wrap card staged directly');
     await page.click('#tutorial-primary');
@@ -746,10 +839,15 @@ try {
   if (!ONLY || ONLY === 'desktop' || ONLY === 'chips') {
     const speedLabel = (page) => page.evaluate(() => document.getElementById('planetarium-speed-label')?.textContent ?? '');
     for (const [chip, expect] of [
-      ['visit-mars', async (page) => {
-        await page.waitForFunction(() => (document.getElementById('planetarium-speed-label')?.textContent ?? '') === 'Mars', null, { timeout: 300_000 }).catch(() => {});
-        const state = await tstate(page);
-        check((await speedLabel(page)) === 'Mars' && state.landedOn === null, 'chip visit-mars: teleported to Mars', { label: await speedLabel(page), landed: state.landedOn });
+      ['look-inside-earth', async (page) => {
+        await page.waitForFunction(() => window.__moon.interiorReady?.() === true, null, { timeout: 300_000 }).catch(() => {});
+        const tool = await page.evaluate(() => ({
+          ready: window.__moon.interiorReady?.() === true,
+          planetariumHidden: getComputedStyle(document.getElementById('planetarium-ui')).display === 'none',
+          body: document.getElementById('interior-body-name')?.textContent?.trim() ?? '',
+        }));
+        check(tool.ready && tool.planetariumHidden, 'chip look-inside-earth: the Look-inside tool is up with the planetarium folded away', tool);
+        check(tool.body === 'Earth', 'chip look-inside-earth: the tool opened on Earth', tool.body);
       }],
       ['earth-from-moon', async (page) => {
         await page.waitForFunction(() => { const s = window.__moon.tutorialState(); return s.landedOn === 'Moon' && s.surface && s.earthOnScreen; }, null, { timeout: 300_000 }).catch(() => {});
@@ -767,7 +865,7 @@ try {
       const page = await boot(context);
       await page.evaluate(() => window.__moon.tutorialStart());
       await page.waitForFunction(() => window.__moon.tutorialState().active, null, { timeout: 60_000 });
-      const staged = await page.evaluate(() => window.__moon.tutorialStage(4));
+      const staged = await page.evaluate(() => window.__moon.tutorialStage(5));
       await page.waitForFunction(() => window.__moon.tutorialState().stepId === 'wrap' && window.__moon.tutorialState().phase === 'ready', null, { timeout: 120_000 });
       check(staged, `chip ${chip}: the wrap card staged directly`);
       await page.click(`#tutorial-chips .tutorial-chip[data-chip="${chip}"]`);

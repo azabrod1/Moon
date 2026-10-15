@@ -18,6 +18,8 @@ import {
   clockWasLive,
   restoredClockUtcMs,
   TUTORIAL_STOP_COUNT,
+  TUTORIAL_MAP_RATE_LADDER,
+  TUTORIAL_MAP_RATE,
   TUTORIAL_PRESS_MS,
   TUTORIAL_RATE_LADDER,
   tutorialStopNumber,
@@ -42,12 +44,12 @@ import { TIME_RATE_PRESETS } from './timeRates';
 const MIN = 60_000;
 
 describe('TUTORIAL_STEPS', () => {
-  it('is the four stops and the wrap in order, ids unique — no welcome card, the first stop stages at once', () => {
-    expect(TUTORIAL_STEPS.map((s) => s.id)).toEqual(['saturn', 'moon', 'timelapse', 'eclipse', 'wrap']);
+  it('is the five stops and the wrap in order, ids unique — no welcome card, the first stop stages at once', () => {
+    expect(TUTORIAL_STEPS.map((s) => s.id)).toEqual(['saturn', 'moon', 'timelapse', 'map', 'eclipse', 'wrap']);
   });
 
-  it('stages match the cards: the four stops scene-staged, the wrap card-only', () => {
-    expect(TUTORIAL_STEPS.map((s) => s.stage)).toEqual(['saturn', 'moon', 'timelapse', 'eclipse', 'none']);
+  it('stages match the cards: the five stops scene-staged, the wrap card-only', () => {
+    expect(TUTORIAL_STEPS.map((s) => s.stage)).toEqual(['saturn', 'moon', 'timelapse', 'map', 'eclipse', 'none']);
   });
 
   it('card-only steps settle instantly; staged steps wait out arrivals and dwell', () => {
@@ -91,7 +93,7 @@ describe('TUTORIAL_STEPS', () => {
     // Every ringed control is the user's to press, so the pace is theirs,
     // and every ring's bubble says what to do with it.
     const ringed = TUTORIAL_STEPS.flatMap((s) => s.beats ?? []).filter((b) => b.spotlight);
-    expect(ringed.length).toBeGreaterThanOrEqual(7);
+    expect(ringed.length).toBeGreaterThanOrEqual(9);
     expect(ringed.every((b) => b.await === true)).toBe(true);
     expect(ringed.every((b) => /^(Tap|Drag) /.test(b.spotlight!.label))).toBe(true);
     const unringed = TUTORIAL_STEPS.flatMap((s) => s.beats ?? []).filter((b) => !b.spotlight);
@@ -104,12 +106,12 @@ describe('TUTORIAL_STEPS', () => {
     }
   });
 
-  it('the stops are the four scene-staged steps; the wrap counts as after them', () => {
-    expect(TUTORIAL_STOP_COUNT).toBe(4);
-    expect(TUTORIAL_STEPS.map((_, i) => tutorialStopNumber(i))).toEqual([1, 2, 3, 4, null]);
-    expect(tutorialProgress(0)).toEqual({ count: 4, current: 1, done: 0, label: 'Stop 1 of 4' });
-    expect(tutorialProgress(1)).toEqual({ count: 4, current: 2, done: 1, label: 'Stop 2 of 4' });
-    expect(tutorialProgress(4)).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
+  it('the stops are the five scene-staged steps; the wrap counts as after them', () => {
+    expect(TUTORIAL_STOP_COUNT).toBe(5);
+    expect(TUTORIAL_STEPS.map((_, i) => tutorialStopNumber(i))).toEqual([1, 2, 3, 4, 5, null]);
+    expect(tutorialProgress(0)).toEqual({ count: 5, current: 1, done: 0, label: 'Stop 1 of 5' });
+    expect(tutorialProgress(1)).toEqual({ count: 5, current: 2, done: 1, label: 'Stop 2 of 5' });
+    expect(tutorialProgress(5)).toEqual({ count: 5, current: null, done: 5, label: 'All 5 stops seen' });
   });
 
   it('Saturn plays its demonstration: ring and press the Teleport chip, then ring and press the Saturn row into the arrival', () => {
@@ -124,8 +126,8 @@ describe('TUTORIAL_STEPS', () => {
     expect(row.perform).toEqual({ kind: 'arrive' });
     expect(row.veilNote).toMatch(/Saturn/);
     // The copy while the beats play introduces the tour; the settled copy is the lesson.
-    expect(saturn.bodyDuring).toMatch(/Four stops/);
-    expect(saturn.body).not.toMatch(/Four stops/);
+    expect(saturn.bodyDuring).toMatch(/Five stops/);
+    expect(saturn.body).not.toMatch(/Five stops/);
     // A beat that presses must have something to press.
     for (const step of TUTORIAL_STEPS) {
       for (const beat of step.beats ?? []) {
@@ -153,6 +155,46 @@ describe('TUTORIAL_STEPS', () => {
     expect(TUTORIAL_TIMELAPSE_RATE).toBe(3600);
     expect(jupiter.kicker).toBe('Jupiter · 1 hr/s');
     expect(jupiter.body).toMatch(/forty-two/);
+    expect(jupiter.primaryLabel).toBe('Next: the map');
+  });
+
+  it('the map: Jupiter if need be, the Tools button and its System map row rung and pressed, the chart held, then the tour’s own climb to a month a second', () => {
+    const map = TUTORIAL_STEPS.find((s) => s.id === 'map')!;
+    expect(map.stage).toBe('map');
+    expect(map.beats?.map((b) => b.id)).toEqual(['map-arrive', 'tools-chip', 'map-row', 'map-picture', 'map-rate']);
+    const [arrive, tools, row, picture, rate] = map.beats!;
+    expect(arrive.perform).toEqual({ kind: 'arrive' });
+    expect(arrive.veilNote).toMatch(/Jupiter/);
+    expect(tools.spotlight?.target).toEqual({ kind: 'chip', id: 'planetarium-btn-tools' });
+    expect(tools.spotlight?.label).toBe('Tap Tools');
+    expect(tools.press).toBe(true);
+    expect(tools.await).toBe(true);
+    expect(tools.perform).toEqual({ kind: 'open-tools' });
+    expect(row.spotlight?.target).toEqual({ kind: 'tools-row', tool: 'map' });
+    expect(row.spotlight?.label).toBe('Tap System map');
+    expect(row.spotlight?.key).toBe('M');
+    expect(row.await).toBe(true);
+    expect(row.perform).toEqual({ kind: 'open-map' });
+    expect(row.body).toMatch(/Tap System map/);
+    // The chart alone for a moment, then the climb — the tour's own, with no
+    // ring, since the chart is the thing to watch.
+    expect(picture.spotlight).toBeNull();
+    expect(picture.perform).toEqual({ kind: 'none' });
+    expect(picture.minHoldMs).toBeGreaterThanOrEqual(2000);
+    expect(picture.body).toMatch(/The ring is you, at Jupiter/);
+    expect(rate.spotlight).toBeNull();
+    expect(rate.await).toBeUndefined();
+    expect(rate.perform).toEqual({ kind: 'rate-ladder', rates: TUTORIAL_MAP_RATE_LADDER, stepMs: 700 });
+    // The ladder carries on from the time stop's rung, one real detent at a
+    // time, to a month a second.
+    expect(TUTORIAL_MAP_RATE_LADDER).toEqual([21600, 86400, 604800, 2592000]);
+    for (const r of TUTORIAL_MAP_RATE_LADDER) expect(TIME_RATE_PRESETS).toContain(r);
+    expect(TIME_RATE_PRESETS.indexOf(TUTORIAL_MAP_RATE_LADDER[0])).toBe(TIME_RATE_PRESETS.indexOf(TUTORIAL_TIMELAPSE_RATE) + 1);
+    expect(TUTORIAL_MAP_RATE).toBe(2592000);
+    expect(map.kicker).toBe('From Jupiter · 1 mo/s');
+    expect(map.bodyDuring).toMatch(/\{tools\} Tools holds the map/);
+    expect(map.body).toMatch(/three seconds/);
+    expect(map.primaryLabel).toBe('Next: an eclipse');
   });
 
   it('the eclipse: land on Earth, press the panel’s next-solar arrow, say what it did, rewind, Look up, then approach; totality gets its own card', () => {
@@ -178,10 +220,11 @@ describe('TUTORIAL_STEPS', () => {
     const wrap = TUTORIAL_STEPS.find((s) => s.id === 'wrap')!;
     expect(wrap.primaryLabel).toBe('Back where I was');
     expect(wrap.chips?.map((c) => [c.id, c.label])).toEqual([
-      ['visit-mars', 'Visit Mars'],
       ['earth-from-moon', 'Earth from the Moon'],
+      ['look-inside-earth', 'Look inside Earth'],
       ['follow-voyager', 'Follow Voyager 1'],
     ]);
+    expect(wrap.body).toMatch(/\{tools\} Tools holds the map/);
     for (const step of TUTORIAL_STEPS) if (step.id !== 'wrap') expect(step.chips).toBeUndefined();
   });
 

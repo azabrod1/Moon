@@ -140,6 +140,8 @@ export function createPlanetariumStarfield(sceneRatio: number, outputRatio: numb
         varying float vAlpha;
         varying vec2 vLensOutputCentre;
         varying float vLensTargetDiameterPx;
+        varying vec4 vLensSourceToOutputPx;
+        varying float vLensSamplesPerAxis;
         uniform float pixelRatio;
         uniform float uStarGain;
         ${sunGlareMaskGLSL()}
@@ -166,6 +168,8 @@ ${lensPointSpriteVertexGLSL}
         varying float vAlpha;
         varying vec2 vLensOutputCentre;
         varying float vLensTargetDiameterPx;
+        varying vec4 vLensSourceToOutputPx;
+        varying float vLensSamplesPerAxis;
         ${sunGlareMaskGLSL()}
         void main() {
 ${lensPointSpriteFragmentGLSL}

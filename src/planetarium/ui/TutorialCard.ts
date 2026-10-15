@@ -43,23 +43,26 @@ export interface TutorialCardModel {
 /** The primary's label while a beat waits for the user's own press. */
 export const TUTORIAL_SHOW_ME_LABEL = 'Show me';
 
+/** The action-cluster buttons a card body can quote by their glyph. */
+export type TutorialIcon = 'teleport' | 'observatory' | 'tools';
+
 /** A run of body text, or one of the action-cluster button glyphs inline. */
 export type TutorialBodySegment =
   | { kind: 'text'; text: string }
-  | { kind: 'icon'; icon: 'teleport' | 'observatory' };
+  | { kind: 'icon'; icon: TutorialIcon };
 
 /**
- * Split a card body on its {teleport}/{observatory} tokens. The card renders
- * icon segments as clones of the live action-button SVGs, so the glyph the
- * copy points at is exactly the glyph on screen.
+ * Split a card body on its {teleport}/{observatory}/{tools} tokens. The card
+ * renders icon segments as clones of the live action-button SVGs, so the
+ * glyph the copy points at is exactly the glyph on screen.
  */
 export function tutorialBodySegments(body: string): TutorialBodySegment[] {
   return body
-    .split(/(\{teleport\}|\{observatory\})/)
+    .split(/(\{teleport\}|\{observatory\}|\{tools\})/)
     .filter((part) => part.length > 0)
     .map((part) =>
-      part === '{teleport}' || part === '{observatory}'
-        ? { kind: 'icon' as const, icon: part.slice(1, -1) as 'teleport' | 'observatory' }
+      part === '{teleport}' || part === '{observatory}' || part === '{tools}'
+        ? { kind: 'icon' as const, icon: part.slice(1, -1) as TutorialIcon }
         : { kind: 'text' as const, text: part },
     );
 }
@@ -133,9 +136,10 @@ export class TutorialCard {
   private backEl: HTMLButtonElement | null = null;
   private chipsEl: HTMLElement | null = null;
   /** The action-cluster button SVGs, cloned into the body per icon token. */
-  private icons: Record<'teleport' | 'observatory', Element | null> = {
+  private icons: Record<TutorialIcon, Element | null> = {
     teleport: null,
     observatory: null,
+    tools: null,
   };
   private model: TutorialCardModel | null = null;
   private wired = false;
@@ -161,6 +165,7 @@ export class TutorialCard {
     this.chipsEl = document.getElementById('tutorial-chips');
     this.icons.teleport = document.querySelector('#planetarium-btn-travel svg');
     this.icons.observatory = document.querySelector('#planetarium-btn-observatory svg');
+    this.icons.tools = document.querySelector('#planetarium-btn-tools svg');
     if (this.wired) return;
     this.wired = true;
     this.primaryEl?.addEventListener('click', () => {

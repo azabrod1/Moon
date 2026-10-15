@@ -16,7 +16,7 @@ const model = (id: TutorialStep['id'], phase: TutorialPhase, kicker?: string | n
 describe('tutorialCardModel', () => {
   it('the first card is Saturn, staging at once: the first dot lit, skip live, no Back', () => {
     const m = model('saturn', 'staging');
-    expect(m.progress).toEqual({ count: 4, current: 1, done: 0, label: 'Stop 1 of 4' });
+    expect(m.progress).toEqual({ count: 5, current: 1, done: 0, label: 'Stop 1 of 5' });
     expect(m.ghost).toEqual({ label: 'Skip tutorial', disabled: false });
     expect(m.back).toBeNull();
     expect(m.kicker).toBe('Saturn');
@@ -137,8 +137,8 @@ describe('tutorialCardModel', () => {
     const m = model('wrap', 'ready');
     expect(m.primary).toEqual({ label: 'Back where I was', action: 'return', disabled: false });
     expect(m.ghost).toBeNull();
-    expect(m.progress).toEqual({ count: 4, current: null, done: 4, label: 'All 4 stops seen' });
-    expect(m.chips.map((c) => c.id)).toEqual(['visit-mars', 'earth-from-moon', 'follow-voyager']);
+    expect(m.progress).toEqual({ count: 5, current: null, done: 5, label: 'All 5 stops seen' });
+    expect(m.chips.map((c) => c.id)).toEqual(['earth-from-moon', 'look-inside-earth', 'follow-voyager']);
     expect(model('wrap', 'ending').chips).toEqual([]);
     expect(model('saturn', 'ready').chips).toEqual([]);
   });
@@ -151,14 +151,14 @@ describe('tutorialCardModel', () => {
     }
   });
 
-  it('the dots walk the four stops in order', () => {
-    const stops = ['saturn', 'moon', 'timelapse', 'eclipse'] as const;
+  it('the dots walk the five stops in order', () => {
+    const stops = ['saturn', 'moon', 'timelapse', 'map', 'eclipse'] as const;
     stops.forEach((id, i) => {
       expect(model(id, 'ready').progress).toEqual({
-        count: 4,
+        count: 5,
         current: i + 1,
         done: i,
-        label: `Stop ${i + 1} of 4`,
+        label: `Stop ${i + 1} of 5`,
       });
     });
   });
@@ -179,14 +179,22 @@ describe('tutorialBodySegments', () => {
     ]);
   });
 
-  it('the button cards quote their glyphs: Teleport while Saturn stages, Observatory on the Moon, both on the wrap', () => {
+  it('a Tools token is a glyph segment too', () => {
+    expect(tutorialBodySegments('{tools} Tools holds the map.')).toEqual([
+      { kind: 'icon', icon: 'tools' },
+      { kind: 'text', text: ' Tools holds the map.' },
+    ]);
+  });
+
+  it('the button cards quote their glyphs: Teleport while Saturn stages, Observatory on the Moon, Tools at the map, all three on the wrap', () => {
     const icons = (body: string) =>
       tutorialBodySegments(body)
         .filter((s) => s.kind === 'icon')
         .map((s) => (s.kind === 'icon' ? s.icon : ''));
     expect(icons(stepById('saturn').bodyDuring!)).toEqual(['teleport']);
     expect(icons(stepById('moon').bodyDuring!)).toEqual(['observatory']);
-    expect(icons(stepById('wrap').body)).toEqual(['teleport', 'observatory']);
+    expect(icons(stepById('map').bodyDuring!)).toEqual(['tools']);
+    expect(icons(stepById('wrap').body)).toEqual(['teleport', 'observatory', 'tools']);
   });
 
   it('no braces survive in any card text (a typo’d token would render literally)', () => {

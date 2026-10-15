@@ -400,11 +400,14 @@ import {
   earlyRestorePlan,
   TUTORIAL_ECLIPSE,
   TUTORIAL_STEPS,
+  TUTORIAL_TIMELAPSE_RATE,
   tutorialTransition,
   eclipseClockPhase,
   eclipseClimaxShown,
   initialBeatRun,
   stepBeatRun,
+  recoverBeatRun,
+  tutorialLadderBase,
   clockWasLive,
   restoredClockUtcMs,
   type TutorialPhase,
@@ -412,6 +415,7 @@ import {
   type BeatRunState,
   type TutorialBeat,
   type TutorialChipId,
+  type TutorialSurface,
   type TutorialTargetRef,
 } from './tutorialLogic';
 import {
@@ -10259,6 +10263,14 @@ export class PlanetariumMode {
     // commit would end the ceremony over the origin scene). M while the deck is
     // open types into its search — the deck-open branch above already returned.
     if (key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // The tour's map stop takes M as its ring's shortcut (tutorialMapKey);
+      // elsewhere in the tour the key is spent, as the chart's refusal would
+      // have it. A held M auto-repeats: one press, one answer.
+      if (this.isTutorialActive() && !this.menuPanel.isOpen() && !this.arrivalInFlight && !this.mapDiving) {
+        e.preventDefault();
+        if (!e.repeat) this.tutorialMapKey();
+        return;
+      }
       if (
         this.isMissionActive() ||
         this.isHelpOpen() ||
@@ -10833,6 +10845,8 @@ export class PlanetariumMode {
     // The ☰ menu closes too: Esc can end the tutorial with it open (the Esc
     // cascade has no menu rung), and it must not float over the restore.
     this.closeDeck();
+    this.closeToolsMenu();
+    this.closeMap({ restore: false });
     this.closeSurfaceTargetMenu();
     this.closeMenuPanel();
     this.tutorialCard.hide();
@@ -11006,8 +11020,11 @@ export class PlanetariumMode {
     this.clearTutorialOverrides();
     // A user-opened deck may hold a search filter that would hide the
     // theater's target row — closing resets it (openDeck clears the query on
-    // fresh opens only).
+    // fresh opens only). The Tools popover and the chart are the map stop's
+    // scene; a stop left or re-staged takes them down with the deck.
     this.closeDeck();
+    this.closeToolsMenu();
+    this.closeMap({ restore: false });
     this.closeSurfaceTargetMenu();
     this.bottomBar.closeStats();
     this.bottomBar.closeTime();
@@ -11029,6 +11046,9 @@ export class PlanetariumMode {
         break;
       case 'timelapse':
         this.stageTutorialTimelapse(generation);
+        break;
+      case 'map':
+        this.stageTutorialMap(generation);
         break;
       case 'eclipse':
         this.stageTutorialEclipse(generation);
@@ -11113,8 +11133,11 @@ export class PlanetariumMode {
   // frame (stepBeatRun in tutorialLogic.ts), in visible wall time: a hidden
   // tab delivers no frames, so a hold waits for the user to come back, and a
   // transient overlay (☰, the time panel, stats, Tools, the map) pauses it
-  // rather than fighting the user for the screen. The runner owns every ring,
-  // bubble and press class, and drops them on every stop, skip and re-stage.
+  // rather than fighting the user for the screen — except a stop's own
+  // surfaces (the map stop's popover and chart), which are its scene. A
+  // surface a beat stands on, taken down under it, steps the run back to the
+  // beat that opens it (recoverBeatRun). The runner owns every ring, bubble
+  // and press class, and drops them on every stop, skip and re-stage.
 
   /** A frame longer than this counts for this much: a slow machine still
    *  shows each beat for several frames instead of one. */
@@ -11140,12 +11163,22 @@ export class PlanetariumMode {
     tutorial.beatFrameMs = now;
     const previous = tutorial.beatRun;
     const beat = tutorial.beats[previous.index];
+    const performed = beat ? this.tutorialPerformed(beat) : true;
+    const recovered = recoverBeatRun(tutorial.beats, previous, {
+      performed,
+      userActed: tutorial.userActed,
+      open: (surface) => this.tutorialSurfaceOpen(surface),
+    });
+    if (recovered) {
+      this.restartTutorialBeatsAt(recovered, previous.index);
+      return;
+    }
     const target = beat?.spotlight ? this.resolveTutorialTarget(beat.spotlight.target) : null;
     const { state, effects } = stepBeatRun(tutorial.beats, previous, {
       dtMs,
       paused: this.tutorialBeatsPaused(),
       targetPresent: target !== null,
-      performed: beat ? this.tutorialPerformed(beat) : true,
+      performed,
       userActed: tutorial.userActed,
       proceed: tutorial.proceed,
     });
@@ -11163,18 +11196,57 @@ export class PlanetariumMode {
     }
   }
 
+  /** Whether a surface a beat stands on or opens is up right now. */
+  private tutorialSurfaceOpen(surface: TutorialSurface): boolean {
+    switch (surface.kind) {
+      case 'deck':
+        return this.isDeckOpen() && this.deckVerb === surface.verb;
+      case 'tools':
+        return this.isToolsMenuOpen();
+      case 'map':
+        return this.isMapOpen();
+    }
+  }
+
+  /** Step the run back to `run` (recoverBeatRun's answer) from the beat at
+   *  `fromIndex`: the ring and the press go, and the replayed beat brings
+   *  its own back from 'enter'. A climb the steps passed over stops where it
+   *  is and the clock returns to the rung below it, so the replay climbs
+   *  from there again — the rate alone, so a pause the ☰ menu or Help holds
+   *  stays theirs to give back. */
+  private restartTutorialBeatsAt(run: BeatRunState, fromIndex: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial?.beats) return;
+    const ladder = tutorial.beats.slice(run.index, fromIndex + 1).find((b) => b.perform.kind === 'rate-ladder');
+    if (ladder?.perform.kind === 'rate-ladder') {
+      if (tutorial.timer !== null) {
+        clearTimeout(tutorial.timer);
+        tutorial.timer = null;
+      }
+      tutorial.ladderDone = false;
+      this.timeState = { ...this.timeState, rate: tutorialLadderBase(ladder.perform.rates) };
+      this.updateTimeUI({ flash: true });
+    }
+    tutorial.beatRun = run;
+    tutorial.userActed = false;
+    tutorial.proceed = false;
+    this.tutorialSpotlight.clear();
+    this.renderTutorialCard();
+  }
+
   /**
    * A wrap-card chip: the tour ends as completed and the journey is restored
    * first, then the chip does what its label says from there — the real
-   * teleport, the real Observatory landing and Look up, the real mission —
-   * once any restore arrival has cleared.
+   * Observatory landing and Look up, the Look-inside tool through its own
+   * door (which snapshots the restored journey, as any entry does), the real
+   * mission — once any restore arrival has cleared.
    */
   private tutorialChip(id: TutorialChipId): void {
     if (!this.tutorial) return;
     const after = (): void => {
       switch (id) {
-        case 'visit-mars':
-          this.afterArrivalIdle(() => this.commitBodyPick('travel', { type: 'planet', name: 'Mars' }));
+        case 'look-inside-earth':
+          this.afterArrivalIdle(() => this.enterTool({ kind: 'interior', bodyId: 'Earth' }));
           break;
         case 'earth-from-moon':
           this.afterArrivalIdle(() => {
@@ -11298,6 +11370,79 @@ export class PlanetariumMode {
     return ring?.kind === 'deck-row' && beat.await === true;
   }
 
+  /** The current beat, while a stop's demonstration plays. */
+  private tutorialCurrentBeat(): TutorialBeat | null {
+    const tutorial = this.tutorial;
+    return tutorial?.beats?.[tutorial.beatRun?.index ?? -1] ?? null;
+  }
+
+  /** A press on the Tools button while a stop's demonstration runs. Ringed,
+   *  the press is the beat's own: the popover opens as the tour's would.
+   *  While the System map row it holds is the waiting beat, a press is
+   *  spent: it would fold the popover under the ring (and a popover already
+   *  folded puts the ring back on this button the next frame, recoverBeatRun).
+   *  At any other beat the popover opens as it does outside the tour, its
+   *  tool rows dimmed. Returns true when the press was taken. */
+  private tutorialToolsPress(): boolean {
+    const tutorial = this.tutorial;
+    const beat = this.tutorialCurrentBeat();
+    if (!tutorial || !beat || tutorial.phase !== 'staging') return false;
+    const ring = beat.spotlight?.target;
+    if (ring?.kind === 'chip' && ring.id === 'planetarium-btn-tools') {
+      if (!this.tutorialBeatWaiting()) return true;
+      tutorial.userActed = true;
+      this.openToolsMenu();
+      return true;
+    }
+    return ring?.kind === 'tools-row';
+  }
+
+  /** The popover's System map row pressed while the tour runs. At the map
+   *  stop it is the user's own press whichever beat is current — the row
+   *  opens the chart the stop is built on, and the run catches up on the
+   *  outcome; elsewhere in the tour the row is dimmed and the press is spent
+   *  (the chart's own refusal). Returns true when the tour took it. */
+  private tutorialMapRowPress(): boolean {
+    const tutorial = this.tutorial;
+    if (!tutorial) return false;
+    if (!this.tutorialAtMapStop()) return true;
+    if (this.openTutorialMap()) tutorial.userActed = true;
+    return true;
+  }
+
+  /** M while the tour runs: at the map stop it is the ring's own shortcut
+   *  into the chart, and once the stop is up it closes the chart as it does
+   *  outside the tour; mid-demonstration a closing press is spent, and so
+   *  is every press at any other stop (the chart's own refusal). */
+  private tutorialMapKey(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || !this.tutorialAtMapStop()) return;
+    if (!this.isMapOpen()) {
+      if (this.openTutorialMap()) tutorial.userActed = true;
+    } else if (tutorial.phase !== 'staging') {
+      this.closeMap();
+    }
+  }
+
+  /** The tour's way into the chart, and the user's at the map stop: the map
+   *  opens past its tutorial refusal (folding the popover, as every entry
+   *  does), and the ring goes with it. The chart's other refusals stand —
+   *  Help open, a veil up — and then nothing changes: the ring stays and the
+   *  beat keeps waiting, so a press the chart refused is never taken for one
+   *  that landed. True when the chart is open. */
+  private openTutorialMap(): boolean {
+    this.openMap({ tour: true });
+    if (!this.isMapOpen()) return false;
+    this.tutorialSpotlight.hide();
+    return true;
+  }
+
+  /** The tour stands at its map stop, where the Tools popover and the chart
+   *  are the stop's own scene. */
+  private tutorialAtMapStop(): boolean {
+    return this.tutorial !== null && TUTORIAL_STEPS[this.tutorial.stepIndex].stage === 'map';
+  }
+
   /** The eclipse arrow is spent from the moment its beat's jump has landed on
    *  the showcase event until the stop has finished staging: a second press
    *  (a double tap, whose second half lands after the runner has moved on)
@@ -11402,6 +11547,10 @@ export class PlanetariumMode {
         if (perform.kind === 'open-deck') {
           this.openDeck(perform.verb);
           this.revealDeckRow(perform.reveal);
+        } else if (perform.kind === 'open-tools') {
+          this.openToolsMenu();
+        } else if (perform.kind === 'open-map') {
+          this.openTutorialMap();
         } else if (perform.kind === 'arrive') {
           // The consequence is the thing to look at from here: no ring over
           // the veil, and the deck goes the way the row's own click takes it.
@@ -11449,6 +11598,12 @@ export class PlanetariumMode {
         // where a landing was meant would park the ship and strand the stop.
         el = this.isDeckOpen() && this.deckVerb === ref.verb ? this.findDeckRow(ref.name) : null;
         break;
+      case 'tools-row':
+        // A closed popover's row is no control, like a closed deck's.
+        el = this.isToolsMenuOpen()
+          ? document.querySelector(`#tools-menu-list .tools-row[data-tool="${ref.tool}"]`)
+          : null;
+        break;
       case 'panel-window':
         el = this.observatoryPanel.isOpen() ? document.getElementById('observatory-lookup') : null;
         break;
@@ -11464,15 +11619,18 @@ export class PlanetariumMode {
     return rect.width > 0 && rect.height > 0 ? el : null;
   }
 
-  /** A transient overlay has the screen: the hold waits for it to close. */
+  /** A transient overlay has the screen: the hold waits for it to close. At
+   *  the map stop the Tools popover and the chart are the stop's own scene,
+   *  not overlays over it. */
   private tutorialBeatsPaused(): boolean {
+    const atMapStop = this.tutorialAtMapStop();
     // A hold counts visible time, and nothing under an arrival veil is visible.
     return (
       this.arrivalVeilUp() ||
       this.menuPanel.isOpen() ||
       this.isHelpOpen() ||
-      this.isToolsMenuOpen() ||
-      this.isMapOpen() ||
+      (this.isToolsMenuOpen() && !atMapStop) ||
+      (this.isMapOpen() && !atMapStop) ||
       this.bottomBar.isTimeOpen() ||
       this.bottomBar.isStatsOpen()
     );
@@ -11488,6 +11646,11 @@ export class PlanetariumMode {
         return true;
       case 'open-deck':
         return this.isDeckOpen() && this.deckVerb === perform.verb && this.findDeckRow(perform.reveal) !== null;
+      case 'open-tools':
+        // The popover — or the chart already open past it (the M key).
+        return this.isToolsMenuOpen() || this.isMapOpen();
+      case 'open-map':
+        return this.isMapOpen();
       case 'arrive':
         return tutorial.arrived && !this.arrivalInFlight && !this.arrivalVeilUp();
       case 'rate-ladder':
@@ -11654,13 +11817,33 @@ export class PlanetariumMode {
           this.closeObservatoryPanel();
           this.setTutorialClockRate(1);
           this.setTutorialOverrides({ hideShip: true, hideLabels: true });
-          const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
-          this.camera.position.setLength(
-            Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
-          );
-          this.camera.lookAt(0, 0, 0);
+          this.frameTutorialJupiter();
         }), veilNote);
         break;
+      case 'map': {
+        // The chart is read from Jupiter, where the time stop left the ship.
+        // On the way forward nothing moves and no veil is raised; from the
+        // eclipse's Earth (Back) it is the time stop's landing again, with
+        // its framing and its hour a second for the ladder to climb from.
+        const frame = () => {
+          this.closeObservatoryPanel();
+          this.setTutorialOverrides({ hideShip: true, hideLabels: true });
+          // The chart opens at the time stop's hour a second and the climb
+          // starts there, whatever the clock was left at (paused, another rung).
+          if (this.timeState.paused || this.timeState.rate !== TUTORIAL_TIMELAPSE_RATE) {
+            this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
+          }
+        };
+        if (this.landedOn?.name === 'Jupiter' && !this.arrivalInFlight) {
+          landed(frame);
+          break;
+        }
+        this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => landed(() => {
+          frame();
+          this.frameTutorialJupiter();
+        }), veilNote);
+        break;
+      }
       case 'eclipse':
         // Earth, with the clock set to the summer of 2027 under the veil so
         // the panel's "next solar eclipse" is the showcase one, and the panel
@@ -11678,6 +11861,16 @@ export class PlanetariumMode {
       default:
         tutorial.arrived = true;
     }
+  }
+
+  /** The Jupiter system from the regular landed orbit camera, pulled back
+   *  past the default lit-side close-up so Io's whole orbit fits. */
+  private frameTutorialJupiter(): void {
+    const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
+    this.camera.position.setLength(
+      Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
+    );
+    this.camera.lookAt(0, 0, 0);
   }
 
   /** How long the Saturn stop's pan runs, and how far it turns in all. */
@@ -11955,6 +12148,19 @@ export class PlanetariumMode {
     this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
   }
 
+  /** The map: Jupiter again when the ship is not there (Back from the
+   *  eclipse), then the Tools button and its System map row rung and
+   *  pressed, the chart held for a moment at the time stop's rate, and the
+   *  tour's own climb to a month a second (MAP_BEATS). */
+  private stageTutorialMap(generation: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    // Back from the eclipse's surface view: the Tools button to ring sits in
+    // the cluster, which the surface view hides.
+    if (this.landedView === 'surface') this.exitSurfaceView(true);
+    this.startTutorialBeats(TUTORIAL_STEPS[tutorial.stepIndex].beats ?? []);
+  }
+
   /** The eclipse: land on Earth in the summer of 2027, press the panel's
    *  next-solar arrow for real, say what it did, rewind to first contact,
    *  Look up, then the decluttered approach (ECLIPSE_BEATS); updateTutorial
@@ -12225,6 +12431,19 @@ export class PlanetariumMode {
       const left = Math.min(Math.max(rect.left, 14), viewportSize().width - card.offsetWidth - 14);
       card.style.left = `${left}px`;
       card.style.right = 'auto';
+      // Below the tour's card when the two would overlap (a phone's card
+      // spans the width under the cluster, where the popover hangs): the
+      // card narrates the row the popover holds, and sits above it, so the
+      // popover drops under the card rather than behind it.
+      card.style.top = '';
+      const tourCard = this.tutorialCard.isOpen() ? this.tutorialCard.rect() : null;
+      if (tourCard) {
+        const top = parseFloat(getComputedStyle(card).top) || 0;
+        const overlapping =
+          left < tourCard.right && left + card.offsetWidth > tourCard.left &&
+          top < tourCard.bottom && top + card.offsetHeight > tourCard.top;
+        if (overlapping) card.style.top = `${tourCard.bottom + 10}px`;
+      }
     }
   }
 
@@ -12293,13 +12512,37 @@ export class PlanetariumMode {
   }
 
   /** Rebuild the popover rows (built dynamically so the tutorial-disabled state
-   *  is read live): the volume-compare tool, then the expandable Historic
-   *  journeys group. */
+   *  is read live): the system map, the two tools, then the expandable
+   *  Historic journeys group. */
   private buildToolsMenu() {
     const list = document.getElementById('tools-menu-list');
     if (!list) return;
     list.textContent = '';
     const running = this.tutorial !== null;
+    // The map first: the one row that is not a side quest, and the tour's
+    // own door to its map stop. Live while the tour stands at that stop (the
+    // row is the stop's control) and dimmed through the rest of a tour, with
+    // the tool rows; outside a tour it is the chart's third front door,
+    // beside M and the ☰ row.
+    const atMapStop = this.tutorialAtMapStop();
+    const mapRow = document.createElement('button');
+    mapRow.className = 'pk-row tools-row' + (running && !atMapStop ? ' tools-dim' : '');
+    mapRow.dataset.tool = 'map';
+    mapRow.disabled = running && !atMapStop;
+    const mapInfo = document.createElement('span');
+    mapInfo.className = 'pk-info';
+    const mapName = document.createElement('b');
+    mapName.textContent = 'System map';
+    const mapSub = document.createElement('span');
+    mapSub.className = 'tools-sub';
+    mapSub.textContent = 'The whole system at once, on the same clock.';
+    mapInfo.append(mapName, mapSub);
+    mapRow.append(mapInfo);
+    mapRow.addEventListener('click', () => {
+      if (this.tutorialMapRowPress()) return;
+      this.openMap();
+    });
+    list.appendChild(mapRow);
     const row = document.createElement('button');
     row.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
     row.dataset.tool = 'volumeCompare';
@@ -12616,7 +12859,7 @@ export class PlanetariumMode {
     // before the snapshot is taken).
     document.getElementById('planetarium-btn-tutorial')?.addEventListener('click', () => this.startTutorial());
     // ☰ "System map": close the menu (restoring its auto-pause) then open the
-    // map. The M key is the other front door.
+    // map. The M key and the Tools popover's row are the other front doors.
     document.getElementById('planetarium-btn-map')?.addEventListener('click', () => {
       this.closeMenuPanel();
       this.openMap();
@@ -12636,6 +12879,7 @@ export class PlanetariumMode {
     // closes rather than re-opening.
     document.getElementById('planetarium-btn-tools')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.tutorialToolsPress()) return;
       this.toggleToolsMenu();
     });
     document.getElementById('tools-menu')?.addEventListener('click', (e) => {
@@ -13674,13 +13918,14 @@ export class PlanetariumMode {
   }
 
   /** Open the full-screen system map. The single safe gate for every entry
-   *  (M key, ☰ item, dev bridge): refused during a mission, the help modal, a
-   *  running tutorial, or while the arrival veil is up — the whole ceremony
-   *  including its dwell-and-fade tail, not just the in-flight leg: the veil's
-   *  contract is that nothing appears (clickable) underneath it. */
-  private openMap() {
+   *  (M key, ☰ item, the Tools row, dev bridge): refused during a mission,
+   *  the help modal, a running tutorial — except the tour's own map stop,
+   *  which enters with `tour` — or while the arrival veil is up — the whole
+   *  ceremony including its dwell-and-fade tail, not just the in-flight leg:
+   *  the veil's contract is that nothing appears (clickable) underneath it. */
+  private openMap(opts: { tour?: boolean } = {}) {
     if (!this.active || !this.solarSystem || this.isMapOpen()) return;
-    if (this.isMissionActive() || this.isHelpOpen() || this.isTutorialActive() || this.arrivalVeilUp()) {
+    if (this.isMissionActive() || this.isHelpOpen() || (this.isTutorialActive() && !opts.tour) || this.arrivalVeilUp()) {
       return;
     }
 
@@ -14429,7 +14674,11 @@ export class PlanetariumMode {
     // A body is a different answer to "where do you want to go": the offer of
     // a bare point steps aside for it.
     this.dismissMapTeleportChip();
-    const actions = mapCardActions(target, this.landedOn);
+    // Mid-tour the card offers no Look inside: the tools wait for the tour's
+    // end (enterTool refuses), and the press would only close the chart.
+    const actions = mapCardActions(target, this.landedOn).filter(
+      (action) => action.kind !== 'inside' || this.tutorial === null,
+    );
     // A card with a Look inside button is the tool's other door.
     if (actions.some((action) => action.kind === 'inside')) this.warmToolChunks();
     const color = this.bodyTintCss(name);
@@ -14624,7 +14873,8 @@ export class PlanetariumMode {
    * the journey snapshot and the tutorial and mission refusals like any other.
    */
   private insideMapCard(): boolean {
-    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked) return false;
+    // The tour refuses the tool, so it must not close the chart first.
+    if (!this.isMapOpen() || this.mapDiving || !this.mapPicked || this.tutorial !== null) return false;
     const bodyId = this.mapPicked.name;
     if (bodyId === 'Sun') return false;
     this.closeMap();
@@ -18823,6 +19073,8 @@ export class PlanetariumMode {
       surface: this.landedView === 'surface',
       panelOpen: this.observatoryPanel.isOpen(),
       sheetPark: this.observatoryPanel.getSheetPark(),
+      mapOpen: this.isMapOpen(),
+      toolsOpen: this.isToolsMenuOpen(),
       rate: this.timeState.rate,
       paused: this.timeState.paused,
       timeMs: this.timeState.currentUtcMs,

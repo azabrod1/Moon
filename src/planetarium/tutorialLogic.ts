@@ -1,7 +1,7 @@
 /**
  * Pure logic for the guided tutorial — the Next-driven click-through that stages
  * the app's showcase scenes (Saturn's rings, standing on the Moon, time-lapse,
- * a total solar eclipse). Choosing the tour is the decision, so every entry
+ * the system map running fast, a total solar eclipse). Choosing the tour is the decision, so every entry
  * stages the first stop at once: there is no welcome card, and the first
  * stop's staging copy carries the one-line introduction. The pace is the
  * user's: every ringed control is theirs to press, with "Show me" on the
@@ -13,17 +13,17 @@
 import type { ShadowEventSpec } from '../astronomy/shadows';
 import { TIME_RATE_PRESETS } from './timeRates';
 
-export type TutorialStepId = 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
+export type TutorialStepId = 'saturn' | 'moon' | 'timelapse' | 'map' | 'eclipse' | 'wrap';
 
 /** A wrap-card chip: the action it performs after the restore, and its label. */
-export type TutorialChipId = 'visit-mars' | 'earth-from-moon' | 'follow-voyager';
+export type TutorialChipId = 'earth-from-moon' | 'look-inside-earth' | 'follow-voyager';
 export interface TutorialChip {
   id: TutorialChipId;
   label: string;
 }
 
 /** What the controller must stage when a step becomes current ('none' = card only). */
-export type TutorialStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'eclipse';
+export type TutorialStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'map' | 'eclipse';
 
 /** Which busy signals gate a step's Next button (see isStepSettled). */
 export interface SettleNeeds {
@@ -77,9 +77,11 @@ export interface TutorialStep {
 
 /** A control the spotlight can ring, by what it is rather than by element. */
 export type TutorialTargetRef =
-  | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-menu' }
+  | { kind: 'chip'; id: 'planetarium-btn-travel' | 'planetarium-btn-observatory' | 'planetarium-btn-tools' | 'planetarium-btn-menu' }
   /** A deck row, on the tab the beat means: the same row on another tab is a different control. */
   | { kind: 'deck-row'; name: string; verb: 'travel' | 'observe' }
+  /** A row of the Tools popover, by the tool it opens. */
+  | { kind: 'tools-row'; tool: 'map' }
   /** The Observatory panel's Look up window. */
   | { kind: 'panel-window' }
   /** One of the panel's almanac arrows, by its element id. */
@@ -94,6 +96,10 @@ export type TutorialTargetRef =
 export type TutorialPerform =
   | { kind: 'none' }
   | { kind: 'open-deck'; verb: 'travel' | 'observe'; reveal: string }
+  /** The Tools popover, open with its rows. */
+  | { kind: 'open-tools' }
+  /** The full-screen system map, open at its overview. */
+  | { kind: 'open-map' }
   | { kind: 'arrive' }
   | { kind: 'observe'; name: string; parentPlanet?: string }
   | { kind: 'open-panel' }
@@ -130,7 +136,19 @@ export interface TutorialBeat {
   await?: boolean;
   /** Card copy while this beat is current, over the step's staging copy. */
   body?: string;
+  /** The beat plays on this surface — the chart, for the map stop's picture
+   *  and climb. Taken down under it, the run steps back to the beat that
+   *  opens it (recoverBeatRun). A deck row or a Tools row stands on its
+   *  container without saying so: its ring says it. */
+  scene?: 'map';
 }
+
+/** A surface a beat stands on or opens: the deck on one of its tabs, the
+ *  Tools popover, or the full-screen chart. */
+export type TutorialSurface =
+  | { kind: 'deck'; verb: 'travel' | 'observe' }
+  | { kind: 'tools' }
+  | { kind: 'map' };
 
 /** The visible press on the real control: scale and the chip's own on-colour. */
 export const TUTORIAL_PRESS_MS = 180;
@@ -187,6 +205,13 @@ const MOON_BEATS: readonly TutorialBeat[] = [
  *  rungs of the shared ladder, so the rail's thumb lands where a tap could. */
 export const TUTORIAL_RATE_LADDER: readonly number[] = TIME_RATE_PRESETS.slice(1, 4);
 
+/** The detents the map stop climbs on from the time stop's 1 hr/s: 6 hr/s,
+ *  1 day/s, 1 wk/s, 1 mo/s. At a month a second the inner planets visibly
+ *  circle the Sun and Jupiter creeps along its orbit, while Saturn and the
+ *  planets beyond barely move — the outer system's slowness is the lesson.
+ *  A year a second blurs Mercury; a week a second moves only Mercury. */
+export const TUTORIAL_MAP_RATE_LADDER: readonly number[] = TIME_RATE_PRESETS.slice(4, 8);
+
 const JUPITER_BEATS: readonly TutorialBeat[] = [
   { id: 'jupiter-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Jupiter…' },
   {
@@ -199,6 +224,45 @@ const JUPITER_BEATS: readonly TutorialBeat[] = [
     await: true,
     perform: { kind: 'rate-ladder', rates: TUTORIAL_RATE_LADDER, stepMs: 700 },
     minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
+  },
+];
+
+const MAP_PICTURE_BODY = 'The whole solar system, on the same clock. The ring is you, at Jupiter.';
+
+const MAP_BEATS: readonly TutorialBeat[] = [
+  // Jupiter, where the time stop left the ship: on the way forward nothing
+  // moves and no veil is raised; Back from the eclipse's Earth lands here.
+  { id: 'map-arrive', spotlight: null, press: false, perform: { kind: 'arrive' }, minHoldMs: 0, veilNote: 'Landing on Jupiter…' },
+  {
+    id: 'tools-chip',
+    spotlight: { target: { kind: 'chip', id: 'planetarium-btn-tools' }, label: 'Tap Tools' },
+    press: true,
+    await: true,
+    perform: { kind: 'open-tools' },
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
+  },
+  {
+    id: 'map-row',
+    spotlight: { target: { kind: 'tools-row', tool: 'map' }, label: 'Tap System map', key: 'M' },
+    press: true,
+    await: true,
+    perform: { kind: 'open-map' },
+    minHoldMs: TUTORIAL_PAUSE_GUARD_MS,
+    body: 'The map and the side quests live here. Tap System map.',
+  },
+  // The chart first, still at the time stop's hour a second: long enough to
+  // find the ring. Then the clock, climbed by the tour itself — no ring,
+  // since the chart is the thing to watch while the rail's readout flashes
+  // each rung and the planets answer.
+  { id: 'map-picture', spotlight: null, press: false, perform: { kind: 'none' }, minHoldMs: 2500, body: MAP_PICTURE_BODY, scene: 'map' },
+  {
+    id: 'map-rate',
+    spotlight: null,
+    press: false,
+    perform: { kind: 'rate-ladder', rates: TUTORIAL_MAP_RATE_LADDER, stepMs: 700 },
+    minHoldMs: 0,
+    body: 'Now the clock, up to a month every second.',
+    scene: 'map',
   },
 ];
 
@@ -276,7 +340,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'saturn',
     title: 'Teleport',
     kicker: 'Saturn',
-    bodyDuring: 'Four stops, about two minutes. First, {teleport} Teleport: this button jumps you to any planet or moon. Tap it.',
+    bodyDuring: 'Five stops, about two minutes. First, {teleport} Teleport: this button jumps you to any planet or moon. Tap it.',
     body: 'One tap, anywhere in the solar system. Drag to look around.',
     beats: SATURN_BEATS,
     // Skip reads "Skip tutorial" here too: a skip before the first arrival
@@ -306,9 +370,22 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     bodyDuring: 'Next, time. The clock at the bottom of the screen sets the speed. Drag it right to 1 hr/s.',
     body: 'An hour passes every second. Jupiter turns once in ten seconds; Io laps it in forty-two. Tap a notch on the rail for any speed, or tap the date to jump.',
     beats: JUPITER_BEATS,
-    primaryLabel: 'Next: an eclipse',
+    primaryLabel: 'Next: the map',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
+    settle: SCENE_SETTLE,
+  },
+  {
+    id: 'map',
+    title: 'The whole system',
+    kicker: 'From Jupiter · 1 mo/s',
+    bodyDuring: 'Where are you? {tools} Tools holds the map. Tap it.',
+    // Periods at a month a second: Mercury 88 days, Earth a year, Jupiter 11.9 years.
+    body: 'A month every second: Mercury laps the Sun in three seconds, Earth in twelve, Jupiter in two and a half minutes. Drag to turn the map, pinch or scroll to zoom.',
+    beats: MAP_BEATS,
+    primaryLabel: 'Next: an eclipse',
+    ghostLabel: 'Skip tutorial',
+    stage: 'map',
     settle: SCENE_SETTLE,
   },
   {
@@ -333,11 +410,12 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'wrap',
     title: 'That’s the tour',
     kicker: null,
-    body: '{teleport} Teleport jumps. {observatory} Observatory lands and reads the sky. The clock bends time. Help and the historic journeys live in the ☰ menu.',
-    // A door, not a summary: three things to try next, each from where you started.
+    body: '{teleport} Teleport jumps. {observatory} Observatory lands and reads the sky. The clock bends time. {tools} Tools holds the map and the side quests. Help is in the ☰ menu.',
+    // A door, not a summary: three things to try next, each from where you
+    // started — one the tour taught, two it only pointed at (a tool, a mission).
     chips: [
-      { id: 'visit-mars', label: 'Visit Mars' },
       { id: 'earth-from-moon', label: 'Earth from the Moon' },
+      { id: 'look-inside-earth', label: 'Look inside Earth' },
       { id: 'follow-voyager', label: 'Follow Voyager 1' },
     ],
     primaryLabel: 'Back where I was',
@@ -386,8 +464,9 @@ export function initialBeatRun(): BeatRunState {
 export interface BeatSignals {
   /** Visible wall time since the last frame (clamped by the host; zero while hidden). */
   dtMs: number;
-  /** A transient overlay (☰, the time panel, stats, Tools, the map) has the
-   *  screen: the hold waits for it to close rather than fighting the user. */
+  /** A transient overlay (☰, the time panel, stats, Tools, the map — a
+   *  stop's own surfaces aside) has the screen: the hold waits for it to
+   *  close rather than fighting the user. */
   paused: boolean;
   /** The beat's control exists on screen right now. */
   targetPresent: boolean;
@@ -501,6 +580,80 @@ export function stepBeatRun(
   return { state: next, effects };
 }
 
+/** The surface a beat stands on: its declared scene, else its ring's container. */
+function surfaceNeeded(beat: TutorialBeat): TutorialSurface | null {
+  if (beat.scene === 'map') return { kind: 'map' };
+  const ring = beat.spotlight?.target;
+  if (ring?.kind === 'deck-row') return { kind: 'deck', verb: ring.verb };
+  if (ring?.kind === 'tools-row') return { kind: 'tools' };
+  return null;
+}
+
+/** The surface a beat's perform opens, when it is one of the openers. */
+function surfaceOpened(beat: TutorialBeat): TutorialSurface | null {
+  const perform = beat.perform;
+  if (perform.kind === 'open-deck') return { kind: 'deck', verb: perform.verb };
+  if (perform.kind === 'open-tools') return { kind: 'tools' };
+  if (perform.kind === 'open-map') return { kind: 'map' };
+  return null;
+}
+
+function sameSurface(a: TutorialSurface, b: TutorialSurface): boolean {
+  if (a.kind === 'deck' || b.kind === 'deck') return a.kind === 'deck' && b.kind === 'deck' && a.verb === b.verb;
+  return a.kind === b.kind;
+}
+
+/**
+ * Where the run goes when the user takes down a surface a stop's
+ * demonstration stands on, or null when nothing it needs is lost.
+ *
+ * - An opener (the deck, the Tools popover, the chart) whose surface is gone
+ *   before the run saw it land plays again. Its perform is immediate, so a
+ *   perform that does not hold was undone: a double tap on the Tools button,
+ *   whose second half lands on the popover's catcher and folds it.
+ * - A row whose container closes under its ring while it waits (the deck's
+ *   backdrop, the popover's catcher, ☰ opening over it) steps back to the
+ *   beat that opens the container, so the ring returns to the control that
+ *   opens it again. A row the user has pressed, or whose outcome already
+ *   holds, is left alone: its own press takes the container down.
+ * - A beat that plays on the chart steps back to the beat that opens the
+ *   chart for as long as it plays, and from there to the popover's opener
+ *   if that is closed too.
+ *
+ * Each restart begins at 'enter', so the ring and the tap guard come back
+ * with it. `performed` and `userActed` are the current beat's signals;
+ * `open` says whether a surface is up right now.
+ */
+export function recoverBeatRun(
+  beats: readonly TutorialBeat[],
+  run: BeatRunState,
+  signals: { performed: boolean; userActed: boolean; open: (surface: TutorialSurface) => boolean },
+): BeatRunState | null {
+  const beat = beats[run.index];
+  if (!beat || run.stage === 'done') return null;
+  const restart = (index: number): BeatRunState => ({ index, stage: 'enter', heldMs: 0, pressedMs: 0 });
+  if (run.stage === 'perform' && surfaceOpened(beat) !== null && !signals.performed) return restart(run.index);
+  const need = surfaceNeeded(beat);
+  if (!need || signals.open(need)) return null;
+  const waiting = run.stage === 'enter' || run.stage === 'hold' || run.stage === 'await';
+  if (!beat.scene && (!waiting || signals.userActed || signals.performed)) return null;
+  for (let index = run.index - 1; index >= 0; index--) {
+    const opened = surfaceOpened(beats[index]);
+    if (!opened || !sameSurface(opened, need)) continue;
+    // The opener may stand on a surface of its own (the System map row on
+    // the popover), lost too when that is closed.
+    return recoverBeatRun(beats, restart(index), { ...signals, performed: false, userActed: false }) ?? restart(index);
+  }
+  return null;
+}
+
+/** The rung a ladder climbs from: the preset just below its first rung,
+ *  realtime below the first. A replayed climb starts from here again. */
+export function tutorialLadderBase(rates: readonly number[]): number {
+  const first = TIME_RATE_PRESETS.indexOf(rates[0]);
+  return first > 0 ? TIME_RATE_PRESETS[first - 1] : 1;
+}
+
 /**
  * The tutorial's showcase eclipse: the total solar eclipse of 2027-08-02 —
  * 6m23s at greatest eclipse, the longest totality over land this century.
@@ -521,6 +674,9 @@ export const TUTORIAL_ECLIPSE = {
  *  ladder the stop climbs, and a real detent: the rail's thumb lands where a
  *  tap of the user's own could put it, so the card can say so. */
 export const TUTORIAL_TIMELAPSE_RATE = TUTORIAL_RATE_LADDER[TUTORIAL_RATE_LADDER.length - 1];
+
+/** The map stop's rate — 1 mo/s: the top of its ladder, a real detent. */
+export const TUTORIAL_MAP_RATE = TUTORIAL_MAP_RATE_LADDER[TUTORIAL_MAP_RATE_LADDER.length - 1];
 
 /** Eclipse approach rate — the "20 min/s" preset: the ~2 h from first contact
  *  to peak plays as a few seconds of the Moon biting into the Sun. */

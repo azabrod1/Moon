@@ -599,7 +599,7 @@ try {
             await page.mouse.click(at.x, at.y);
             const back = await waitState(page, () => {
               const s = window.__moon.tutorialState();
-              return s.beat?.id === 'tools-chip' && s.beat.stage !== 'perform' && !s.userActed && !s.toolsOpen && s.spotlight !== null;
+              return s.beat?.id === 'tools-chip' && s.beat.stage !== 'enter' && s.beat.stage !== 'perform' && !s.userActed && !s.toolsOpen && s.spotlight !== null;
             });
             const s = await tstate(page);
             check(back && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: a double tap on Tools folds the popover, and the Tools ring plays again`, { beat: s.beat, tools: s.toolsOpen, userActed: s.userActed });
@@ -637,14 +637,15 @@ try {
             await page.mouse.click(700, 700);
             const toTools = await waitState(page, () => {
               const s = window.__moon.tutorialState();
-              return s.beat?.id === 'tools-chip' && !s.toolsOpen && s.spotlight !== null;
+              return s.beat?.id === 'tools-chip' && s.beat.stage !== 'enter' && !s.toolsOpen && s.spotlight !== null;
             });
             const s = await tstate(page);
             check(toTools && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: the popover folded at its row puts the ring back on Tools`, { beat: s.beat, tools: s.toolsOpen });
             await page.click('#planetarium-btn-tools');
+            // Past 'enter': on that frame the ring is still the Tools button's.
             const toRow = await waitState(page, () => {
               const s = window.__moon.tutorialState();
-              return s.beat?.id === 'map-row' && s.toolsOpen && s.spotlight !== null;
+              return s.beat?.id === 'map-row' && s.beat.stage !== 'enter' && s.toolsOpen && s.spotlight !== null;
             });
             const r = await tstate(page);
             check(toRow && (await ringedNear(r, '#tools-menu-list .tools-row[data-tool="map"]')), `${tag} map: Tools reopens the popover with the System map row ringed`, { beat: r.beat, tools: r.toolsOpen });
@@ -664,7 +665,7 @@ try {
           await page.click('#planetarium-btn-tools');
           const toRow = await waitState(page, () => {
             const s = window.__moon.tutorialState();
-            return s.beat?.id === 'map-row' && s.toolsOpen && !s.mapOpen && s.spotlight !== null;
+            return s.beat?.id === 'map-row' && s.beat.stage !== 'enter' && s.toolsOpen && !s.mapOpen && s.spotlight !== null;
           });
           const s = await tstate(page);
           check(toRow && (await ringedNear(s, '#tools-menu-list .tools-row[data-tool="map"]')), `${tag} map: Tools during the picture folds the chart into the popover and the row is ringed again`, { beat: s.beat, map: s.mapOpen, tools: s.toolsOpen });
@@ -678,7 +679,7 @@ try {
           await page.click('#map-close');
           const toTools = await waitState(page, () => {
             const s = window.__moon.tutorialState();
-            return s.beat?.id === 'tools-chip' && !s.mapOpen && !s.toolsOpen && s.spotlight !== null;
+            return s.beat?.id === 'tools-chip' && s.beat.stage !== 'enter' && !s.mapOpen && !s.toolsOpen && s.spotlight !== null;
           });
           const s = await tstate(page);
           check(toTools && s.rate === 3600 && (await ringedNear(s, '#planetarium-btn-tools')), `${tag} map: the chart closed during the climb puts the ring back on Tools, the clock back at 1 hr/s`, { beat: s.beat, rate: s.rate, map: s.mapOpen });

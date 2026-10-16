@@ -10877,7 +10877,7 @@ export class PlanetariumMode {
         this.refreshTourEntries();
       }
       if (toast === 'skip') {
-        this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
+        this.notification.show('Tour ended. You can take it again from the ☰\u00a0menu.', { force: true });
       } else if (toast === 'return') {
         this.notification.show('Back where you started.', { force: true });
       }
@@ -12535,7 +12535,7 @@ export class PlanetariumMode {
     mapName.textContent = 'System map';
     const mapSub = document.createElement('span');
     mapSub.className = 'tools-sub';
-    mapSub.textContent = 'The whole system at once, on the same clock.';
+    mapSub.textContent = 'See every planet and where you are.';
     mapInfo.append(mapName, mapSub);
     mapRow.append(mapInfo);
     mapRow.addEventListener('click', () => {

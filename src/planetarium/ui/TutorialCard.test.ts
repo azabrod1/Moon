@@ -17,7 +17,7 @@ describe('tutorialCardModel', () => {
   it('the first card is Saturn, staging at once: the first dot lit, skip live, no Back', () => {
     const m = model('saturn', 'staging');
     expect(m.progress).toEqual({ count: 5, current: 1, done: 0, label: 'Stop 1 of 5' });
-    expect(m.ghost).toEqual({ label: 'Skip tutorial', disabled: false });
+    expect(m.ghost).toEqual({ label: 'Skip tour', disabled: false });
     expect(m.back).toBeNull();
     expect(m.kicker).toBe('Saturn');
   });
@@ -110,7 +110,7 @@ describe('tutorialCardModel', () => {
   it('the eclipse holds Next through the approach, and totality swaps in its own card', () => {
     const eclipse = stepById('eclipse');
     const i = indexOf('eclipse');
-    const held = { label: 'Next: wrap up', action: 'advance', disabled: true };
+    const held = { label: 'Finish', action: 'advance', disabled: true };
     expect(tutorialCardModel(eclipse, i, 'staging').primary).toEqual(held);
     const approaching = tutorialCardModel(eclipse, i, 'settling', { kicker: 'From Earth · peak in 1h 12m' });
     expect(approaching.primary).toEqual(held);
@@ -120,7 +120,7 @@ describe('tutorialCardModel', () => {
     expect(totality.title).toBe('Totality');
     expect(totality.kicker).toBe(eclipse.totality!.kicker);
     expect(totality.body).toBe(eclipse.totality!.body);
-    expect(totality.primary).toEqual({ label: 'Next: wrap up', action: 'advance', disabled: false });
+    expect(totality.primary).toEqual({ label: 'Finish', action: 'advance', disabled: false });
     // A step without a climax ignores the flag.
     expect(tutorialCardModel(stepById('saturn'), indexOf('saturn'), 'ready', { totality: true }).title).toBe('Teleport');
   });
@@ -169,21 +169,42 @@ describe('tutorialBodySegments', () => {
     expect(tutorialBodySegments('Watch the Sun.')).toEqual([{ kind: 'text', text: 'Watch the Sun.' }]);
   });
 
-  it('tokens become icon segments between the text runs', () => {
+  it('tokens become icon segments between the text runs, each taking the word after it', () => {
     expect(tutorialBodySegments('The {teleport} button and {observatory} too.')).toEqual([
       { kind: 'text', text: 'The ' },
-      { kind: 'icon', icon: 'teleport' },
-      { kind: 'text', text: ' button and ' },
-      { kind: 'icon', icon: 'observatory' },
-      { kind: 'text', text: ' too.' },
+      { kind: 'icon', icon: 'teleport', word: ' button' },
+      { kind: 'text', text: ' and ' },
+      { kind: 'icon', icon: 'observatory', word: ' too.' },
     ]);
   });
 
   it('a Tools token is a glyph segment too', () => {
-    expect(tutorialBodySegments('{tools} Tools holds the map.')).toEqual([
-      { kind: 'icon', icon: 'tools' },
-      { kind: 'text', text: ' Tools holds the map.' },
+    expect(tutorialBodySegments('{tools} Tools has the map.')).toEqual([
+      { kind: 'icon', icon: 'tools', word: ' Tools' },
+      { kind: 'text', text: ' has the map.' },
     ]);
+  });
+
+  it('a token with nothing after it is a bare glyph; one run into a word takes that word', () => {
+    expect(tutorialBodySegments('Tap {tools}')).toEqual([
+      { kind: 'text', text: 'Tap ' },
+      { kind: 'icon', icon: 'tools', word: '' },
+    ]);
+    expect(tutorialBodySegments('{teleport}Teleport, then on.')).toEqual([
+      { kind: 'icon', icon: 'teleport', word: 'Teleport,' },
+      { kind: 'text', text: ' then on.' },
+    ]);
+  });
+
+  it('every glyph in the copy is followed by its button’s name, so the card never ends a line between the two', () => {
+    const names = { teleport: 'Teleport', observatory: 'Observatory', tools: 'Tools' } as const;
+    for (const step of TUTORIAL_STEPS) {
+      for (const body of [step.body, step.bodyDuring ?? '', ...(step.beats ?? []).map((b) => b.body ?? '')]) {
+        for (const seg of tutorialBodySegments(body)) {
+          if (seg.kind === 'icon') expect(seg.word.trim().replace(/[.,]$/, '')).toBe(names[seg.icon]);
+        }
+      }
+    }
   });
 
   it('the button cards quote their glyphs: Teleport while Saturn stages, Observatory on the Moon, Tools at the map, all three on the wrap', () => {
@@ -201,7 +222,7 @@ describe('tutorialBodySegments', () => {
     for (const step of TUTORIAL_STEPS) {
       for (const body of [step.body, step.bodyDuring ?? '', ...(step.beats ?? []).map((b) => b.body ?? '')]) {
         for (const seg of tutorialBodySegments(body)) {
-          if (seg.kind === 'text') expect(seg.text).not.toMatch(/[{}]/);
+          expect(seg.kind === 'text' ? seg.text : seg.word).not.toMatch(/[{}]/);
         }
       }
     }

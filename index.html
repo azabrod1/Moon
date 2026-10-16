@@ -1735,6 +1735,8 @@
        SVGs (see TutorialCard.renderBody). A bare 20 px glyph in the text, not a
        button replica: the real control is the one under the spotlight. */
     .tutorial-body .tutorial-inline-icon { width: 20px; height: 20px; vertical-align: -5px; margin: 0 2px 0 1px; color: var(--t1); }
+    /* A glyph and the name after it break as one word: no line ends on the glyph. */
+    .tutorial-body .tutorial-icon-word { white-space: nowrap; }
     /* The wrap's doors: three things to try next, as pills under the copy. */
     .tutorial-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .tutorial-chip {
@@ -5224,13 +5226,13 @@
       <div id="tutorial-hero" role="dialog" aria-modal="true" aria-labelledby="tutorial-hero-title" aria-describedby="tutorial-hero-lead">
         <div class="tutorial-hero-backdrop"></div>
         <div class="tutorial-hero-card pn pn-high">
-          <h3 class="tutorial-hero-title" id="tutorial-hero-title" tabindex="-1">Welcome to your planetarium</h3>
-          <p class="tutorial-hero-lead" id="tutorial-hero-lead">Every planet, moon and star is where it really is for the date on screen, at real scale. Fly anywhere, stand on any world, and bend time.</p>
+          <h3 class="tutorial-hero-title" id="tutorial-hero-title" tabindex="-1">Welcome aboard</h3>
+          <p class="tutorial-hero-lead" id="tutorial-hero-lead">Every planet, moon and star here is where it really is, and it&rsquo;s all to scale. Fly anywhere, land on other worlds and speed up time.</p>
           <div class="tutorial-hero-choices">
-            <button class="tutorial-hero-btn" id="tutorial-hero-tour">Take the tour <span class="tutorial-hero-mins">· 2 min</span></button>
+            <button class="tutorial-hero-btn" id="tutorial-hero-tour">Take the tour <span class="tutorial-hero-mins">· 3 min</span></button>
             <button class="tutorial-hero-btn" id="tutorial-hero-explore">Explore on my own</button>
           </div>
-          <p class="tutorial-hero-note">The tour is in the ☰ menu whenever you want it. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
+          <p class="tutorial-hero-note">You can take the tour later from the ☰&nbsp;menu. <button type="button" class="tutorial-hero-link" id="tutorial-hero-guide">Read the guide</button></p>
         </div>
       </div>
 
@@ -5560,8 +5562,8 @@
            the tutorial stages scenes through the other overlays (the deck and the
            spotlight play UNDER it), so no overlay's open() closes this card —
            only its own buttons and the tutorial lifecycle do. -->
-      <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tutorial">
-        <div class="tutorial-eyebrow"><b>Tutorial</b><span class="tutorial-dots" id="tutorial-dots" aria-hidden="true"></span><span class="tutorial-sr" id="tutorial-count"></span></div>
+      <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tour">
+        <div class="tutorial-eyebrow"><b>Tour</b><span class="tutorial-dots" id="tutorial-dots" aria-hidden="true"></span><span class="tutorial-sr" id="tutorial-count"></span></div>
         <h3 class="tutorial-title" id="tutorial-title" tabindex="-1"></h3>
         <div class="tutorial-kicker" id="tutorial-kicker"></div>
         <p class="tutorial-body" id="tutorial-body" aria-live="polite"></p>

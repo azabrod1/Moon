@@ -354,7 +354,7 @@ try {
     note(`  card ${JSON.stringify(card)}`);
     check(card.dots[0] === 'current', `${tag} saturn: the first dot is lit`, card.dots);
     check(/billion km from the Sun/.test(card.kicker), `${tag} saturn: the kicker is the live distance`, card.kicker);
-    check(/One tap/.test(card.body), `${tag} saturn: the settled copy is the lesson`, card.body);
+    check(/rings and all/.test(card.body), `${tag} saturn: the settled copy is the lesson`, card.body);
     check(card.primaryDisabled === false && card.primary === 'Next: the Moon', `${tag} saturn: Next is live`, card);
     check(card.primaryWidth === heldWidth && card.primaryAnimation === 'tutorial-ready', `${tag} saturn: Next lit up in place, at the held width, with its ring`, { held: heldWidth, live: card.primaryWidth, animation: card.primaryAnimation });
     const s = saturn.state;
@@ -492,7 +492,7 @@ try {
     note(`  card ${JSON.stringify(card)}`);
     check(card.dots[0] === 'done' && card.dots[1] === 'current', `${tag} moon: the dots advance`, card.dots);
     check(/Earth · \d+% lit/.test(card.kicker), `${tag} moon: the kicker is Earth's live phase`, card.kicker);
-    check(card.body === 'Look up, and there is Earth.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
+    check(card.body === 'That’s Earth. From the Moon, it goes through phases too.' && card.primary === 'Next: speed up time', `${tag} moon: the settled copy and Next`, { body: card.body, primary: card.primary });
     await shot(page, `${tag}-14-moon`);
     // Jupiter: the arrival, then the rail ringed while the clock climbs.
     await page.evaluate(() => window.__moon.tutorialNext());
@@ -517,7 +517,7 @@ try {
     check(ground === 'Jupiter', `${tag} timelapse: the bottom bar names the ground, not the last system cruised`, ground);
     check(timelapse.seen.veilNotes.length === 0 || timelapse.seen.veilNotes.every((n) => /Landing on Jupiter/.test(n)), `${tag} timelapse: the veil caption was the tour's`, timelapse.seen.veilNotes);
     card = await cardText(page);
-    check(card.kicker === 'Jupiter · 1 hr/s' && /forty-two/.test(card.body) && card.primary === 'Next: the map', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
+    check(card.kicker === 'Jupiter · 1 hr/s' && /Io circles it in 42/.test(card.body) && card.primary === 'Next: the map', `${tag} timelapse: the settled card`, { kicker: card.kicker, primary: card.primary });
     await shot(page, `${tag}-15-timelapse`);
 
     // Back from Jupiter: the Moon re-stages while landed on Jupiter, and the
@@ -575,7 +575,7 @@ try {
     // Show me belongs to the Tools ring after it.
     await page.waitForFunction(() => window.__moon.tutorialState().beat?.id === 'tools-chip', null, { timeout: 60_000 });
     card = await cardText(page);
-    check(/Tools holds the map/.test(card.body) && card.primary === 'Show me', `${tag} map: the staging copy names the Tools button`, { body: card.body, primary: card.primary });
+    check(/It’s in\s+Tools/.test(card.body) && card.primary === 'Show me', `${tag} map: the staging copy names the Tools button`, { body: card.body, primary: card.primary });
     const centre = (page, selector) => page.evaluate((s) => {
       const r = document.querySelector(s).getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -627,7 +627,7 @@ try {
           check(popover.open && popover.rows[0]?.tool === 'map' && popover.rows[0].text === 'System map' && popover.rows[0].disabled === false, `${tag} map/map-row: the popover's first row is the live System map`, popover.rows);
           check(popover.rows.filter((r) => r.tool === 'volumeCompare' || r.tool === 'interior').every((r) => r.disabled), `${tag} map/map-row: the tool rows stay dimmed through the tour`, popover.rows);
           check(!!popover.rect && !!waiting.rect && !overlaps(popover.rect, waiting.rect), `${tag} map/map-row: the popover is clear of the card`, { popover: popover.rect, card: waiting.rect });
-          check(/Tap System map/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
+          check(/Tap System\smap/.test(waiting.body), `${tag} map/map-row: the copy asks for the tap`, waiting.body);
           await shot(page, `${tag}-map-await`);
           if (tag !== 'desktop') return false;
           if (!recover.outside) {
@@ -706,7 +706,7 @@ try {
     const chart = await chartState(page);
     check(!!chart.ship && !!chart.jupiter && chart.ship.docked === true && Math.hypot(chart.ship.screenX - chart.jupiter.x, chart.ship.screenY - chart.jupiter.y) < 24, `${tag} map: the ring is the ship, docked at Jupiter`, chart);
     card = await cardText(page);
-    check(card.kicker === 'From Jupiter · 1 mo/s' && /three seconds/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} map: the settled card`, { kicker: card.kicker, body: card.body, primary: card.primary });
+    check(card.kicker === 'From Jupiter · 1 mo/s' && /every 3 seconds/.test(card.body) && card.primary === 'Next: an eclipse', `${tag} map: the settled card`, { kicker: card.kicker, body: card.body, primary: card.primary });
     check(card.dots[2] === 'done' && card.dots[3] === 'current', `${tag} map: the fourth dot is lit`, card.dots);
     check(mp.spotlight === null && (await pressedCount(page)) === 0, `${tag} map: no ring or press once the chart is the focal point`);
     await shot(page, `${tag}-16-map`);
@@ -825,13 +825,13 @@ try {
     check(approach.surface && approach.rate === 1200 && approach.declutter, `${tag} eclipse: approaching in a decluttered surface view at 20 min/s`, { surface: approach.surface, rate: approach.rate, declutter: approach.declutter });
     check(approach.sunOnScreen === true, `${tag} eclipse: the Sun is on screen during the approach`, approach.sunOnScreen);
     card = await cardText(page);
-    check(card.primary === 'Next: wrap up' && card.primaryDisabled === true && /peak in|starts in/.test(card.kicker), `${tag} eclipse: Next held through the approach, with a live countdown`, { primary: card.primary, disabled: card.primaryDisabled, kicker: card.kicker });
+    check(card.primary === 'Finish' && card.primaryDisabled === true && /peak in|starts in/.test(card.kicker), `${tag} eclipse: Next held through the approach, with a live countdown`, { primary: card.primary, disabled: card.primaryDisabled, kicker: card.kicker });
     await sleep(1500);
     await shot(page, `${tag}-17-eclipse-approach`);
     const eclipse = await waitReady(page, tag, 'eclipse', { shots: false });
     check(eclipse.state.surface && eclipse.state.totalityReached && eclipse.state.rate === 1, `${tag} eclipse: in surface view at totality, back at realtime`, { surface: eclipse.state.surface, totality: eclipse.state.totalityReached, rate: eclipse.state.rate });
     card = await cardText(page);
-    check(card.title === 'Totality' && /corona/.test(card.body) && card.primary === 'Next: wrap up', `${tag} eclipse: the climax card`, { title: card.title, primary: card.primary });
+    check(card.title === 'Totality' && /corona/.test(card.body) && card.primary === 'Finish', `${tag} eclipse: the climax card`, { title: card.title, primary: card.primary });
     check(!(await page.evaluate(() => document.getElementById('surface-trackpill')?.offsetParent !== null)), `${tag} eclipse: the tracking pill is out of the picture`);
     await shot(page, `${tag}-18-eclipse-totality`);
     // The climax follows the clock: a run past the event takes the card back
@@ -849,7 +849,7 @@ try {
     await page.waitForFunction(() => /ended .* ago/.test(document.getElementById('tutorial-kicker')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => {});
     const moved = await tstate(page);
     card = await cardText(page);
-    check(moved.climaxShown === false && card.title === 'A total solar eclipse' && /ended .* ago/.test(card.kicker) && card.primary === 'Next: wrap up', `${tag} eclipse: a run past the event takes the climax card down, Next stays free`, { climax: moved.climaxShown, title: card.title, kicker: card.kicker, primary: card.primary });
+    check(moved.climaxShown === false && card.title === 'A total solar eclipse' && /ended .* ago/.test(card.kicker) && card.primary === 'Finish', `${tag} eclipse: a run past the event takes the climax card down, Next stays free`, { climax: moved.climaxShown, title: card.title, kicker: card.kicker, primary: card.primary });
     await page.evaluate((t) => window.__moon.setTimeMs(t), totalityMs);
     await page.waitForFunction(() => document.getElementById('tutorial-title')?.textContent === 'Totality', null, { timeout: 30_000 }).catch(() => {});
     const back = await tstate(page);

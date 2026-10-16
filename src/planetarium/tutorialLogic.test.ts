@@ -89,7 +89,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(lookUp.spotlight?.target).toEqual({ kind: 'panel-window' });
     expect(lookUp.perform).toEqual({ kind: 'look-up' });
     expect(lookUp.body?.startsWith(picture.body!)).toBe(true);
-    expect(lookUp.body).toMatch(/Tap Look up/);
+    expect(lookUp.body).toMatch(/Tap Look\sup/);
     expect(lookUp.spotlight?.label).toBe('Tap Look up');
     expect(moon.bodyDuring).not.toMatch(/Tap the Moon/);
     expect(moon.body).toMatch(/Earth/);
@@ -157,7 +157,7 @@ describe('TUTORIAL_STEPS', () => {
     for (const rate of TUTORIAL_RATE_LADDER) expect(TIME_RATE_PRESETS).toContain(rate);
     expect(TUTORIAL_TIMELAPSE_RATE).toBe(3600);
     expect(jupiter.kicker).toBe('Jupiter · 1 hr/s');
-    expect(jupiter.body).toMatch(/forty-two/);
+    expect(jupiter.body).toMatch(/Io circles it in 42/);
     expect(jupiter.primaryLabel).toBe('Next: the map');
   });
 
@@ -178,13 +178,13 @@ describe('TUTORIAL_STEPS', () => {
     expect(row.spotlight?.key).toBe('M');
     expect(row.await).toBe(true);
     expect(row.perform).toEqual({ kind: 'open-map' });
-    expect(row.body).toMatch(/Tap System map/);
+    expect(row.body).toMatch(/Tap System\smap/);
     // The chart alone for a moment, then the climb — the tour's own, with no
     // ring, since the chart is the thing to watch.
     expect(picture.spotlight).toBeNull();
     expect(picture.perform).toEqual({ kind: 'none' });
     expect(picture.minHoldMs).toBeGreaterThanOrEqual(2000);
-    expect(picture.body).toMatch(/The ring is you, at Jupiter/);
+    expect(picture.body).toMatch(/orange ring around Jupiter is you/);
     expect(rate.spotlight).toBeNull();
     expect(rate.await).toBeUndefined();
     expect(rate.perform).toEqual({ kind: 'rate-ladder', rates: TUTORIAL_MAP_RATE_LADDER, stepMs: 700 });
@@ -195,8 +195,8 @@ describe('TUTORIAL_STEPS', () => {
     expect(TIME_RATE_PRESETS.indexOf(TUTORIAL_MAP_RATE_LADDER[0])).toBe(TIME_RATE_PRESETS.indexOf(TUTORIAL_TIMELAPSE_RATE) + 1);
     expect(TUTORIAL_MAP_RATE).toBe(2592000);
     expect(map.kicker).toBe('From Jupiter · 1 mo/s');
-    expect(map.bodyDuring).toMatch(/\{tools\} Tools holds the map/);
-    expect(map.body).toMatch(/three seconds/);
+    expect(map.bodyDuring).toMatch(/It’s in \{tools\} Tools/);
+    expect(map.body).toMatch(/every 3 seconds/);
     expect(map.primaryLabel).toBe('Next: an eclipse');
     // The picture and the climb play on the chart; nothing else declares a scene.
     expect(map.beats!.filter((b) => b.scene === 'map').map((b) => b.id)).toEqual(['map-picture', 'map-rate']);
@@ -221,7 +221,7 @@ describe('TUTORIAL_STEPS', () => {
     expect(approach.perform).toEqual({ kind: 'approach', rate: TUTORIAL_ECLIPSE_APPROACH_RATE });
     expect(eclipse.totality?.title).toBe('Totality');
     expect(eclipse.totality?.body).toMatch(/corona/);
-    expect(eclipse.body).toMatch(/twenty minutes a second/);
+    expect(eclipse.body).toMatch(/20 minutes a second/);
   });
 
   it('the wrap is a door: Back where I was, and three chips that each do what they say', () => {
@@ -232,7 +232,7 @@ describe('TUTORIAL_STEPS', () => {
       ['look-inside-earth', 'Look inside Earth'],
       ['follow-voyager', 'Follow Voyager 1'],
     ]);
-    expect(wrap.body).toMatch(/\{tools\} Tools holds the map/);
+    expect(wrap.body).toMatch(/\{tools\} Tools has the map/);
     for (const step of TUTORIAL_STEPS) if (step.id !== 'wrap') expect(step.chips).toBeUndefined();
   });
 

@@ -46,7 +46,7 @@ import type { CloudFieldAllocation } from './world/cloudFieldPool';
 import type { CloudFieldSession } from './world/cloudFieldSession';
 import { MOONLIGHT_SOURCES, moonIrradiance } from './world/nightSources';
 import { bindSlicedUploader, bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, textureWarmQueueDepth, warmBudgetMs } from './world/textureWarmer';
-import { beginSlicedUpload, stepSlicedUpload } from './world/slicedUpload';
+import { beginSlicedUpload, ktx2TranscodeFormats, probeCompressedBands, stepSlicedUpload } from './world/slicedUpload';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
   GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
@@ -2851,6 +2851,14 @@ export class PlanetariumMode {
       begin: (tex) => beginSlicedUpload(renderer, tex),
       step: (job, budgetMs) => stepSlicedUpload(job, budgetMs),
     });
+    // Whether the driver takes bands of each format this device's containers
+    // transcode to is asked here, under the boot cover, with one tiny texture
+    // apiece: the answer is read off the GL error queue, a synchronous round
+    // trip to the GPU process that no frame of an approach should pay. Every
+    // container ships sRGB. A format this misses is asked at its first job.
+    for (const format of ktx2TranscodeFormats((name) => renderer.extensions.has(name))) {
+      probeCompressedBands(renderer, format, THREE.SRGBColorSpace);
+    }
     // The compressed tiers' loader (see PlanetFactory's TIER_FILE_OVERRIDES),
     // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
     // loads only if a session actually earns a rung above its boot map, and

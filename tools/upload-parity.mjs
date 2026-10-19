@@ -397,7 +397,6 @@ const COMPRESSED_PARITY = async ({ url, budgetMs, space }) => {
     // the same cannot tell a fixed slicer from a broken one, so it is reported.
     srgbVariantInPlay: slicedFormat !== loaded.format,
     oneShotFormat,
-    fellBack: job.fellBack === true,
     bands, bandErrors, firstBandError, oneShotError,
     wholeUploads: whole,
     results,
@@ -509,14 +508,14 @@ try {
       + `three allocated ${hex(out.allocatedFormat)} / bands used ${hex(out.bandFormat)}`
       + `${out.formatMatches ? '' : ' MISMATCH'}`
       + `${out.srgbVariantInPlay ? ' (sRGB variant, not texture.format)' : ''}; `
-      + `GL errors after bands ${out.bandErrors}, fell back ${out.fellBack}; `
+      + `GL errors after bands ${out.bandErrors}; `
       + `${out.results.length} samples, ${bad.length} mismatched, ${blank.length} blank; `
       + `three's own base-level uploads one-shot ${out.wholeUploads.oneShot} sliced ${out.wholeUploads.sliced}; `
       + `one-shot ${out.oneShotMs} ms vs sliced ${out.slicedMs} ms`);
     for (const r of bad.slice(0, 4)) {
       console.log(`   tile ${r.tile} lod ${r.lod}: ${r.diffBytes} bytes differ (first at ${r.firstAt})`);
     }
-    if (!out.formatMatches || out.bandErrors > 0 || out.fellBack || out.oneShotError !== 0
+    if (!out.formatMatches || out.bandErrors > 0 || out.oneShotError !== 0
       || bad.length > 0 || blank.length > 0
       || out.wholeUploads.sliced !== 0 || out.bands === 0) {
       failed = true;

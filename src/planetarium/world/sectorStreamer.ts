@@ -663,7 +663,8 @@ export interface SectorBodyHandle {
    *  ladder: the boot map is then the finest, is never swapped, and the
    *  family's own drawnColorMapWidth is the truth. */
   topMapWidth?: () => number;
-  /** Rebuild the globe on its fine grid now (idempotent); sectors must not
+  /** Put the globe on its fine grid now (idempotent; the arrays are usually
+   *  built already, a piece a frame as the body neared); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
   ensureFineGeometry: () => void;
 }

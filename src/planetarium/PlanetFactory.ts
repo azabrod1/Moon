@@ -6,8 +6,9 @@
  * textures on load failure so the app never blocks on a missing file.
  *
  * With the meshes, the material factories they are built from and the
- * silhouette upgrade that rebuilds a sphere at a fine segment count once its
- * polygon chords would show.
+ * silhouette upgrade that swaps a body onto a fine sphere once its polygon
+ * chords would show, the fine sphere's arrays built a piece a frame as the
+ * body nears.
  *
  * The maps those meshes wear come from two other modules. Their globe texture
  * ladder — the 2K/4K/8K rungs, the byte ledger and admission gate, the
@@ -53,6 +54,7 @@ import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
 import { layGroundIndex } from './world/groundCull';
+import { smoothTraceEvent } from './smoothnessTrace';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
@@ -384,14 +386,34 @@ export function loadTexture(
  * what an "oval" close-up actually is. At 256 segments the same figure is
  * 7.5e-5r — still under half a pixel with the body at 5000px of radius, i.e.
  * below what antialiasing already smooths away at any framing the app offers.
+ *
+ * Building the fine spheres is the dearest piece of main-thread work an
+ * approach pays. On an M5 Max under Chrome a 256 × 128 sphere is 1–3 ms of
+ * arrays and a streamed-ground layout (world/groundCull) 3–5 ms, and Earth has
+ * three spheres and two layouts: done on the frame the swap fires, that was a
+ * 20–22 ms frame, a missed refresh at 120 Hz on every session's first
+ * approach.
+ * So the arrays are built AHEAD of the swap, one sphere or one layout per call
+ * (`prebuildGeometryStep`, which the mode's per-frame LOD pass makes once the
+ * body is near — `wantsGeometryPrebuild`), and held beside the coarse sphere
+ * the mesh keeps drawing. Nothing pre-built is drawn or uploaded before the
+ * swap, so it changes no pixel. The swap stays the one synchronous moment it
+ * always was, and it is the only place `applied` turns true: it finishes
+ * whatever the pre-build has not reached (all of it, for an arrival under the
+ * veil or a trigger that outran the approach), then hands every mesh its fine
+ * sphere in one pass. The pre-build only moves work earlier; it never decides
+ * when a body is fine.
  */
 export interface GeometryUpgrade {
   /** Every mesh whose silhouette is this body's silhouette, each with the
    *  radius its sphere was built at — the globe, plus any shell drawn just
    *  above it that draws a hard edge of its own. */
   spheres: readonly UpgradeSphere[];
-  /** One-way: the fine spheres are built once and kept for the session. */
+  /** One-way: the fine spheres are swapped in once and kept for the session. */
   applied: boolean;
+  /** Fine spheres built ahead of the swap, by index into `spheres`: arrays
+   *  only, never drawn, never uploaded. Emptied by the swap. */
+  prebuilt: Array<PrebuiltSphere | undefined>;
 }
 
 interface UpgradeSphere {
@@ -403,6 +425,13 @@ interface UpgradeSphere {
   groundLeaf?: number;
 }
 
+interface PrebuiltSphere {
+  geometry: THREE.SphereGeometry;
+  /** The leaf its index has been laid out in; undefined while it has the
+   *  plain index three built. */
+  leaf?: number;
+}
+
 // Screen diameter past which the coarsest silhouette in use starts to show its
 // chords. Set by the coarsest, not the average: a body built at more segments
 // crosses it having shown nothing, and pays one rebuild it did not strictly
@@ -410,10 +439,28 @@ interface UpgradeSphere {
 const GEOMETRY_UPGRADE_AT_PX = 1250;
 export const GEOMETRY_UPGRADE_SEGMENTS = 256;
 
+/**
+ * When the fine spheres start being built ahead of the swap: the camera within
+ * this many of the body's rendered radii in the cruise view's 60° field, and
+ * proportionally farther in a narrower one — the Observatory's telescope makes
+ * a body as large in the frame from farther off, and reaches the swap's own
+ * trigger from there too. The swap fires at the first sector admission or at
+ * 1250px of disc, which on a flown approach to Earth is around 3.5 radii; ten
+ * radii leaves seconds of frames for the five pieces, and a body that comes
+ * within ten radii and turns away holds a few megabytes of arrays it may not
+ * use — no more than the fine spheres it would hold for the session once
+ * swapped. Distance, not the LOD pass's own screen estimate: that estimate is
+ * a bound for skipping work, and it reads unbounded for any body far off-axis
+ * while the lens is ramped down near a planet, which would build fine spheres
+ * for half the system.
+ */
+export const GEOMETRY_PREBUILD_WITHIN_RADII = 10;
+const GEOMETRY_PREBUILD_FOV_DEG = 60;
+
 export function makeGeometryUpgrade(
   spheres: readonly UpgradeSphere[],
 ): GeometryUpgrade {
-  return { spheres, applied: false };
+  return { spheres, applied: false, prebuilt: [] };
 }
 
 /**
@@ -422,7 +469,8 @@ export function makeGeometryUpgrade(
  * covers. Only for a mesh sectors are registered over, and only before the
  * upgrade: the index is laid out once, where the geometry is built, never
  * swapped under one that has drawn. A body already upgraded keeps the plain
- * index, which the streamer reads as nothing to cut.
+ * index, which the streamer reads as nothing to cut. A fine sphere already
+ * pre-built without the layout gets it in a later piece, or at the swap.
  */
 export function markStreamedGround(up: GeometryUpgrade, mesh: THREE.Mesh, leafSegments: number): void {
   if (up.applied) return;
@@ -436,12 +484,92 @@ export function needsGeometryUpgrade(up: GeometryUpgrade, diameterPx: number): b
   return !up.applied && diameterPx > GEOMETRY_UPGRADE_AT_PX;
 }
 
+/** The fine sphere every mesh of a body is swapped onto, at that mesh's own
+ *  radius. */
+function buildFineSphere(radiusAU: number): THREE.SphereGeometry {
+  return new THREE.SphereGeometry(radiusAU, GEOMETRY_UPGRADE_SEGMENTS, GEOMETRY_UPGRADE_SEGMENTS / 2);
+}
+
 /**
- * Rebuild a body's spheres at the fine segment count. Built here rather than at
- * creation because most bodies never come close enough to need one, and 65k
- * triangles per body at boot would be paid by every body in the system.
+ * The next piece of fine-sphere work the body still lacks, encoded as
+ * 2 × sphere index (build the sphere) or 2 × index + 1 (lay out its ground
+ * index), or -1 when every sphere is built as the swap would build it. A
+ * sphere laid out for a leaf its mesh no longer asks for is built again: a
+ * laid-out index cannot be laid out twice, and the swap has to hand over
+ * exactly what building on the spot would have.
+ */
+function nextGeometryPiece(up: GeometryUpgrade): number {
+  for (let i = 0; i < up.spheres.length; i++) {
+    const wanted = up.spheres[i].groundLeaf;
+    const built = up.prebuilt[i];
+    if (!built || (built.leaf !== undefined && built.leaf !== wanted)) return 2 * i;
+    if (built.leaf !== wanted) return 2 * i + 1;
+  }
+  return -1;
+}
+
+function runGeometryPiece(up: GeometryUpgrade, piece: number): void {
+  const i = piece >> 1;
+  const sphere = up.spheres[i];
+  if ((piece & 1) === 0) {
+    up.prebuilt[i] = { geometry: buildFineSphere(sphere.radiusAU) };
+    return;
+  }
+  const built = up.prebuilt[i]!;
+  layGroundIndex(built.geometry, sphere.groundLeaf!);
+  built.leaf = sphere.groundLeaf;
+}
+
+/** A body's name for the frame trace, off its first mesh ("Earth surface"). */
+function upgradeLabel(up: GeometryUpgrade): string {
+  return up.spheres[0]?.mesh.name || 'body';
+}
+
+/** Is the body near enough that its swap is coming, with fine-sphere work
+ *  still to do and the swap not yet made? `distanceRadii` is the camera's
+ *  distance from the body's centre in its rendered radii, `displayFovDeg` the
+ *  field the frame displays. */
+export function wantsGeometryPrebuild(
+  up: GeometryUpgrade,
+  distanceRadii: number,
+  displayFovDeg: number,
+): boolean {
+  if (up.applied) return false;
+  const magnification = Math.max(1, GEOMETRY_PREBUILD_FOV_DEG / displayFovDeg);
+  return distanceRadii <= GEOMETRY_PREBUILD_WITHIN_RADII * magnification && nextGeometryPiece(up) !== -1;
+}
+
+/**
+ * Build ONE piece of the body's fine spheres ahead of the swap — one sphere's
+ * arrays or one ground-index layout — and say whether there was one. The
+ * meshes keep drawing their coarse spheres, and `applied` stays false: only
+ * the swap changes what is drawn.
+ */
+export function prebuildGeometryStep(up: GeometryUpgrade): boolean {
+  if (up.applied) return false;
+  const piece = nextGeometryPiece(up);
+  if (piece === -1) return false;
+  const startMs = import.meta.env.DEV ? performance.now() : 0;
+  runGeometryPiece(up, piece);
+  if (import.meta.env.DEV) {
+    smoothTraceEvent(
+      'warm',
+      `${upgradeLabel(up)} fine sphere ${piece >> 1} ${piece & 1 ? 'layout' : 'arrays'}`,
+      performance.now() - startMs,
+    );
+  }
+  return true;
+}
+
+/**
+ * Swap a body's spheres onto the fine segment count. Built for the swap rather
+ * than at creation because most bodies never come close enough to need one,
+ * and 65k triangles per body at boot would be paid by every body in the
+ * system.
  *
- * The swap is safe to make on a body already on screen and already textured.
+ * Whatever the pre-build has not reached is built here, on the spot, before
+ * any mesh is touched; then every mesh takes its fine sphere in one pass. The
+ * swap is safe to make on a body already on screen and already textured.
  * Assigning `geometry` touches nothing about the object's transform, so the
  * render-curve inflation carried on mesh.scale and the body's rotation phase
  * both survive it; SphereGeometry lays out the same equirectangular UVs at any
@@ -451,17 +579,26 @@ export function needsGeometryUpgrade(up: GeometryUpgrade, diameterPx: number): b
  */
 export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: number): boolean {
   if (!needsGeometryUpgrade(up, diameterPx)) return false;
+  const startMs = import.meta.env.DEV ? performance.now() : 0;
+  let builtHere = 0;
+  for (let piece = nextGeometryPiece(up); piece !== -1; piece = nextGeometryPiece(up)) {
+    runGeometryPiece(up, piece);
+    builtHere++;
+  }
   up.applied = true;
-  for (const { mesh, radiusAU, groundLeaf } of up.spheres) {
+  for (let i = 0; i < up.spheres.length; i++) {
+    const { mesh } = up.spheres[i];
     const previous = mesh.geometry;
-    const fine = new THREE.SphereGeometry(
-      radiusAU,
-      GEOMETRY_UPGRADE_SEGMENTS,
-      GEOMETRY_UPGRADE_SEGMENTS / 2,
-    );
-    if (groundLeaf !== undefined) layGroundIndex(fine, groundLeaf);
-    mesh.geometry = fine;
+    mesh.geometry = up.prebuilt[i]!.geometry;
     previous.dispose();
+  }
+  up.prebuilt.length = 0;
+  if (import.meta.env.DEV) {
+    smoothTraceEvent(
+      'warm',
+      `${upgradeLabel(up)} fine spheres swapped (${builtHere} pieces built at the swap)`,
+      performance.now() - startMs,
+    );
   }
   return true;
 }
@@ -673,7 +810,7 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
 // segment count as the globe, so all three silhouettes coarsen and refine
 // together.
 export const EARTH_NIGHT_SHELL_SCALE = 1.001;
-const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
+export const EARTH_CLOUD_SHELL_SCALE = cloudShellScale(
   PLANETS.find((p) => p.name === 'Earth')!.radiusKm,
 );
 

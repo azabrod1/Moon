@@ -36,7 +36,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
+import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, prebuildGeometryStep, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, wantsGeometryPrebuild, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
@@ -5326,6 +5326,7 @@ export class PlanetariumMode {
     }
     const warmSpentMs = performance.now() - warmStartedAt;
     this.frameWorkMs += warmSpentMs;
+    this.warmSpentThisFrameMs = warmSpentMs;
     if (import.meta.env.DEV && this.devWarmSpend) {
       this.devWarmSpend.budgetMs = warmBudget;
       this.devWarmSpend.spentMs = warmSpentMs;
@@ -5678,6 +5679,13 @@ export class PlanetariumMode {
   }
 
   private readonly bodyLODTmp = new THREE.Vector3();
+  /** The camera's world position for the LOD walk's distance reads. */
+  private readonly bodyLODCameraTmp = new THREE.Vector3();
+  /** What the warm pump (or the cloud field's turn in its place) spent on
+   *  this frame, which runs before the LOD walk; and the spend past which
+   *  the walk builds no fine-sphere piece on the same frame — an upload ran. */
+  private warmSpentThisFrameMs = 0;
+  private static readonly GEOMETRY_PIECE_PUMP_MS = 1;
   /**
    * What each body's surface is drawing, at the point the camera magnifies it
    * most — refreshed by the LOD walk below for every body close enough for the
@@ -5859,6 +5867,16 @@ export class PlanetariumMode {
    * before its projection, a colour handle that has reached its goal answers
    * canAttempt in a couple of comparisons, and no body is ever projected twice
    * however many handles it carries.
+   *
+   * The fine sphere's arrays are built here ahead of its swap, one piece a
+   * frame across every body (PlanetFactory's silhouette upgrade): a piece —
+   * one sphere's arrays or one ground layout — is 1–5 ms on an M5 Max, which
+   * no single 120 Hz frame can take five of beside its own work, and the warm
+   * pump's budget (a third of the frame) cannot take the larger ones.
+   * Nor does a piece share a frame with an upload the pump has just paid —
+   * the two together are most of a 120 Hz frame — and it loses nothing by
+   * waiting: the body needs five frames of the hundreds an approach takes
+   * between the ten radii the pre-build starts at and the swap.
    */
   private updateBodyLOD(): void {
     if (!this.solarSystem) return;
@@ -5866,6 +5884,9 @@ export class PlanetariumMode {
     const canvasH = this.renderer.domElement.clientHeight;
     const nowMs = performance.now();
     this.camera.updateMatrixWorld();
+    this.bodyLODCameraTmp.setFromMatrixPosition(this.camera.matrixWorld);
+    const fovDeg = displayFovDeg(this.camera);
+    let geometryPieceSpent = this.warmSpentThisFrameMs >= PlanetariumMode.GEOMETRY_PIECE_PUMP_MS;
     for (const planet of this.solarSystem.planets) {
       const ups = planet.textureUpgrades;
       const geo = planet.geometryUpgrade;
@@ -5891,6 +5912,9 @@ export class PlanetariumMode {
         planet.data.name, this.bodyLODTmp, planet.data.radiusAU, planet.mesh,
         planet.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
       );
+      if (!geometryPieceSpent && wantsGeometryPrebuild(
+        geo, this.bodyLODTmp.distanceTo(this.bodyLODCameraTmp) / planet.data.radiusAU, fovDeg,
+      )) geometryPieceSpent = prebuildGeometryStep(geo);
       if (laddersDone) continue;
       if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)
         && !(normalPending
@@ -5954,6 +5978,9 @@ export class PlanetariumMode {
           m.data.name, this.bodyLODTmp, renderedR, m.mesh,
           m.mesh.material as THREE.Material, ups, estPx, canvasW, canvasH, nowMs,
         );
+        if (!geometryPieceSpent && wantsGeometryPrebuild(
+          geo, this.bodyLODTmp.distanceTo(this.bodyLODCameraTmp) / renderedR, fovDeg,
+        )) geometryPieceSpent = prebuildGeometryStep(geo);
         if (laddersDone) continue;
         if (!lodMeasurementRelevant(
           geo, ups, estPx, canvasH,

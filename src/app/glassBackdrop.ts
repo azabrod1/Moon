@@ -502,6 +502,10 @@ export class GlassBackdrop {
     this.mesh.material = material;
     this.quads.setDrawRange(0, count * 6);
     renderer.setRenderTarget(target);
+    // An offscreen target is cleared first: nothing in it outside this
+    // frame's panels is ever read, and a clear that opens the pass is a
+    // tile GPU's cue not to load the old contents from memory at all.
+    if (target) renderer.clear(true, false, false);
     renderer.render(this.mesh, this.camera);
     this.draws++;
   }
@@ -555,6 +559,7 @@ export class GlassBackdrop {
       this.finishMesh.material = material;
       this.finishQuads.setDrawRange(0, count * 6);
       renderer.setRenderTarget(half);
+      renderer.clear(true, false, false);
       renderer.render(this.finishMesh, this.camera);
       this.draws++;
       if (u.uDither) u.uDither.value = oldDither;

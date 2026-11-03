@@ -4140,7 +4140,8 @@ function installDevHooks() {
         route: glassRouteLive() ? 'engine' : 'browser',
         engineClass: glassEngineClass,
         registered: glassRegistry.registered,
-        rects: glassRegistry.rects().map((r) => ({
+        drawSeq,
+        rects: (glassEngineClass ? glassRegistry.rects() : []).map((r) => ({
           x0: Math.round(r.x0 * 10) / 10, y0: Math.round(r.y0 * 10) / 10,
           x1: Math.round(r.x1 * 10) / 10, y1: Math.round(r.y1 * 10) / 10,
           sigma: Math.round(r.sigma * 100) / 100, saturation: r.saturation,

@@ -89,6 +89,16 @@
  * compile-time define on the planetarium's deck alone, on by default;
  * `?cloudlight=0` turns it off in any build.
  *
+ * `engine-glass` is the interface's frosted glass blurred by the renderer
+ * inside the frame rather than by the browser's compositor on top of it
+ * (app/glassBackdrop.ts). It moves the pixels inside the panels by design —
+ * a blur drawn by another hand at another size — so it is never exact; it
+ * flips live (the browser's blur comes back on the next drawn frame, the
+ * class that turned it off going with it), and it ships with a door of its
+ * own: `?glass=0` on any build never builds the renderer's glass at all. Its
+ * saving is outside the frame, in the compositor, so the sweep measures it
+ * with the interface shown.
+ *
  * There is deliberately no key for the render resolution. The graphics-quality
  * levels are its A/B (`?quality=medium` is the picture as it was, and
  * `?upscale=<ratio>` pins any scene ratio for a measurement), and a key here
@@ -118,6 +128,7 @@ export type PerfSwitchKey =
   | 'cloud-noise-frame'
   | 'cloud-shadow'
   | 'cloud-light'
+  | 'engine-glass'
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
@@ -157,6 +168,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'cloud-noise-frame', label: 'Cloud noise anchored to the sheet', on: true },
   { key: 'cloud-shadow', label: 'Cloud shadows on the ground', on: true, needsReload: true },
   { key: 'cloud-light', label: 'Cloud deck lit as a cloud', on: true, needsReload: true },
+  { key: 'engine-glass', label: 'Interface glass blurred by the renderer', on: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
@@ -182,6 +194,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'cloud-noise-frame': true,
   'cloud-shadow': true,
   'cloud-light': true,
+  'engine-glass': true,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,

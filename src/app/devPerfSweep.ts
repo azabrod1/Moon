@@ -457,6 +457,12 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   // They change the picture, so never exact and never in the combined row.
   'cloud-shadow': { off: 'Cloud shadows off', on: 'Cloud shadows on', needsReload: true, exact: false },
   'cloud-light': { off: 'Cloud light off', on: 'Cloud light on', needsReload: true, exact: false },
+  // The interface's glass blurred inside the frame instead of by the browser
+  // (app/glassBackdrop.ts): live, but the panels' insides change by design.
+  // Its cost and its saving are the compositor's, so it is measured with the
+  // interface on screen, which the sweep leaves as it found it outside the
+  // control row.
+  'engine-glass': { off: 'Interface glass blurred by the browser again', on: 'Interface glass blurred by the renderer', exact: false },
 };
 
 /**

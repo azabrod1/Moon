@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
 import {
-  GLASS_MAX_RECTS, GlassRegistry, blocksBackdrop, boxToBuffer, clampCornerRadii, glassCoverage,
+  GLASS_MAX_RECTS, GLASS_VOLATILE_DRAWS, GlassRegistry, blocksBackdrop, boxToBuffer, clampCornerRadii, glassCoverage,
   parseColourAlpha, parseRadius, type GlassElement, type GlassStyle,
 } from './glassRects';
 
@@ -419,6 +419,35 @@ describe('GlassRegistry', () => {
     expect(reg.recheck()).toBe(true);
     expect(shown.boxReads).toBe(reads);
     expect(reg.rects()[0].coverage).toBeLessThan(1);
+  });
+
+  it('reads the box of a panel the mode moves every frame fresh before each draw, and settles once it stops', () => {
+    const { body } = page();
+    const pill = new FakeEl(body, { marked: true, blur: 8, box });
+    const reg = registry([pill]);
+    const drawTick = (moveTo?: number): void => {
+      reg.scan();
+      if (moveTo !== undefined) pill.opts.box = { ...box, left: moveTo };
+      reg.recheck();
+      reg.markDrawn();
+    };
+    drawTick();
+    // The mode moves it inside a drawing tick's update: the first move is
+    // caught at the next tick's top, the frame after that is read fresh.
+    drawTick(110);
+    expect(reg.scan()).toBe(true);
+    drawTick(120);
+    expect(reg.rects()[0].x0).toBe(240);
+    // While it keeps moving, the draw has it where the mode put it, and the
+    // next tick sees nothing new: the frame-rate setting is kept.
+    drawTick(130);
+    expect(reg.rects()[0].x0).toBe(260);
+    expect(reg.scan()).toBe(false);
+    // Once still for GLASS_VOLATILE_DRAWS frames, it is reused again.
+    for (let i = 0; i < GLASS_VOLATILE_DRAWS + 1; i++) drawTick();
+    const reads = pill.boxReads;
+    drawTick();
+    expect(pill.boxReads).toBe(reads + 1);
   });
 
   it('draws at most GLASS_MAX_RECTS', () => {

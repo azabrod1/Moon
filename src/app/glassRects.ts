@@ -64,13 +64,15 @@
  * time. If anything moved since the last drawn frame, main draws this tick
  * even where the frame-rate setting would have skipped it, so a menu never
  * opens with its tint over an unblurred picture and a closed panel never
- * leaves its blur behind. On a tick that draws, a second, cheaper pass right
- * before the draw re-reads only visibility and opacity, which need style and
- * not layout, and reads the box of an element only if it has just appeared —
- * so a control the mode itself shows during its update is blurred on its
- * first frame too. A panel the mode MOVES in its update is drawn where it was
- * at the top of the tick, a frame behind; no glass panel is positioned that
- * way except the Look-inside hover card.
+ * leaves its blur behind. On a tick that draws, a second pass right before
+ * the draw — after the mode's own DOM writes — re-reads visibility and
+ * opacity, which need style and not layout, and reads a box again only where
+ * it may have moved: an element that has just appeared, or one that moved in
+ * the last GLASS_VOLATILE_DRAWS drawn frames. So a control the mode shows
+ * during its update is blurred on its first frame, a panel the mode
+ * positions every frame (the surface view's tracking pill, the Look-inside
+ * hover card) is blurred where it is drawn and not a frame behind, and a
+ * still interface reads no layout inside the frame at all.
  *
  * At most GLASS_MAX_RECTS are drawn; the surplus is left undrawn and DEV says
  * so once. The interface never shows more than about a dozen.
@@ -246,11 +248,26 @@ function rendered(el: GlassElement, style: GlassStyle, read: (el: GlassElement) 
   return true;
 }
 
-/** One element's reading at a scan: whether it is glass this frame, and its
- *  values if so. Kept between scans so the second pass can reuse a box. */
-interface Reading {
-  el: GlassElement;
-  rect: GlassRect | null;
+/** How many drawn frames an element that moved keeps having its box read
+ *  fresh before the draw. A panel the mode positions every frame (the
+ *  surface view's tracking pill) stays read; one that moved once (a menu
+ *  sliding open) goes back to the free reading a second or so later. */
+export const GLASS_VOLATILE_DRAWS = 60;
+
+/** What the registry remembers of one element between frames. */
+interface Track {
+  /** Its box at the last scan of this tick, if it was glass. */
+  seen: GlassRect | null;
+  /** Its box in the last drawn frame, if it was glass there. */
+  drawn: GlassRect | null;
+  /** Drawn frames left in which its box is read fresh before the draw. */
+  volatile: number;
+}
+
+function sameBox(a: GlassRect | null, b: GlassRect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.x0 === b.x0 && a.y0 === b.y0 && a.x1 === b.x1 && a.y1 === b.y1;
 }
 
 /**
@@ -258,16 +275,19 @@ interface Reading {
  */
 export class GlassRegistry {
   private elements: GlassElement[] = [];
-  /** This frame's glass, in the registry's (document) order. */
-  private readings: Reading[] = [];
+  private readonly tracks = new Map<GlassElement, Track>();
   /** What the last drawn frame drew, flattened, for the change test. */
   private drawnKey: number[] = [];
   private readonly ancestorVerdict = new Map<GlassElement, boolean>();
   private surplusSaid = false;
-  /** The last full scan's own time, ms (performance.now), for the readout. */
+  /** The last full scan's own time, ms, for the readout. */
   lastScanMs = 0;
   /** The last pre-draw pass's own time, ms. */
   lastRecheckMs = 0;
+  /** Boxes the last pre-draw pass read fresh (each a layout read). */
+  lastRecheckReads = 0;
+  /** Boxes read by the pass under way. */
+  private boxReads = 0;
 
   constructor(
     private readonly collect: () => GlassElement[],
@@ -281,7 +301,8 @@ export class GlassRegistry {
   /** Collect the marked elements again: call after building glass in code. */
   refresh(): void {
     this.elements = this.collect();
-    this.readings = [];
+    const keep = new Set(this.elements);
+    for (const el of [...this.tracks.keys()]) if (!keep.has(el)) this.tracks.delete(el);
   }
 
   /** How many elements are registered. */
@@ -289,11 +310,21 @@ export class GlassRegistry {
     return this.elements.length;
   }
 
+  private track(el: GlassElement): Track {
+    let t = this.tracks.get(el);
+    if (!t) {
+      t = { seen: null, drawn: null, volatile: 0 };
+      this.tracks.set(el, t);
+    }
+    return t;
+  }
+
   /** This frame's rects, in document order, at most GLASS_MAX_RECTS. */
   rects(): GlassRect[] {
     const out: GlassRect[] = [];
-    for (const r of this.readings) {
-      if (!r.rect) continue;
+    for (const el of this.elements) {
+      const rect = this.tracks.get(el)?.seen;
+      if (!rect) continue;
       if (out.length >= GLASS_MAX_RECTS) {
         if (import.meta.env.DEV && !this.surplusSaid) {
           this.surplusSaid = true;
@@ -301,7 +332,7 @@ export class GlassRegistry {
         }
         break;
       }
-      out.push(r.rect);
+      out.push(rect);
     }
     return out;
   }
@@ -315,47 +346,48 @@ export class GlassRegistry {
     const t0 = this.now();
     const canvas = this.canvas();
     this.ancestorVerdict.clear();
-    const readings: Reading[] = [];
-    for (const el of this.elements) {
-      const rect = this.readElement(el, canvas, null);
-      if (rect) readings.push({ el, rect });
-    }
-    this.readings = readings;
+    for (const el of this.elements) this.track(el).seen = this.readElement(el, canvas, null);
     this.lastScanMs = this.now() - t0;
     return this.changed();
   }
 
   /**
    * The pre-draw pass, after the mode's own DOM writes: visibility and
-   * opacity again for every element, which need style but no layout; the box
-   * of an element seen at the top of the tick is reused, and only an element
-   * that has just appeared has its box read. Returns whether anything differs
-   * from the last drawn frame.
+   * opacity again for every element, which need style but no layout. An
+   * element's box is read again only where it may have moved since the top
+   * of the tick — it has just appeared, its box differs from the one last
+   * drawn, or it moved within the last GLASS_VOLATILE_DRAWS drawn frames —
+   * and reused otherwise, so a still interface costs no layout here. Returns
+   * whether anything differs from the last drawn frame.
    */
   recheck(): boolean {
     const t0 = this.now();
     const canvas = this.canvas();
     this.ancestorVerdict.clear();
-    const known = new Map<GlassElement, GlassRect>();
-    for (const r of this.readings) if (r.rect) known.set(r.el, r.rect);
-    const readings: Reading[] = [];
+    this.boxReads = 0;
     for (const el of this.elements) {
-      const rect = this.readElement(el, canvas, known.get(el) ?? null);
-      if (rect) readings.push({ el, rect });
+      const t = this.track(el);
+      const settled = t.seen !== null && t.volatile === 0 && sameBox(t.seen, t.drawn);
+      t.seen = this.readElement(el, canvas, settled ? t.seen : null);
     }
-    this.readings = readings;
+    this.lastRecheckReads = this.boxReads;
     this.lastRecheckMs = this.now() - t0;
     return this.changed();
   }
 
   /** The frame drew this tick's rects: they are what the next change is
-   *  measured against. */
+   *  measured against, and an element whose box moved since the last drawn
+   *  frame has its box read fresh before the next GLASS_VOLATILE_DRAWS. */
   markDrawn(): void {
+    for (const t of this.tracks.values()) {
+      if (t.seen && t.drawn && !sameBox(t.seen, t.drawn)) t.volatile = GLASS_VOLATILE_DRAWS;
+      else if (t.volatile > 0) t.volatile--;
+      t.drawn = t.seen;
+    }
     this.drawnKey = this.key();
   }
 
-  /** Forget what was drawn, so the next scan reads as a change (a route
-   *  change hands the glass back to the browser, or to the engine). */
+  /** Forget what was drawn, so the next scan reads as a change. */
   forgetDrawn(): void {
     this.drawnKey = [-1];
   }
@@ -407,6 +439,7 @@ export class GlassRegistry {
       return box.coverage === coverage ? box : { ...box, coverage };
     }
     const r = el.getBoundingClientRect();
+    this.boxReads++;
     if (!(r.width > 0 && r.height > 0)) return null;
     const mapped = boxToBuffer(r, canvas);
     if (!mapped) return null;

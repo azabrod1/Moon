@@ -263,11 +263,16 @@ export function blocksBackdrop(style: GlassStyle, marked: boolean): boolean {
 }
 
 
-/** How many drawn frames an element that moved keeps having its box read
- *  fresh before the draw. A panel the mode positions every frame (the
- *  surface view's tracking pill) stays read; one that moved once (a menu
- *  sliding open) goes back to the free reading a second or so later. */
-export const GLASS_VOLATILE_DRAWS = 60;
+/** How many drawn frames an element that moved, appeared or went stays
+ *  volatile: its box read fresh before each draw, and every tick drawn while
+ *  any element is. Short, because under a frame-rate cap it is also how long
+ *  the app draws at the display's rate after a panel last changed (a menu
+ *  opening, the hover card coming to rest): eight frames bridge the gaps in
+ *  a panel the mode moves every tick or two (the tracking pill, the hover
+ *  card following the pointer), and are 67 ms at 120 Hz once it stops. At 60
+ *  a menu opened under the 30 fps cap kept the app at 120 for half a second
+ *  (225 of 240 frames drawn across two opens and two closes, against 97). */
+export const GLASS_VOLATILE_DRAWS = 8;
 
 /** What the registry remembers of one element between frames. */
 interface Track {

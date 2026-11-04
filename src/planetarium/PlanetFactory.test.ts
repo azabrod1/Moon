@@ -26,6 +26,8 @@ import {
   GEOMETRY_PREBUILD_WITHIN_RADII,
   type GeometryUpgrade } from './PlanetFactory';
 import { groundIndexOf, layGroundIndex, type GroundIndex } from './world/groundCull';
+import { buildFineSphereArrays } from './world/fineSphereArrays';
+import { setFineSphereRoundTrip, type FineSphereReply, type FineSphereRequest } from './world/fineSpheres';
 import {
   applyColorTierTexture,
   applyNormalTierTexture,
@@ -1635,6 +1637,140 @@ describe('fine spheres built ahead of the swap', () => {
     const swapped = earthUpgrade();
     upgradeGeometryOnApproach(swapped.up, Infinity);
     expect(wantsGeometryPrebuild(swapped.up, 3.5, 60)).toBe(false);
+  });
+
+  describe('off the main thread', () => {
+    // A worker stand-in: requests wait in a queue until the test answers them,
+    // and an answer is the worker's own build (fineSphereArrays), run here.
+    // The first request is always the probe, which every test answers first.
+    let queue: Array<{ request: FineSphereRequest; resolve: (reply: FineSphereReply) => void }>;
+    const settled = () => new Promise((r) => setTimeout(r, 0));
+    const build = (request: FineSphereRequest): FineSphereReply => ({
+      ok: true,
+      arrays: buildFineSphereArrays(request.radius, request.width, request.height, request.leaf),
+      buildMs: 0,
+    });
+    async function answerAll(answer: (request: FineSphereRequest) => FineSphereReply = build): Promise<number> {
+      let n = 0;
+      while (queue.length) {
+        const { request, resolve } = queue.shift()!;
+        resolve(answer(request));
+        n++;
+        await settled();
+      }
+      return n;
+    }
+    /** Start the probe through a first step, and answer it as the worker would. */
+    async function probed(up: GeometryUpgrade): Promise<void> {
+      expect(prebuildGeometryStep(up)).toBe(false); // the probe is out: nothing yet
+      expect(queue.length).toBe(1);
+      await answerAll();
+    }
+    function sendAll(up: GeometryUpgrade): number {
+      let sent = 0;
+      while (prebuildGeometryStep(up)) sent++;
+      return sent;
+    }
+    beforeEach(() => {
+      queue = [];
+      setFineSphereRoundTrip((request) => new Promise((resolve) => queue.push({ request, resolve })));
+    });
+    afterEach(() => setFineSphereRoundTrip(null));
+
+    it('takes Earth\'s three spheres from the worker byte for byte, layouts included, and swaps them in', async () => {
+      const ahead = earthUpgrade();
+      await probed(ahead.up);
+      expect(sendAll(ahead.up)).toBe(3); // one request per sphere, layout in the same request
+      expect(sendAll(ahead.up)).toBe(0); // nothing sent twice while out
+      expect(ahead.up.prebuilt.filter(Boolean)).toHaveLength(0);
+      expect(await answerAll()).toBe(3);
+      expect(ahead.up.applied).toBe(false);
+      expect(prebuildGeometryStep(ahead.up)).toBe(false); // nothing left to build
+      ahead.meshes.forEach((m) => expect(sphereWidthSegments(m)).toBe(96)); // nothing drawn early
+      EARTH_SPHERES.forEach(({ name, radiusAU, streamed }, i) => {
+        const g = ahead.up.prebuilt[i]!.geometry;
+        expect(g).toBeInstanceOf(THREE.SphereGeometry);
+        const fresh = new THREE.SphereGeometry(radiusAU, 256, 128);
+        if (streamed) {
+          const freshLayout = layGroundIndex(fresh, GROUND_LEAF_SEGMENTS);
+          expect({ name, differs: sameLayout(groundIndexOf(g), freshLayout) }).toEqual({ name, differs: [] });
+        } else {
+          expect(groundIndexOf(g)).toBeUndefined();
+        }
+        expect({ name, differs: sameGeometry(g, fresh) }).toEqual({ name, differs: [] });
+      });
+      expect(upgradeGeometryOnApproach(ahead.up, Infinity)).toBe(true);
+      const onTheSpot = earthUpgrade();
+      upgradeGeometryOnApproach(onTheSpot.up, Infinity);
+      EARTH_SPHERES.forEach(({ name }, i) => {
+        const a = ahead.meshes[i].geometry;
+        const b = onTheSpot.meshes[i].geometry;
+        expect({ name, differs: sameGeometry(a, b) }).toEqual({ name, differs: [] });
+        expect({ name, differs: sameLayout(groundIndexOf(a), groundIndexOf(b)) })
+          .toEqual({ name, differs: EARTH_SPHERES[i].streamed ? [] : ['layout absent / absent'] });
+      });
+      expect(ahead.meshes.map((m) => sphereWidthSegments(m))).toEqual([256, 256, 256]);
+      expect(ahead.up.prebuilt).toEqual([]);
+    });
+
+    it('a swap before the replies builds on the spot, and the late replies are dropped', async () => {
+      const { up, meshes } = earthUpgrade();
+      await probed(up);
+      sendAll(up);
+      expect(upgradeGeometryOnApproach(up, Infinity)).toBe(true);
+      const fine = meshes.map((m) => m.geometry);
+      await answerAll();
+      meshes.forEach((m, i) => expect(m.geometry).toBe(fine[i]));
+      expect(up.prebuilt).toEqual([]);
+      const fresh = new THREE.SphereGeometry(EARTH_SPHERES[0].radiusAU, 256, 128);
+      expect(sameLayout(groundIndexOf(meshes[0].geometry), layGroundIndex(fresh, GROUND_LEAF_SEGMENTS))).toEqual([]);
+    });
+
+    it('a failed request turns the worker off and the rest is built here, to the same bytes', async () => {
+      const { up, meshes } = earthUpgrade();
+      await probed(up);
+      sendAll(up);
+      await answerAll((request) => (request.radius === EARTH_SPHERES[0].radiusAU ? build(request) : { ok: false, error: 'boom' }));
+      expect(up.inflight.filter(Boolean)).toHaveLength(0);
+      expect(up.prebuilt[0]!.leaf).toBe(GROUND_LEAF_SEGMENTS); // the globe came back before the failure
+      // From here on, one piece a frame on this thread, and no request sent.
+      const pieces = prebuildAll(up);
+      expect(pieces).toBe(3); // night arrays and layout, deck arrays
+      expect(queue).toHaveLength(0);
+      upgradeGeometryOnApproach(up, Infinity);
+      const onTheSpot = earthUpgrade();
+      upgradeGeometryOnApproach(onTheSpot.up, Infinity);
+      EARTH_SPHERES.forEach(({ name }, i) => {
+        expect({ name, differs: sameGeometry(meshes[i].geometry, onTheSpot.meshes[i].geometry) }).toEqual({ name, differs: [] });
+      });
+    });
+
+    it('a probe that comes back with other bytes keeps every sphere on the main thread', async () => {
+      const { up } = earthUpgrade();
+      expect(prebuildGeometryStep(up)).toBe(false);
+      await answerAll((request) => {
+        const reply = build(request) as Extract<FineSphereReply, { ok: true }>;
+        reply.arrays.position[0] += 1e-3;
+        return reply;
+      });
+      expect(prebuildAll(up)).toBe(5); // the main-thread pieces, as before
+      expect(queue).toHaveLength(0);
+    });
+
+    it('a sphere whose leaf changes while it is out is asked for again with the new one', async () => {
+      const meshes = EARTH_SPHERES.map(({ radiusAU }) => new THREE.Mesh(new THREE.SphereGeometry(radiusAU, 96, 48)));
+      const up = makeGeometryUpgrade([{ mesh: meshes[0], radiusAU: EARTH_SPHERES[0].radiusAU }]);
+      await probed(up);
+      expect(prebuildGeometryStep(up)).toBe(true); // sent with no leaf
+      markStreamedGround(up, meshes[0], GROUND_LEAF_SEGMENTS);
+      await answerAll();
+      expect(up.prebuilt[0]).toBeUndefined(); // the reply was for a sphere no longer wanted
+      expect(prebuildGeometryStep(up)).toBe(true);
+      expect(queue[0].request.leaf).toBe(GROUND_LEAF_SEGMENTS);
+      await answerAll();
+      expect(up.prebuilt[0]!.leaf).toBe(GROUND_LEAF_SEGMENTS);
+      expect(prebuildGeometryStep(up)).toBe(false);
+    });
   });
 });
 

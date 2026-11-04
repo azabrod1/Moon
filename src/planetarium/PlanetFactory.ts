@@ -54,6 +54,8 @@ import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/
 import { queueTextureWarm } from './world/textureWarmer';
 import { createEarthNightShellMaterial } from './world/earthNightMaterial';
 import { layGroundIndex } from './world/groundCull';
+import { sphereFromArrays } from './world/fineSphereArrays';
+import { buildFineSphereOffThread, fineSphereWorkerReady } from './world/fineSpheres';
 import { smoothTraceEvent } from './smoothnessTrace';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
@@ -389,20 +391,25 @@ export function loadTexture(
  *
  * Building the fine spheres is the dearest piece of main-thread work an
  * approach pays. On an M5 Max under Chrome a 256 × 128 sphere is 1–3 ms of
- * arrays and a streamed-ground layout (world/groundCull) 3–5 ms, and Earth has
- * three spheres and two layouts: done on the frame the swap fires, that was a
- * 20–22 ms frame, a missed refresh at 120 Hz on every session's first
+ * arrays (7–13 ms for the session's first, on code not yet optimised) and a
+ * streamed-ground layout (world/groundCull) 3–5 ms, and Earth has three
+ * spheres and two layouts: done on the frame the swap fires, that was a
+ * 20–35 ms frame, a missed refresh at 120 Hz on every session's first
  * approach.
- * So the arrays are built AHEAD of the swap, one sphere or one layout per call
- * (`prebuildGeometryStep`, which the mode's per-frame LOD pass makes once the
- * body is near — `wantsGeometryPrebuild`), and held beside the coarse sphere
- * the mesh keeps drawing. Nothing pre-built is drawn or uploaded before the
- * swap, so it changes no pixel. The swap stays the one synchronous moment it
- * always was, and it is the only place `applied` turns true: it finishes
- * whatever the pre-build has not reached (all of it, for an arrival under the
- * veil or a trigger that outran the approach), then hands every mesh its fine
- * sphere in one pass. The pre-build only moves work earlier; it never decides
- * when a body is fine.
+ * So the arrays are built AHEAD of the swap and held beside the coarse sphere
+ * the mesh keeps drawing, from when the body is near (`wantsGeometryPrebuild`,
+ * asked by the mode's per-frame LOD pass, which makes one `prebuildGeometryStep`
+ * a frame). Where a worker is available (world/fineSpheres) a step sends one
+ * sphere to it, laid out in the same request, and the main thread only wraps
+ * the arrays that come back. Elsewhere, or once the worker has failed, a step
+ * builds one sphere or one layout here. Nothing pre-built is drawn or uploaded
+ * before the swap, so it changes no pixel. The swap stays the one synchronous
+ * moment it always was, and it is the only place `applied` turns true: it
+ * finishes whatever the pre-build has not reached, on the spot (all of it, for
+ * an arrival under the veil or a trigger that outran the approach, and any
+ * sphere still out at the worker, whose reply is then dropped), then hands
+ * every mesh its fine sphere in one pass. The pre-build only moves work
+ * earlier; it never decides when a body is fine.
  */
 export interface GeometryUpgrade {
   /** Every mesh whose silhouette is this body's silhouette, each with the
@@ -414,6 +421,10 @@ export interface GeometryUpgrade {
   /** Fine spheres built ahead of the swap, by index into `spheres`: arrays
    *  only, never drawn, never uploaded. Emptied by the swap. */
   prebuilt: Array<PrebuiltSphere | undefined>;
+  /** Spheres out at the worker, by index into `spheres`, with the leaf each
+   *  was asked for. A reply is taken only while its entry is still the one
+   *  it was sent with; the swap and a main-thread build clear entries. */
+  inflight: Array<{ leaf: number | undefined } | undefined>;
 }
 
 interface UpgradeSphere {
@@ -460,7 +471,7 @@ const GEOMETRY_PREBUILD_FOV_DEG = 60;
 export function makeGeometryUpgrade(
   spheres: readonly UpgradeSphere[],
 ): GeometryUpgrade {
-  return { spheres, applied: false, prebuilt: [] };
+  return { spheres, applied: false, prebuilt: [], inflight: [] };
 }
 
 /**
@@ -512,6 +523,8 @@ function runGeometryPiece(up: GeometryUpgrade, piece: number): void {
   const i = piece >> 1;
   const sphere = up.spheres[i];
   if ((piece & 1) === 0) {
+    // Built here, so any request for it still out is no longer wanted.
+    up.inflight[i] = undefined;
     up.prebuilt[i] = { geometry: buildFineSphere(sphere.radiusAU) };
     return;
   }
@@ -540,13 +553,61 @@ export function wantsGeometryPrebuild(
 }
 
 /**
- * Build ONE piece of the body's fine spheres ahead of the swap — one sphere's
- * arrays or one ground-index layout — and say whether there was one. The
- * meshes keep drawing their coarse spheres, and `applied` stays false: only
- * the swap changes what is drawn.
+ * Send the next sphere the body lacks to the worker, laid out for the leaf its
+ * mesh asks for, and say whether one was sent. A sphere already out, or built
+ * as the swap would build it, is not sent again; one built for a leaf its mesh
+ * no longer asks for is sent again whole.
+ *
+ * The reply lands between frames. It is taken only if nothing has replaced it
+ * in the meantime: the swap, a main-thread build after the worker failed, or
+ * a change of leaf (in which case the sphere is sent again). Taking it is the
+ * one main-thread cost of the sphere: wrapping arrays it already owns.
+ */
+function sendNextSphere(up: GeometryUpgrade): boolean {
+  for (let i = 0; i < up.spheres.length; i++) {
+    if (up.inflight[i]) continue;
+    const sphere = up.spheres[i];
+    const leaf = sphere.groundLeaf;
+    const built = up.prebuilt[i];
+    if (built && built.leaf === leaf) continue;
+    const job = { leaf };
+    up.inflight[i] = job;
+    void buildFineSphereOffThread({
+      radius: sphere.radiusAU,
+      width: GEOMETRY_UPGRADE_SEGMENTS,
+      height: GEOMETRY_UPGRADE_SEGMENTS / 2,
+      leaf,
+    }).then((arrays) => {
+      if (up.inflight[i] !== job) return;
+      up.inflight[i] = undefined;
+      // A failure has turned the worker off; the next step builds this sphere
+      // on the main thread. A leaf that changed while it was out sends it again.
+      if (!arrays || up.applied || sphere.groundLeaf !== leaf) return;
+      const startMs = import.meta.env.DEV ? performance.now() : 0;
+      up.prebuilt[i] = { geometry: sphereFromArrays(arrays).geometry, leaf };
+      if (import.meta.env.DEV) {
+        smoothTraceEvent('warm', `${upgradeLabel(up)} fine sphere ${i} from the worker`, performance.now() - startMs);
+      }
+    });
+    if (import.meta.env.DEV) smoothTraceEvent('warm', `${upgradeLabel(up)} fine sphere ${i} sent to the worker`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Take ONE step of the body's fine spheres ahead of the swap, and say whether
+ * there was one: send one sphere to the worker, or, without one, build one
+ * sphere's arrays or one ground-index layout here. While the worker's probe
+ * is out, nothing: a swap in that window builds on the spot. The meshes keep
+ * drawing their coarse spheres, and `applied` stays false: only the swap
+ * changes what is drawn.
  */
 export function prebuildGeometryStep(up: GeometryUpgrade): boolean {
   if (up.applied) return false;
+  const offThread = fineSphereWorkerReady();
+  if (offThread === null) return false;
+  if (offThread) return sendNextSphere(up);
   const piece = nextGeometryPiece(up);
   if (piece === -1) return false;
   const startMs = import.meta.env.DEV ? performance.now() : 0;
@@ -581,6 +642,9 @@ export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: numbe
   if (!needsGeometryUpgrade(up, diameterPx)) return false;
   const startMs = import.meta.env.DEV ? performance.now() : 0;
   let builtHere = 0;
+  // Anything still out at the worker is built here instead, and its reply,
+  // whenever it lands, finds its entry gone and is dropped.
+  up.inflight.length = 0;
   for (let piece = nextGeometryPiece(up); piece !== -1; piece = nextGeometryPiece(up)) {
     runGeometryPiece(up, piece);
     builtHere++;

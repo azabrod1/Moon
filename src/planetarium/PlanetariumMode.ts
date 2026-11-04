@@ -193,6 +193,7 @@ import {
 } from './world/atmosphereModel';
 import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { warmTilePixelWorker } from './world/tilePixels';
+import { warmFineSphereWorker } from './world/fineSpheres';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceNightExposure,
@@ -3663,8 +3664,11 @@ export class PlanetariumMode {
       // probe resolves simply awaits it inside the decode — a few milliseconds,
       // off the main thread — so the worker is never on a frame's critical
       // path either way. Ahead of the saveData return below: this is a worker,
-      // not speculative bytes.
+      // not speculative bytes. The fine-sphere worker starts here for the same
+      // reasons: its probe has to have answered before the first approach's
+      // pre-build can send it a sphere (PlanetFactory's silhouette upgrade).
       warmTilePixelWorker();
+      warmFineSphereWorker();
       // A metered connection gets no speculative bytes — the pair still
       // sharpens through the normal triggers when actually visited.
       const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
@@ -5876,15 +5880,17 @@ export class PlanetariumMode {
    * canAttempt in a couple of comparisons, and no body is ever projected twice
    * however many handles it carries.
    *
-   * The fine sphere's arrays are built here ahead of its swap, one piece a
-   * frame across every body (PlanetFactory's silhouette upgrade): a piece —
-   * one sphere's arrays or one ground layout — is 1–5 ms on an M5 Max, which
-   * no single 120 Hz frame can take five of beside its own work, and the warm
-   * pump's budget (a third of the frame) cannot take the larger ones.
-   * Nor does a piece share a frame with an upload the pump has just paid —
-   * the two together are most of a 120 Hz frame — and it loses nothing by
-   * waiting: the body needs five frames of the hundreds an approach takes
-   * between the ten radii the pre-build starts at and the swap.
+   * The fine sphere's arrays are made ready here ahead of its swap, one step
+   * a frame across every body (PlanetFactory's silhouette upgrade). With the
+   * worker (world/fineSpheres) a step only sends a sphere to it. Without one,
+   * a step builds a piece here — one sphere's arrays or one ground layout,
+   * 1–5 ms on an M5 Max — which no single 120 Hz frame can take five of
+   * beside its own work, and the warm pump's budget (a third of the frame)
+   * cannot take the larger ones. Nor does a step share a frame with an
+   * upload the pump has just paid — the two together are most of a 120 Hz
+   * frame — and it loses nothing by waiting: the body needs a few frames of
+   * the hundreds an approach takes between the ten radii the pre-build starts
+   * at and the swap.
    */
   private updateBodyLOD(): void {
     if (!this.solarSystem) return;

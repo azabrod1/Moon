@@ -274,22 +274,24 @@ class FakeEl implements GlassElement {
   }
 }
 
+/** A live computed style, as the browser's is: every read sees the
+ *  element's current state. */
 function styleOf(el: GlassElement): GlassStyle {
-  const o = (el as FakeEl).opts;
-  const r = o.radius ?? '0px';
+  const o = () => (el as FakeEl).opts;
+  const r = () => o().radius ?? '0px';
   return {
-    opacity: String(o.opacity ?? 1),
-    filter: o.filter ?? 'none',
-    backdropFilter: o.backdrop ?? 'none',
-    display: o.display ?? 'block',
-    visibility: o.visibility ?? 'visible',
-    backgroundColor: o.bg ?? 'rgba(8, 10, 15, 0.58)',
-    borderTopLeftRadius: r,
-    borderTopRightRadius: r,
-    borderBottomRightRadius: r,
-    borderBottomLeftRadius: r,
+    get opacity() { return String(o().opacity ?? 1); },
+    get filter() { return o().filter ?? 'none'; },
+    get backdropFilter() { return o().backdrop ?? 'none'; },
+    get display() { return o().display ?? 'block'; },
+    get visibility() { return o().visibility ?? 'visible'; },
+    get backgroundColor() { return o().bg ?? 'rgba(8, 10, 15, 0.58)'; },
+    get borderTopLeftRadius() { return r(); },
+    get borderTopRightRadius() { return r(); },
+    get borderBottomRightRadius() { return r(); },
+    get borderBottomLeftRadius() { return r(); },
     getPropertyValue: (name: string) =>
-      name === '--glass-blur' ? `${o.blur ?? 0}px` : name === '--glass-sat' ? `${o.sat ?? 100}%` : '',
+      name === '--glass-blur' ? `${o().blur ?? 0}px` : name === '--glass-sat' ? `${o().sat ?? 100}%` : '',
   };
 }
 
@@ -459,8 +461,19 @@ describe('GlassRegistry', () => {
   });
 });
 
+/** A plain copy of a style, for spreading with overrides. */
+function snapshot(style: GlassStyle): GlassStyle {
+  return {
+    opacity: style.opacity, filter: style.filter, backdropFilter: style.backdropFilter, display: style.display,
+    visibility: style.visibility, backgroundColor: style.backgroundColor,
+    borderTopLeftRadius: style.borderTopLeftRadius, borderTopRightRadius: style.borderTopRightRadius,
+    borderBottomRightRadius: style.borderBottomRightRadius, borderBottomLeftRadius: style.borderBottomLeftRadius,
+    getPropertyValue: style.getPropertyValue,
+  };
+}
+
 describe('blocksBackdrop', () => {
-  const base = styleOf(new FakeEl(null, {}));
+  const base = snapshot(styleOf(new FakeEl(null, {})));
   it('is false for a plain ancestor and true for each backdrop root', () => {
     expect(blocksBackdrop(base, false)).toBe(false);
     expect(blocksBackdrop({ ...base, opacity: '0.99' }, false)).toBe(true);

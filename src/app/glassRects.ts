@@ -237,13 +237,14 @@ export function blocksBackdrop(style: GlassStyle, marked: boolean): boolean {
 
 /** Visibility as the browser renders it: `checkVisibility` where there is
  *  one (both spellings of its option, old and new), else the walk. */
-function rendered(el: GlassElement, style: GlassStyle, read: (el: GlassElement) => GlassStyle): boolean {
+function rendered(el: GlassElement, read: (el: GlassElement) => GlassStyle): boolean {
   if (typeof el.checkVisibility === 'function') {
     return el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true });
   }
+  const style = read(el);
   if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
   for (let e: GlassElement | null = el; e; e = e.parentElement) {
-    if ((e === el ? style : read(e)).display === 'none') return false;
+    if (read(e).display === 'none') return false;
   }
   return true;
 }
@@ -276,6 +277,7 @@ function sameBox(a: GlassRect | null, b: GlassRect | null): boolean {
 export class GlassRegistry {
   private elements: GlassElement[] = [];
   private readonly tracks = new Map<GlassElement, Track>();
+  private readonly styles = new Map<GlassElement, GlassStyle>();
   /** What the last drawn frame drew, flattened, for the change test. */
   private drawnKey: number[] = [];
   private readonly ancestorVerdict = new Map<GlassElement, boolean>();
@@ -301,6 +303,7 @@ export class GlassRegistry {
   /** Collect the marked elements again: call after building glass in code. */
   refresh(): void {
     this.elements = this.collect();
+    this.styles.clear();
     const keep = new Set(this.elements);
     for (const el of [...this.tracks.keys()]) if (!keep.has(el)) this.tracks.delete(el);
   }
@@ -309,6 +312,17 @@ export class GlassRegistry {
   get registered(): number {
     return this.elements.length;
   }
+
+  /** An element's computed style: the live object, made once and read many
+   *  times (it reflects the element's current style at every read). */
+  private readonly styleOf = (el: GlassElement): GlassStyle => {
+    let s = this.styles.get(el);
+    if (!s) {
+      s = this.read(el);
+      this.styles.set(el, s);
+    }
+    return s;
+  };
 
   private track(el: GlassElement): Track {
     let t = this.tracks.get(el);
@@ -415,7 +429,7 @@ export class GlassRegistry {
       let verdict = this.ancestorVerdict.get(a);
       if (verdict === undefined) {
         // The page's own root is always a backdrop root: the canvas is under it.
-        verdict = a.parentElement !== null && blocksBackdrop(this.read(a), a.hasAttribute('data-glass'));
+        verdict = a.parentElement !== null && blocksBackdrop(this.styleOf(a), a.hasAttribute('data-glass'));
         this.ancestorVerdict.set(a, verdict);
       }
       if (verdict) return true;
@@ -426,12 +440,15 @@ export class GlassRegistry {
   /** One element, as glass this frame or null. `box` is a rect already read
    *  this tick, which the pre-draw pass reuses instead of reading layout. */
   private readElement(el: GlassElement, canvas: GlassCanvas, box: GlassRect | null): GlassRect | null {
-    const style = this.read(el);
+    // Rendered first: most registered elements are hidden at any moment, and
+    // a browser computes the style of an element under `display: none` out
+    // of band on every read, where the visibility test needs none of it.
+    if (!rendered(el, this.styleOf)) return null;
+    const style = this.styleOf(el);
     const blur = glassBlurOf(style);
     if (blur <= 0) return null;
     const opacity = parseFloat(style.opacity);
     if (!(opacity > 0)) return null;
-    if (!rendered(el, style, this.read)) return null;
     if (this.underBackdropRoot(el)) return null;
     const coverage = glassCoverage(opacity, parseColourAlpha(style.backgroundColor));
     if (box) {

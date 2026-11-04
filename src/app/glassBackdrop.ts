@@ -22,9 +22,16 @@
  * use — at half the canvas's size into an 8-bit target, then averages that
  * 2:1 into the quarter-size one. Read at one bilinear tap per sixteen canvas
  * pixels the picture would alias: a star, the glint or a city light would
- * shimmer under the glass as the view turned; the half-size draw is itself a
- * 2 × 2 average of the scene and the 2:1 box makes it 4 × 4, which is the
- * prefilter. Only the panels' own boxes are drawn, never the whole frame: each
+ * shimmer under the glass as the view turned. Where the scene is drawn at the
+ * canvas's own size (Medium, the native route) the half-size draw's one
+ * bilinear read is itself a 2 × 2 average of the scene and the 2:1 box makes
+ * it 4 × 4: the prefilter covers the quarter texel's whole footprint. Where
+ * the scene is drawn larger (High, and Dynamic's rungs above Medium, at 1.5×
+ * or 1.25× the canvas) a half texel spans 3 × 3 scene texels and the read
+ * averages only 2 × 2 of them, so the prefilter is narrower than its
+ * footprint and a point much brighter than its neighbours can still flicker
+ * under a small blur as it crosses texels; on the upscale route (a smaller
+ * scene) it is wider. Only the panels' own boxes are drawn, never the whole frame: each
  * pass is a quad per panel, so the work follows the glass on screen.
  * The finishing material is read live from the finishing pass every frame —
  * a composer is rebuilt for every camera and disposes its passes — and its
@@ -40,8 +47,11 @@
  * reflect inside it, so a bright band just outside a panel does not bleed
  * into it. The standard deviation is the CSS radius in canvas pixels
  * (app/glassRects.ts), less the 2-pixel blur the 4 × 4 prefilter and the
- * final bilinear stretch already add, so a 2px blur is a 2px blur and a 30px
- * one is not 30.07. Both passes run at quarter size, horizontal into a
+ * final bilinear stretch already add at the native ratio, so a 2px blur is a
+ * 2px blur and a 30px one is not 30.07. That correction is the native
+ * ratio's: where the scene is drawn larger the prefilter adds a little less,
+ * and the drawn blur comes out that much under the radius — a fraction of a
+ * pixel, which no radius in use shows. Both passes run at quarter size, horizontal into a
  * scratch target and vertical back into the quarter-size source. A vertical
  * pass drawn at the canvas's size inside the composite would read its whole
  * kernel per canvas pixel — sixteen times the taps for a picture that is a
@@ -49,8 +59,8 @@
  * reduced size and stretch it back. Taps
  * are the Gaussian truncated at 3σ, read in bilinear pairs (two texels a
  * fetch), normalised by their own sum. Each read is mirrored into the box and
- * then held half a texel inside it, so a bilinear tap never reaches a texel
- * centred outside.
+ * then held between the centres of the box's first and last whole texels, so
+ * a bilinear tap never reaches a texel centred outside it.
  *
  * **The composite.** Right after the canvas write, in the same pass: a quad
  * per panel over its box, which reads the blurred copy, applies `saturate()`
@@ -71,9 +81,12 @@
  * the same picture, so it does not show. Nothing is drawn and no target is
  * touched in a frame with no glass on screen; the targets are made at the
  * first frame that has some, for the canvas's size, and re-made only when
- * that size changes. The three programs of its own are linked at boot under
- * the loading screen (`warm`), so the first panel opened mid-session links
- * nothing; the half-size draw is the finishing pass's own program.
+ * that size changes. Its three programs of its own (the box, the blur, the
+ * composite) are linked at boot under the loading screen, its targets made at
+ * the canvas's size and every pass drawn once there with a panel that covers
+ * nothing (`warm`), so the first panel opened mid-session links nothing and
+ * builds no pipeline state; the half-size draw is the finishing pass's own
+ * program, drawn into an 8-bit target in that same first frame.
  *
  * **What it costs.** M5 Max, Chromium on Metal, the ship view at 1.05 R at
  * High (3456 × 2234) with seven panels up: the frame rate went from 103–106
@@ -100,10 +113,12 @@ export function parseGlassParam(search: string): boolean {
   return new URLSearchParams(search).get('glass') !== '0';
 }
 
-/** The variance, in canvas pixels², of the blur the pipeline adds by itself:
- *  the 4 × 4 box of the prefilter (16/12) and the bilinear stretch from a
- *  quarter-size texel back to the canvas (a tent four pixels each side,
- *  16/6). A requested blur loses this much before it is drawn. */
+/** The variance, in canvas pixels², of the blur the pipeline adds by itself
+ *  where the scene is drawn at the canvas's size: the 4 × 4 box of the
+ *  prefilter (16/12) and the bilinear stretch from a quarter-size texel back
+ *  to the canvas (a tent four pixels each side, 16/6). A requested blur loses
+ *  this much before it is drawn. With the scene drawn larger the prefilter
+ *  is narrower and this slightly over-counts (see the header). */
 export const GLASS_PIPELINE_VARIANCE = 16 / 12 + 16 / 6;
 /** The most texel pairs one blur pass reads each side of its centre. 32
  *  pairs reach 3σ for σ up to 21 quarter texels — a 30px blur at the
@@ -146,6 +161,18 @@ export function glassPairTaps(sigma: number): { centre: number; pairs: Array<{ w
     total += 2 * w;
   }
   return { centre: 1 / total, pairs: pairs.map((p) => ({ weight: p.weight / total, offset: p.offset })) };
+}
+
+/** The blur shader's mirrorInto, in texels: `p` reflected into [lo, hi] and
+ *  held between the centres of the first and last texels centred inside. */
+export function glassMirrorInto(p: number, lo: number, hi: number): number {
+  const first = Math.ceil(lo - 0.5) + 0.5;
+  const last = Math.floor(hi - 0.5) + 0.5;
+  if (last < first) return 0.5 * (lo + hi);
+  const len = hi - lo;
+  let t = (((p - lo) % (2 * len)) + 2 * len) % (2 * len);
+  if (t > len) t = 2 * len - t;
+  return Math.min(Math.max(lo + t, first), last);
 }
 
 /** The CSS `saturate()` matrix (Filter Effects §13.4), row-major. */
@@ -210,14 +237,19 @@ flat in int vRect;
 out vec4 fragColor;
 
 // A coordinate in texels reflected into [lo, hi] (the browsers' mirrored
-// edge), then held half a texel inside, so a bilinear read never reaches a
-// texel centred outside the box.
+// edge), then held between the centres of the first and last texels whose
+// centres lie inside the box, so a bilinear read never reaches a texel
+// centred outside it, wherever in a texel the box's edges fall
+// (glassMirrorInto is the same arithmetic, for the tests). A box too narrow
+// to hold a texel centre reads its middle.
 float mirrorInto(float p, float lo, float hi) {
+  float first = ceil(lo - 0.5) + 0.5;
+  float last = floor(hi - 0.5) + 0.5;
+  if (last < first) return 0.5 * (lo + hi);
   float len = hi - lo;
-  if (len <= 1.0) return 0.5 * (lo + hi);
   float t = mod(p - lo, 2.0 * len);
   t = t > len ? 2.0 * len - t : t;
-  return clamp(lo + t, lo + 0.5, hi - 0.5);
+  return clamp(lo + t, first, last);
 }
 
 void main() {
@@ -324,6 +356,11 @@ function panelQuads(): THREE.BufferGeometry {
   return geometry;
 }
 
+/** The warm-up's panel: one canvas pixel in the corner, covering nothing
+ *  (coverage 0, so the composite discards it), saturating so the saturate
+ *  branch runs too. */
+const WARM_RECT: GlassRect = { x0: 0, y0: 0, x1: 1, y1: 1, radii: [0, 0, 0, 0], sigma: 2, saturation: 1.6, coverage: 0 };
+
 /** The finishing pass as the source draw needs it: three's OutputPass
  *  material (a RawShaderMaterial, so its program does not depend on the
  *  target it draws). */
@@ -388,6 +425,11 @@ export class GlassBackdrop {
   private skipReason: string | null = null;
   /** Draw calls the glass made in the frame being drawn. */
   draws = 0;
+  /** The panels this frame carries, the warm-up's not counted. */
+  private realRects = 0;
+  /** Set by warm(): the next frame draws the warm-up's panel through every
+   *  pass. Cleared once it has. */
+  private warmPending = false;
   private lastStats: GlassFrameStats = { rects: 0, drew: false, skipped: null };
 
   constructor() {
@@ -433,8 +475,15 @@ export class GlassBackdrop {
     this.finishMesh.frustumCulled = false;
   }
 
-  /** Link the four programs now — at boot, under the loading screen — so the
-   *  first panel shown mid-session compiles nothing. */
+  /**
+   * Ready everything now — at boot, under the loading screen, once the canvas
+   * has its size — so the first panel shown mid-session pays for nothing:
+   * the three programs linked, the three targets made and bound once at the
+   * canvas's size (three gives a target its GL storage on the first bind),
+   * and the next frame that draws drawn with a panel that covers nothing, so
+   * every pass, the half-size finishing draw and the composite included, has
+   * its pipeline state built by the driver before anyone sees a frame.
+   */
   warm(renderer: THREE.WebGLRenderer): void {
     const scene = new THREE.Scene();
     for (const material of [this.boxMaterial, this.blurMaterial, this.compositeMaterial]) {
@@ -443,12 +492,29 @@ export class GlassBackdrop {
       scene.add(mesh);
     }
     renderer.compile(scene, this.camera);
+    renderer.getDrawingBufferSize(this.bufferSize);
+    this.ensureTargets(Math.max(1, Math.floor(this.bufferSize.x)), Math.max(1, Math.floor(this.bufferSize.y)));
+    const previous = renderer.getRenderTarget();
+    for (const target of [this.half, this.quarter, this.scratch]) {
+      renderer.setRenderTarget(target);
+      renderer.clear(true, false, false);
+    }
+    renderer.setRenderTarget(previous);
+    this.warmPending = true;
+  }
+
+  /** One of the three targets, for the render-target readout; null before
+   *  they are made. */
+  targetOf(name: 'half' | 'quarter' | 'scratch'): THREE.WebGLRenderTarget | null {
+    return name === 'half' ? this.half : name === 'quarter' ? this.quarter : this.scratch;
   }
 
   /** This frame's panels, before the frame draws; endFrame after it, so a
    *  draw outside a frame (the boot's warm-up) carries no glass. */
   setFrame(rects: GlassRect[]): void {
-    this.frameRects = rects;
+    this.realRects = rects.length;
+    // The warm-up's panel rides the first frame that has none of its own.
+    this.frameRects = rects.length === 0 && this.warmPending ? [WARM_RECT] : rects;
     this.sourceDrawn = false;
     this.skipReason = null;
     this.draws = 0;
@@ -457,14 +523,15 @@ export class GlassBackdrop {
   /** The frame is drawn: keep its statistics and carry no glass until the
    *  next setFrame. */
   endFrame(): void {
-    this.lastStats = { rects: this.frameRects.length, drew: this.sourceDrawn, skipped: this.skipReason };
+    this.lastStats = { rects: this.realRects, drew: this.sourceDrawn, skipped: this.skipReason };
     this.frameRects = [];
+    this.realRects = 0;
     this.sourceDrawn = false;
   }
 
   /** Whether this frame's glass is drawn, or there was none to draw. */
   get frameComplete(): boolean {
-    return this.frameRects.length === 0 || this.sourceDrawn;
+    return this.realRects === 0 || this.sourceDrawn;
   }
 
   /** The last drawn frame's statistics. */
@@ -479,7 +546,7 @@ export class GlassBackdrop {
       : null;
   }
 
-  /** The frame's per-panel uniforms, for `count` panels. */
+  /** The frame's per-panel uniforms, one slot per panel this frame draws. */
   private loadRects(canvasToQuarter: number): void {
     const rects = this.frameRects;
     for (let i = 0; i < rects.length; i++) {
@@ -551,15 +618,15 @@ export class GlassBackdrop {
     this.loadRects(quarter.width / w);
 
     const oldAutoClear = renderer.autoClear;
+    const u = material.uniforms;
+    const oldDither = u.uDither?.value;
+    const oldBox = u.uBox?.value;
     renderer.autoClear = false;
     try {
       // 1. The finishing material at half size, over each panel's box and a
       //    margin of three half texels (what the 2:1 box and its own margin
       //    read). Its uniforms are the ones the canvas write will use; its
       //    dither and its supersample's box are held off for this draw.
-      const u = material.uniforms;
-      const oldDither = u.uDither?.value;
-      const oldBox = u.uBox?.value;
       if (u.uDither) u.uDither.value = 0;
       if (u.uBox) u.uBox.value = 0;
       u.tDiffuse.value = readBuffer.texture;
@@ -572,8 +639,6 @@ export class GlassBackdrop {
       renderer.clear(true, false, false);
       renderer.render(this.finishMesh, this.camera);
       this.draws++;
-      if (u.uDither) u.uDither.value = oldDither;
-      if (u.uBox) u.uBox.value = oldBox;
 
       // 2. Half to quarter, a texel of margin beyond the box.
       this.boxMaterial.uniforms.tSource.value = half.texture;
@@ -586,10 +651,12 @@ export class GlassBackdrop {
       blur.tSource.value = scratch.texture;
       (blur.uDirection.value as THREE.Vector2).set(0, 1);
       this.drawQuads(renderer, quarter, this.blurMaterial, 1);
-      blur.tSource.value = null;
-      this.boxMaterial.uniforms.tSource.value = null;
       this.sourceDrawn = true;
     } finally {
+      if (u.uDither) u.uDither.value = oldDither;
+      if (u.uBox) u.uBox.value = oldBox;
+      this.blurMaterial.uniforms.tSource.value = null;
+      this.boxMaterial.uniforms.tSource.value = null;
       renderer.autoClear = oldAutoClear;
     }
   }
@@ -626,8 +693,9 @@ export class GlassBackdrop {
     try {
       this.compositeMaterial.uniforms.tBlur.value = this.quarter!.texture;
       this.drawQuads(renderer, null, this.compositeMaterial, 0);
-      this.compositeMaterial.uniforms.tBlur.value = null;
+      this.warmPending = false;
     } finally {
+      this.compositeMaterial.uniforms.tBlur.value = null;
       renderer.autoClear = oldAutoClear;
     }
   }

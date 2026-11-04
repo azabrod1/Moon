@@ -2862,15 +2862,20 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // moves; on the direct terms alone — the diffuse and the mirror — because
   // the sky's light is the air's own and comes in through the irradiance
   // table where that is read. Faded in with the air's own blend, so the
-  // tables' arrival does not step the terminator; skipped where the Sun is
-  // under the fragment's horizon, where three's direct terms are zero
-  // already. The deck takes it at its own altitude. Any build: ?sunpath=0.
+  // tables' arrival does not step the terminator; skipped only where the Sun
+  // is under the fragment's horizon by BOTH its normals. Under the perturbed
+  // one three's direct terms are zero already, but the deck's light on its
+  // geometric normal reads this factor too, and a relief facet turned away
+  // from a low Sun on a cloud the Sun still lights would hand that term the
+  // whole unreddened Sun: a flat bright patch, rimmed dark where the facet's
+  // cosine crosses zero. The deck takes it at its own altitude. Any build:
+  // ?sunpath=0.
   // Body scope, one everywhere the branch is not taken, so any later term
   // that reads the Sun's irradiance for itself (the deck's light on its
   // geometric normal) multiplies by the same factor the direct terms took.
   vec3 sunPath = vec3(1.0);
 #ifdef SUN_PATH
-  if (uAirDensity > 0.0 && dot(normal, normalize(vSunViewDir)) > 0.0) {
+  if (uAirDensity > 0.0 && max(dot(normal, normalize(vSunViewDir)), dot(nonPerturbedNormal, normalize(vSunViewDir))) > 0.0) {
     float sunPathR = clampRadius(length(vAirFrag) / uPlanetRadius);
     float sunPathMu = clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)));
     sunPath = getTransmittanceToSun(uTransmittance, sunPathR, sunPathMu)

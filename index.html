@@ -105,6 +105,33 @@
       --text-dim: var(--t3);
     }
 
+    /* ═══ Glass: the two values every frosted surface blurs with ═══
+       Each rule that frosts the picture behind it sets --glass-blur (and
+       --glass-sat where it saturates as well) and spells its backdrop-filter
+       from them, and every element such a rule paints carries data-glass
+       (src/app/glassRects.test.ts holds the two together). Under
+       body.glass-engine the renderer draws that blur into the canvas itself
+       (src/app/glassBackdrop.ts, reading the two values off each element), so
+       the browser's own blur is switched off. A blur inside a glass element
+       goes with it: under the browser it blurred only what its glass ancestor
+       painted, and with the ancestor's blur gone it would blur the canvas.
+       Registered without inheritance, so an element reads its own rule's
+       values and never a parent's — where @property exists; every spelling
+       of the blur gives --glass-sat a fallback for the engines without it. */
+    @property --glass-blur { syntax: '<length>'; inherits: false; initial-value: 0px; }
+    @property --glass-sat { syntax: '<percentage>'; inherits: false; initial-value: 100%; }
+    body.glass-engine [data-glass],
+    body.glass-engine [data-glass] * {
+      -webkit-backdrop-filter: none !important;
+      backdrop-filter: none !important;
+    }
+    /* Two glass panels overlapping: both blurred by the browser again
+       (glassRects.ts handOverOverlaps), so the upper one blurs the lower. */
+    body.glass-engine [data-glass][data-glass-browser] {
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%)) !important;
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%)) !important;
+    }
+
     /* ═══ Obsidian material — liquid-glass surfaces ═══
        Near-black glass with a faint top-lit gradient + inset hairline highlights.
        .pn = standard panel; .pn-high = elevated (menus, popovers — also carry .pn
@@ -114,8 +141,9 @@
       background:
         linear-gradient(168deg, rgba(255,255,255,0.05), rgba(255,255,255,0.012) 38%, rgba(0,0,0,0.05)),
         rgba(8, 10, 15, var(--glass-a));
-      -webkit-backdrop-filter: blur(30px) saturate(160%);
-      backdrop-filter: blur(30px) saturate(160%);
+      --glass-blur: 30px; --glass-sat: 160%;
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%));
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%));
       border: 1px solid rgba(255, 255, 255, 0.085);
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.09),
         inset 0 -1px 0 rgba(255,255,255,0.025),
@@ -656,8 +684,9 @@
       border-radius: var(--r-m);
       background: rgba(255, 255, 255, 0.045);
       border: 1px solid var(--line);
-      -webkit-backdrop-filter: blur(12px);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      backdrop-filter: blur(var(--glass-blur));
       color: var(--t2);
       font-family: var(--font-ui);
       font-size: 12px;
@@ -1350,7 +1379,8 @@
       position: absolute; left: 0; top: 0; transform: translateX(-50%);
       display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px;
       background: rgba(8, 10, 20, 0.4); border: 1px solid var(--obs-hairline-dim);
-      backdrop-filter: blur(8px); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      --glass-blur: 8px;
+      backdrop-filter: blur(var(--glass-blur)); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
       color: var(--obs-t2); pointer-events: auto; cursor: pointer; font-family: var(--font); white-space: nowrap;
     }
     .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
@@ -1358,7 +1388,7 @@
     .shud-tr { position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); display: flex; gap: 8px; }
     .shud-chip {
       display: flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: 999px;
-      background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); backdrop-filter: blur(8px);
+      background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); --glass-blur: 8px; backdrop-filter: blur(var(--glass-blur));
       font-size: 12px; font-weight: 500; color: var(--obs-t2); white-space: nowrap;
       pointer-events: auto; cursor: pointer; font-family: var(--font);
     }
@@ -1406,7 +1436,8 @@
       display: flex; align-items: center; gap: 10px;
       padding: 7px 12px; border-radius: 11px; white-space: nowrap;
       background: rgba(10, 14, 26, 0.6); border: 1px solid rgba(140, 160, 200, 0.18);
-      -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      --glass-blur: 10px;
+      -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
       pointer-events: auto;
     }
     .shud-timebar .shud-when { margin-top: 0; }
@@ -1617,7 +1648,8 @@
       left: 50%;
       transform: translateX(-50%) translateY(-10px);
       background: var(--panel-bg);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      backdrop-filter: blur(var(--glass-blur));
       border: 1px solid var(--panel-border);
       border-radius: 8px;
       padding: 10px 20px;
@@ -1626,7 +1658,11 @@
       font-family: var(--font);
       pointer-events: none;
       opacity: 0;
-      transition: all 0.25s ease;
+      /* Opacity and position only: a transition on `all` would also animate
+         the backdrop-filter that body.glass-engine switches off, and the
+         browser's blur would fade out over the engine's for a quarter of a
+         second. */
+      transition: opacity 0.25s ease, transform 0.25s ease;
       z-index: 25;
       /* Long event toasts wrap instead of clipping off both edges (phones)
          or stretching to a 700px pill (desktop). width: max-content opts out
@@ -1649,7 +1685,8 @@
       left: calc(12px + env(safe-area-inset-left, 0px));
       max-width: 310px;
       background: var(--panel-bg);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      backdrop-filter: blur(var(--glass-blur));
       border: 1px solid var(--panel-border);
       border-radius: 10px;
       padding: 12px;
@@ -1668,7 +1705,8 @@
       border: 1px solid var(--panel-border);
       border-radius: 999px;
       background: var(--panel-bg);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      backdrop-filter: blur(var(--glass-blur));
       color: var(--text-primary);
       padding: 8px 12px;
       font-family: var(--font);
@@ -2224,7 +2262,8 @@
     #planetarium-resume-prompt.visible { display: flex; }
     .resume-dialog {
       background: var(--panel-bg);
-      backdrop-filter: blur(16px);
+      --glass-blur: 16px;
+      backdrop-filter: blur(var(--glass-blur));
       border: 1px solid var(--panel-border);
       border-radius: 12px;
       padding: 28px 36px;
@@ -3024,7 +3063,8 @@
       position: absolute;
       inset: 0;
       background: rgba(0, 0, 0, 0.55);
-      backdrop-filter: blur(2px);
+      --glass-blur: 2px;
+      backdrop-filter: blur(var(--glass-blur));
     }
     .planetarium-help-card {
       position: absolute;
@@ -3036,7 +3076,8 @@
       display: flex;
       flex-direction: column;
       background: rgba(10, 10, 10, 0.86);
-      backdrop-filter: blur(16px);
+      --glass-blur: 16px;
+      backdrop-filter: blur(var(--glass-blur));
       border: 1px solid var(--panel-border);
       border-radius: 12px;
       overflow: hidden;
@@ -3484,8 +3525,9 @@
       border-radius: var(--r-m);
       background: rgba(255, 255, 255, 0.045);
       border: 1px solid var(--line);
-      -webkit-backdrop-filter: blur(12px);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      backdrop-filter: blur(var(--glass-blur));
       color: var(--t2);
       cursor: pointer;
       transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
@@ -3972,8 +4014,9 @@
       border-radius: var(--r-m);
       border: 1px solid rgba(var(--accent-rgb), 0.55);
       background: rgba(12, 14, 20, 0.86);
-      -webkit-backdrop-filter: blur(12px);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      backdrop-filter: blur(var(--glass-blur));
       box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
       font-family: var(--font-ui);
       font-size: 12px;
@@ -4283,8 +4326,9 @@
       border-radius: var(--r-m);
       background: rgba(12, 14, 20, 0.72);
       border: 1px solid var(--line);
-      -webkit-backdrop-filter: blur(12px);
-      backdrop-filter: blur(12px);
+      --glass-blur: 12px;
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      backdrop-filter: blur(var(--glass-blur));
       font-family: var(--font-ui);
       font-size: 12px;
       letter-spacing: 0.2px;
@@ -4314,8 +4358,9 @@
       border-radius: var(--r-l);
       background: rgba(12, 14, 20, 0.72);
       border: 1px solid var(--line);
-      -webkit-backdrop-filter: blur(16px);
-      backdrop-filter: blur(16px);
+      --glass-blur: 16px;
+      -webkit-backdrop-filter: blur(var(--glass-blur));
+      backdrop-filter: blur(var(--glass-blur));
       box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
     }
     .map-card.visible { display: flex; }
@@ -4827,28 +4872,28 @@
       <!-- Top right: Leave keeps its text (it names the body); the rest are
            icon-only squares with hover tooltips. Ids are read by the TS. -->
       <div id="planetarium-actions">
-        <button class="act-btn act-leave" id="planetarium-btn-leave" style="display:none">
+        <button class="act-btn act-leave" id="planetarium-btn-leave" style="display:none" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15.4 Q10 12.6 17 15.4"></path><path d="M10 12.6 V3.4"></path><path d="M6.4 7 L10 3.4 L13.6 7"></path></svg>
           <span class="act-lbl">Leave <span id="leave-body-name"></span></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-tools" aria-label="Tools">
+        <button class="act-btn act-icon" id="planetarium-btn-tools" aria-label="Tools" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.4" y="3.4" width="5.4" height="5.4" rx="1.5"></rect><rect x="11.2" y="3.4" width="5.4" height="5.4" rx="1.5"></rect><rect x="3.4" y="11.2" width="5.4" height="5.4" rx="1.5"></rect><rect x="11.2" y="11.2" width="5.4" height="5.4" rx="1.5"></rect></svg>
           <span class="act-tip">Tools</span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot">
+        <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>
           <span class="act-lbl autopilot-lbl"></span>
           <span class="act-tip">Pilot <kbd>P</kbd></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-travel" aria-label="Teleport">
+        <button class="act-btn act-icon" id="planetarium-btn-travel" aria-label="Teleport" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>
           <span class="act-tip">Teleport <kbd>T</kbd></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
+        <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
           <span class="act-tip">Observatory <kbd>O</kbd></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-menu" aria-label="Menu">
+        <button class="act-btn act-icon" id="planetarium-btn-menu" aria-label="Menu" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5 H16 M4 10 H16 M4 14.5 H16"></path></svg>
           <span class="act-tip">Menu</span>
         </button>
@@ -4858,7 +4903,7 @@
            The root is the list of actions, the tier rows and the flat toggles; a
            .menu-tier row opens the page it names and the page's back button
            returns. A future tier is markup and nothing else. -->
-      <div id="planetarium-menu-panel" class="pn pn-high">
+      <div id="planetarium-menu-panel" class="pn pn-high" data-glass>
         <div class="menu-page" data-page="root">
           <button class="menu-action" id="planetarium-btn-help">Help</button>
           <button class="menu-action" id="planetarium-btn-save">Save</button>
@@ -5010,7 +5055,7 @@
       </div>
 
       <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->
-      <div id="observatory-panel" class="pn">
+      <div id="observatory-panel" class="pn" data-glass>
         <div class="obs-eyebrow">
           <b>Observatory</b>
           <button class="obs-close" id="observatory-close" aria-label="Close observatory panel">&times;</button>
@@ -5185,12 +5230,12 @@
         <div class="shud-reticle" id="surface-reticle" style="display:none"><b><i></i><i></i><i></i><i></i></b></div>
         <button class="shud-chevron" id="surface-chevron" style="display:none" title="Target off frame — resume tracking"><i>&#x2039;</i></button>
         <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
-        <button class="shud-trackpill" id="surface-trackpill" style="display:none"><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
+        <button class="shud-trackpill" id="surface-trackpill" style="display:none" data-glass><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
         <div class="shud-tr">
-          <button class="shud-chip" id="surface-lookat" style="display:none" title="Choose what to look at"><i>&#x2316;</i><span id="surface-lookat-name"></span></button>
-          <button class="shud-chip" id="surface-observatory">&#x1F52D; Observatory</button>
-          <button class="shud-chip" id="surface-swap" style="display:none"><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
-          <button class="shud-chip" id="surface-exit">&#x2715; Exit surface view</button>
+          <button class="shud-chip" id="surface-lookat" style="display:none" title="Choose what to look at" data-glass><i>&#x2316;</i><span id="surface-lookat-name"></span></button>
+          <button class="shud-chip" id="surface-observatory" data-glass>&#x1F52D; Observatory</button>
+          <button class="shud-chip" id="surface-swap" style="display:none" data-glass><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
+          <button class="shud-chip" id="surface-exit" data-glass>&#x2715; Exit surface view</button>
         </div>
         <div class="shud-bottom">
           <div class="shud-bl">
@@ -5205,7 +5250,7 @@
             <div class="shud-hint">scroll to zoom &middot; drag to look</div>
           </div>
         </div>
-        <div class="shud-timebar" id="surface-timebar">
+        <div class="shud-timebar" id="surface-timebar" data-glass>
           <div class="shud-when">
             <span class="shud-dot"></span>
             <span class="obs-now-text" id="surface-when">--</span>
@@ -5225,7 +5270,7 @@
            "Explore on my own". -->
       <div id="tutorial-hero" role="dialog" aria-modal="true" aria-labelledby="tutorial-hero-title" aria-describedby="tutorial-hero-lead">
         <div class="tutorial-hero-backdrop"></div>
-        <div class="tutorial-hero-card pn pn-high">
+        <div class="tutorial-hero-card pn pn-high" data-glass>
           <h3 class="tutorial-hero-title" id="tutorial-hero-title" tabindex="-1">Welcome aboard</h3>
           <p class="tutorial-hero-lead" id="tutorial-hero-lead">Every planet, moon and star here is where it really is, and it&rsquo;s all to scale. Fly anywhere, land on other worlds and speed up time.</p>
           <div class="tutorial-hero-choices">
@@ -5237,8 +5282,8 @@
       </div>
 
       <div id="planetarium-help">
-        <div class="planetarium-help-backdrop"></div>
-        <div class="planetarium-help-card">
+        <div class="planetarium-help-backdrop" data-glass></div>
+        <div class="planetarium-help-card" data-glass>
           <div class="planetarium-help-header">
             <h3>Help</h3>
             <button class="planetarium-help-close" id="planetarium-help-close" aria-label="Close help">&times;</button>
@@ -5285,7 +5330,7 @@
            Observatory), one-click rows. The backdrop dims the scene; the action
            cluster stays clickable above it. -->
       <div id="deck-backdrop"></div>
-      <div id="deck" class="pn pn-high">
+      <div id="deck" class="pn pn-high" data-glass>
         <div class="pk-tabs">
           <button id="deck-tab-pilot">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>Autopilot
@@ -5313,7 +5358,7 @@
 
       <!-- Tools: the cluster front door (anchored popover + full-screen catcher). -->
       <div id="tools-menu">
-        <div class="tools-card pn pn-high">
+        <div class="tools-card pn pn-high" data-glass>
           <div class="tools-head"><h3>Tools</h3></div>
           <div class="pk-list" id="tools-menu-list"></div>
         </div>
@@ -5324,7 +5369,7 @@
            studio's and the tool's own are the others) — full-screen
            click-catcher, one modal at a time. -->
       <div id="tools-inside-picker" class="body-picker">
-        <div class="body-picker-card pn pn-high">
+        <div class="body-picker-card pn pn-high" data-glass>
           <div class="body-picker-head">
             <div class="body-picker-title" id="tools-inside-picker-title"></div>
             <button class="pk-x" id="tools-inside-picker-close" aria-label="Close">
@@ -5349,14 +5394,14 @@
         <div id="map-labels"></div>
         <!-- What the cursor is resting on, for the one kind of body the chart
              cannot draw in the right place. Mouse only; hidden by default. -->
-        <div id="map-hover-meta" class="map-hover-meta"></div>
-        <button id="map-close" class="map-close" aria-label="Close map">
+        <div id="map-hover-meta" class="map-hover-meta" data-glass></div>
+        <button id="map-close" class="map-close" aria-label="Close map" data-glass>
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
         </button>
         <!-- The teleport offer: right-click / long-press on empty chart drops
              this at the point, and it follows that point every frame. Text and
              placement are written by the mode. -->
-        <button id="map-tp-chip" class="map-tp-chip" type="button"></button>
+        <button id="map-tp-chip" class="map-tp-chip" type="button" data-glass></button>
         <!-- Two lines, once a session, above the world bar: the gestures the
              panel's buttons do not carry. Fades on its own or the first time
              one of them is used. -->
@@ -5368,10 +5413,10 @@
              panel folds down to a 46px glyph chip rather than swapping to a
              pill. -->
         <div id="map-dock" class="smx">
-          <button id="map-help-chip" class="map-help-chip pn pn-high" type="button" title="Help" aria-label="Help" aria-expanded="false" aria-controls="map-help-card">
+          <button id="map-help-chip" class="map-help-chip pn pn-high" type="button" title="Help" aria-label="Help" aria-expanded="false" aria-controls="map-help-card" data-glass>
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6.9 7.1 C6.9 5.3 8.3 4.1 10 4.1 S13.1 5.4 13.1 7.1 C13.1 9.7 10 9.5 10 12.1"></path><circle cx="10" cy="15.5" r="1.05" fill="currentColor" stroke="none"></circle></svg>
           </button>
-          <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls">
+          <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls" data-glass>
             <div class="map-panel-grip" aria-hidden="true"></div>
             <div class="map-panel-head">
               <span class="map-panel-glyph"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="3.6"></circle><ellipse cx="10" cy="10" rx="8.2" ry="3.1" transform="rotate(-18 10 10)"></ellipse></svg></span>
@@ -5464,7 +5509,7 @@
                scroll and fold can never clip it. The `?` chip is its
                disclosure; the M badge the header used to wear lives on as the
                keys row here. -->
-          <div id="map-help-card" class="map-help-card pn pn-high" role="dialog" aria-label="Reading the chart" aria-hidden="true">
+          <div id="map-help-card" class="map-help-card pn pn-high" role="dialog" aria-label="Reading the chart" aria-hidden="true" data-glass>
             <div class="map-help-head">
               <b class="map-help-eyebrow">Reading the chart</b>
               <button id="map-help-close" class="map-panel-btn" type="button" aria-label="Close help">
@@ -5482,7 +5527,7 @@
             </div>
           </div>
         </div>
-        <div id="map-card" class="map-card" role="dialog" aria-label="Body actions">
+        <div id="map-card" class="map-card" role="dialog" aria-label="Body actions" data-glass>
           <div class="map-card-head">
             <span class="map-card-dot" id="map-card-dot"></span>
             <div class="map-card-title">
@@ -5507,7 +5552,7 @@
 
       <!-- Look-at menu: the surface view's sky-target picker. -->
       <div id="surface-target-menu">
-        <div class="stm-card pn pn-high">
+        <div class="stm-card pn pn-high" data-glass>
           <div class="stm-head">
             <h3>Look at</h3>
             <button class="pk-x" id="surface-target-menu-close" aria-label="Close">
@@ -5519,7 +5564,7 @@
         </div>
       </div>
 
-      <div id="historic-panel">
+      <div id="historic-panel" data-glass>
         <div class="historic-header">
           <div>
             <span class="historic-kicker" id="historic-kicker">Voyager 1 (1977) Journey</span>
@@ -5547,7 +5592,7 @@
           <button class="historic-btn" id="historic-next">Next</button>
         </div>
       </div>
-      <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
+      <button id="historic-reopen" aria-label="Show mission info" data-glass>Mission info</button>
 
       <!-- Tutorial spotlight: the dimming mask, the ring and the coach bubble around
            the control a beat teaches (ui/TutorialSpotlight.ts). Decorative — the
@@ -5562,7 +5607,7 @@
            the tutorial stages scenes through the other overlays (the deck and the
            spotlight play UNDER it), so no overlay's open() closes this card —
            only its own buttons and the tutorial lifecycle do. -->
-      <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tour">
+      <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tour" data-glass>
         <div class="tutorial-eyebrow"><b>Tour</b><span class="tutorial-dots" id="tutorial-dots" aria-hidden="true"></span><span class="tutorial-sr" id="tutorial-count"></span></div>
         <h3 class="tutorial-title" id="tutorial-title" tabindex="-1"></h3>
         <div class="tutorial-kicker" id="tutorial-kicker"></div>
@@ -5577,20 +5622,20 @@
       </div>
 
       <!-- Proximity land button (shown when near a body) -->
-      <button class="act-btn" id="planetarium-btn-land" style="display:none">
+      <button class="act-btn" id="planetarium-btn-land" style="display:none" data-glass>
         Land on <span id="land-body-name"></span>
       </button>
 
       <!-- Unified bottom bar -->
       <div id="planetarium-bottom-bar">
         <!-- Main bar row -->
-        <div class="bar-row pn">
+        <div class="bar-row pn" data-glass>
           <!-- Time control: the rate rail riding on the adaptive clock; the
                clock opens the expanded panel (transport, full rail, exact
                UTC date). Reverse lives only in the panel — the rail itself
                is magnitude-only, and pausing is a tap on the rail in place. -->
           <div class="bar-section bar-time" id="time-control">
-            <div class="time-panel pn pn-high" id="time-panel" role="dialog" aria-label="Time controls">
+            <div class="time-panel pn pn-high" id="time-panel" role="dialog" aria-label="Time controls" data-glass>
               <div class="tp-row">
                 <!-- Transport tri-state: exactly one segment is the clock's state
                      (paused / forward / backward), so radio semantics, not three
@@ -5633,7 +5678,7 @@
                 <div class="tr-dets"></div>
                 <div class="tr-fill"></div>
                 <div class="tr-thumb"></div>
-                <div class="tr-tip pn pn-high">Realtime</div>
+                <div class="tr-tip pn pn-high" data-glass>Realtime</div>
               </div>
               <div class="tr-clock" id="time-clock" role="button" tabindex="0" aria-expanded="false" aria-haspopup="dialog" title="Open time panel">
                 <span class="d">--</span>
@@ -5666,7 +5711,7 @@
       <!-- Stats card — docked bottom-right; summoned by the bar's Stats toggle.
            Lives outside the bottom bar because the bar's translateX would
            re-anchor a position:fixed descendant. -->
-      <div id="stats-popover" class="pn pn-high">
+      <div id="stats-popover" class="pn pn-high" data-glass>
         <div class="stats-pop-head">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13 V8.5 M8 13 V3.5 M13 13 V6.5"></path></svg>
           Stats
@@ -5691,7 +5736,7 @@
 
 
       <div id="planetarium-resume-prompt">
-        <div class="resume-dialog">
+        <div class="resume-dialog" data-glass>
           <h3>Welcome back</h3>
           <p id="resume-info">You have a saved journey.</p>
           <div class="resume-dialog-buttons">
@@ -5711,12 +5756,12 @@
         <div id="mini-chart-grip" aria-hidden="true"></div>
       </div>
 
-      <div id="planetarium-notification"></div>
+      <div id="planetarium-notification" data-glass></div>
       <!-- Paused badge: the word for the freeze Space (or the ☰ menu) lays
            over the scene. A button — tapping it resumes; the key chip is for
            a keyboard and hides on a touch screen. Shown by the TS through
            .visible (ui/PauseBadge.ts; when, ui/pauseBadgeLogic.ts). -->
-      <button type="button" id="planetarium-pause-badge" class="pn pn-high" aria-label="Paused. Resume">
+      <button type="button" id="planetarium-pause-badge" class="pn pn-high" aria-label="Paused. Resume" data-glass>
         <span class="pb-dot" aria-hidden="true"></span><span>Paused</span><kbd class="kbd">Space</kbd>
       </button>
       <!-- The badge's spoken twin: "Paused" / "Resumed" for a screen reader
@@ -5730,11 +5775,11 @@
          honest count, slider + presets + odometer, brim/melt affordance, auto-melt
          toggle), plus a body picker modal and the end card. -->
     <div id="volume-compare-ui">
-      <button class="act-btn act-leave" id="compare-leave" aria-label="Leave">
+      <button class="act-btn act-leave" id="compare-leave" aria-label="Leave" data-glass>
         <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
         <span class="act-lbl">Leave</span>
       </button>
-      <div id="compare-panel" class="pn pn-high">
+      <div id="compare-panel" class="pn pn-high" data-glass>
         <div id="compare-sentence" class="compare-sentence">
           <span>Fill </span><button type="button" class="compare-chip" id="compare-chip-container"></button><span> with </span><button type="button" class="compare-chip" id="compare-chip-filler"></button>
           <button type="button" class="compare-swap" id="compare-swap" title="Swap the two bodies" aria-label="Swap">&#x21C4;</button>
@@ -5778,7 +5823,7 @@
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
       <div id="compare-picker" class="body-picker">
-        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="compare-picker-title">
+        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="compare-picker-title" data-glass>
           <div class="body-picker-head">
             <div class="body-picker-title" id="compare-picker-title"></div>
             <button class="pk-x" id="compare-picker-close" aria-label="Close">
@@ -5796,7 +5841,7 @@
 
       <!-- End card -->
       <div id="compare-endcard">
-        <div class="compare-endcard-card pn pn-high">
+        <div class="compare-endcard-card pn pn-high" data-glass>
           <button class="pk-x compare-endcard-close" id="compare-endcard-close" aria-label="Close">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
           </button>
@@ -5812,7 +5857,7 @@
     <div id="interior-ui">
       <!-- The strip along the top: the way back, the body (the one selector), and the view options. -->
       <div class="interior-top" id="interior-top">
-        <button class="act-btn act-leave" id="interior-leave" aria-label="Back to planetarium">
+        <button class="act-btn act-leave" id="interior-leave" aria-label="Back to planetarium" data-glass>
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
           <span class="act-lbl">Back</span>
         </button>
@@ -5824,7 +5869,7 @@
           <span class="interior-options-lbl">View options</span>
         </button>
       </div>
-      <div id="interior-panel" class="pn pn-high">
+      <div id="interior-panel" class="pn pn-high" data-glass>
         <!-- Phones: the panel is a sheet; the grip toggles it between its peek and its full height. -->
         <button type="button" class="interior-grip" id="interior-grip" aria-label="Expand the panel" aria-expanded="false"><span aria-hidden="true"></span></button>
         <div class="interior-scroll" id="interior-scroll">
@@ -5869,7 +5914,7 @@
 
       <!-- View options: the cut angle, the thin-layer enlargement, the rings, the temperature unit. A modal; it and the picker close each other. -->
       <div id="interior-options" class="body-picker">
-        <div class="body-picker-card pn pn-high interior-options-card" role="dialog" aria-modal="true" aria-labelledby="interior-options-title">
+        <div class="body-picker-card pn pn-high interior-options-card" role="dialog" aria-modal="true" aria-labelledby="interior-options-title" data-glass>
           <div class="body-picker-head">
             <div class="body-picker-title" id="interior-options-title"><b>View options</b></div>
             <button class="pk-x" id="interior-options-close" aria-label="Close">
@@ -5916,11 +5961,11 @@
       <svg id="interior-ruler" class="interior-ruler" aria-hidden="true" style="display:none"></svg>
 
       <!-- Hover preview: follows the pointer over a region, never receives events. -->
-      <div id="interior-hover" class="interior-hover pn" aria-hidden="true" style="display:none"></div>
+      <div id="interior-hover" class="interior-hover pn" aria-hidden="true" style="display:none" data-glass></div>
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
       <div id="interior-picker" class="body-picker">
-        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="interior-picker-title">
+        <div class="body-picker-card pn pn-high" role="dialog" aria-modal="true" aria-labelledby="interior-picker-title" data-glass>
           <div class="body-picker-head">
             <div class="body-picker-title" id="interior-picker-title"></div>
             <button class="pk-x" id="interior-picker-close" aria-label="Close">

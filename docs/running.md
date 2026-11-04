@@ -20,6 +20,7 @@ Picture quality and frame rate
 - `?canvasaa=1` puts the old edge smoothing back on the page's canvas. It needs a reload.
 - `?fused=0` finishes each frame in three steps instead of one (`app/FusedOutputPass.ts`). This one changes pixels slightly.
 - `?fuseddown=0` shrinks a picture drawn larger than the screen (High, and Dynamic above Medium) in a step of its own again, instead of inside the finishing step (`app/FusedOutputPass.ts`). This one also changes pixels slightly. DEV `?perfoff=fused-downsample` does the same.
+- `?glass=0` leaves the frosted glass behind the panels and buttons to the browser, as before, instead of the renderer blurring it into the frame (`app/glassBackdrop.ts`). DEV `?perfoff=engine-glass` does the same, and `__moon.perfArm('engine-glass', …)` flips it live.
 - `?dither=0` turns off the fine fixed grain added wherever the picture is stored in 8 bits (`app/outputDither.ts`); without it, dark gradients show steps.
 - `?alloc=0`, `?gpuclock=0` and `?rungmemory=0` turn off three parts of the Dynamic quality level: its fixed memory, its GPU timer and its memory of the last good level (`app/sceneSubRect.ts`, `app/gpuFrameClock.ts`, `app/rungMemory.ts`).
 - DEV `?envelope=<MiB>` gives the app a phone's memory limit. DEV `?perfoff=<names>` starts with speed-ups off (`app/perfSwitches.ts`). DEV `?perf=1` opens the speed-measuring overlay (see `docs/testing.md`).
@@ -54,6 +55,6 @@ On the dev server, `window.__moon` drives the app from the console or a test scr
 - Hiding things: `setChrome`, `setShipVisible`, `setBeltVisible`, `setRoleHidden`, `atmoTier`.
 - The tools: `compare…` and `interior…`. A screenshot of Look inside waits for `interiorReady()`.
 - Look tuning: `setDither`, `glint`, `glintMeter`, `glintTwin` (the meter's prediction of the beam at given ground points), `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.
-- Speed: `quality`, `setQuality`, `setFps`, `upscale`, `pinRatio`, `perfTargets`, `gpuProfile`, `drawLog`, `waitForDraw`. `perfSwitches` and `perfArm` come from `app/perfSwitches.ts`, `perfRun` from `app/devPerfSweep.ts`.
+- Speed: `quality`, `setQuality`, `setFps`, `upscale`, `pinRatio`, `perfTargets`, `gpuProfile`, `drawLog`, `waitForDraw`. `glass` says who blurs the panels, where they are and what the scans cost; `glassScanBench` times the scans. `perfSwitches` and `perfArm` come from `app/perfSwitches.ts`, `perfRun` from `app/devPerfSweep.ts`.
 - State: `viewport`, `sectors`, `renderPath`, `miniState`, `samplerCensus`, `atmoState`.
 - Atmosphere tables: `atmoBake` bakes a set to measure, and `atmoSample` reads table values back. Its kinds are `transmittance`, `scattering`, `mieColour` (the haze's green and blue, beside the red the `scattering` texel keeps), `combined` and `irradiance`.

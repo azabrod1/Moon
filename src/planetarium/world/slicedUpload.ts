@@ -46,7 +46,10 @@
  * Reading it a frame later instead would not be exact either: the queue is
  * global, so a deferred read could blame a band for an error some other call
  * raised that frame, and hand an 8K map back to the one-shot upload this
- * module exists to avoid.
+ * module exists to avoid. What that gives up: the probe asks about the
+ * format, at 16×16. A driver that took a small band of a format and refused a
+ * full-size one of the same format would now go unnoticed, where before the
+ * first band of each map would have caught it. No such driver is known.
  *
  * The no-half-loaded rule holds by construction. Nothing here assigns a map to
  * a material; the pump settles its 'warmed' callback only when the last band

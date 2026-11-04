@@ -193,7 +193,7 @@ import {
 } from './world/atmosphereModel';
 import { releaseBootWarmResponses, warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { warmTilePixelWorker } from './world/tilePixels';
-import { warmFineSphereWorker } from './world/fineSpheres';
+import { fineSphereWorkerVerdict, warmFineSphereWorker } from './world/fineSpheres';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceNightExposure,
@@ -5886,9 +5886,9 @@ export class PlanetariumMode {
    * a step builds a piece here — one sphere's arrays or one ground layout,
    * 1–5 ms on an M5 Max — which no single 120 Hz frame can take five of
    * beside its own work, and the warm pump's budget (a third of the frame)
-   * cannot take the larger ones. Nor does a step share a frame with an
-   * upload the pump has just paid — the two together are most of a 120 Hz
-   * frame — and it loses nothing by waiting: the body needs a few frames of
+   * cannot take the larger ones. Nor does a piece built here share a frame
+   * with an upload the pump has just paid — the two together are most of a
+   * 120 Hz frame — and it loses nothing by waiting: the body needs a few frames of
    * the hundreds an approach takes between the ten radii the pre-build starts
    * at and the swap.
    */
@@ -5900,7 +5900,12 @@ export class PlanetariumMode {
     this.camera.updateMatrixWorld();
     this.bodyLODCameraTmp.setFromMatrixPosition(this.camera.matrixWorld);
     const fovDeg = displayFovDeg(this.camera);
-    let geometryPieceSpent = this.warmSpentThisFrameMs >= PlanetariumMode.GEOMETRY_PIECE_PUMP_MS;
+    // A send to the worker costs microseconds, so only a piece built here
+    // waits for a frame the pump has left alone: gating the sends too would let
+    // a pump busy every frame of an approach (an 8K rung sliced over hundreds
+    // of frames) hold all of them back to the swap, which then builds them all.
+    let geometryPieceSpent = fineSphereWorkerVerdict() !== true
+      && this.warmSpentThisFrameMs >= PlanetariumMode.GEOMETRY_PIECE_PUMP_MS;
     for (const planet of this.solarSystem.planets) {
       const ups = planet.textureUpgrades;
       const geo = planet.geometryUpgrade;

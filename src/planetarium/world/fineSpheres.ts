@@ -113,14 +113,14 @@ function ensureWorker(): Worker | null {
     p.settle(event.data);
   };
   // The instance is captured: an error event is a task of its own, and a
-  // replacement must never be stopped by its predecessor's.
+  // replacement must never be stopped by its predecessor's. A worker that dies
+  // turns the path off for the session, whether or not a request was out:
+  // the next request would otherwise start a replacement no probe has checked.
   const dying = worker;
   const abandon = (event: Event) => {
     event.preventDefault?.();
     if (worker !== dying) return;
-    dying.terminate();
-    worker = null;
-    settleAll('the fine sphere worker failed');
+    giveUp('the fine sphere worker failed');
   };
   worker.onerror = abandon;
   worker.onmessageerror = abandon;
@@ -137,7 +137,15 @@ function ask(request: FineSphereRequest, timeoutMs: number): Promise<FineSphereR
       resolve({ ok: false, error: `no reply in ${timeoutMs} ms` });
     }, timeoutMs);
     pending.set(id, { settle: resolve, timer });
-    live.postMessage({ ...request, id });
+    try {
+      live.postMessage({ ...request, id });
+    } catch (err) {
+      // A send that throws has no reply coming: answer now, as a failure, so
+      // the caller builds the sphere itself rather than wait out the timer.
+      pending.delete(id);
+      clearTimeout(timer);
+      resolve({ ok: false, error: `the request could not be sent: ${String(err)}` });
+    }
   });
 }
 
@@ -223,6 +231,12 @@ export function fineSphereWorkerReady(): boolean | null {
   }
   if (!probing) startProbe();
   return null;
+}
+
+/** The verdict as it stands, without asking: never starts the probe. For a
+ *  per-frame reader that only needs to know whether the worker is building. */
+export function fineSphereWorkerVerdict(): boolean | null {
+  return verdict;
 }
 
 /** Start the worker and its probe in the boot's idle, so its script fetch and

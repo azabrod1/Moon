@@ -1,6 +1,9 @@
 // The fine-sphere worker's client: the probe, the timeouts and a dying worker,
 // driven through a stand-in Worker class. Each test loads the module afresh, as
-// its verdict and its worker are per session.
+// its verdict and its worker are per session. The worker file itself
+// (fineSphereWorker.ts) is not run here — vitest has no Worker — so its
+// message protocol is covered only at run time, by the boot probe, which turns
+// the path off on any mismatch.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildFineSphereArrays } from './fineSphereArrays';
 
@@ -89,6 +92,35 @@ describe('the fine-sphere worker', () => {
     expect(await a).toBeNull();
     expect(await b).toBeNull();
     expect(m.fineSphereWorkerReady()).toBe(false);
+  });
+
+  it('a worker that dies with nothing out turns the path off, and no unprobed replacement starts', async () => {
+    const m = await load();
+    m.fineSphereWorkerReady();
+    await vi.waitFor(() => expect(m.fineSphereWorkerReady()).toBe(true));
+    FakeWorker.made[0].onerror?.(new Event('error'));
+    expect(m.fineSphereWorkerReady()).toBe(false);
+    expect(m.fineSphereWorkerVerdict()).toBe(false);
+    expect(FakeWorker.made[0].terminated).toBe(true);
+    expect(await m.buildFineSphereOffThread(SPHERE)).toBeNull();
+    expect(FakeWorker.made).toHaveLength(1);
+  });
+
+  it('a send that throws is answered at once as a failure, not left to its timer', async () => {
+    const m = await load();
+    m.fineSphereWorkerReady();
+    await vi.waitFor(() => expect(m.fineSphereWorkerReady()).toBe(true));
+    vi.useFakeTimers();
+    FakeWorker.made[0].postMessage = () => { throw new DOMException('could not clone', 'DataCloneError'); };
+    expect(await m.buildFineSphereOffThread(SPHERE)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(m.fineSphereWorkerReady()).toBe(false);
+  });
+
+  it('reads its verdict without starting the probe', async () => {
+    const m = await load();
+    expect(m.fineSphereWorkerVerdict()).toBeNull();
+    expect(FakeWorker.made).toHaveLength(0);
   });
 
   it('a probe that never answers turns the worker off after its own, longer wait', async () => {

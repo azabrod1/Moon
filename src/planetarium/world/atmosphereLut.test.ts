@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -10,6 +10,7 @@ import {
   BAKE_DEFAULT_INTERVAL_MS,
   MIE_VALIDATION_SAMPLE,
   PROBE_WINDOW_TOP,
+  READBACK_MAX_FRAMES,
   SCATTERING_VALIDATION_BAND,
   SCATTERING_VALIDATION_SAMPLE,
   atmosphereLutProfile,
@@ -20,8 +21,10 @@ import {
   createMieColourTarget,
   createScatteringTarget,
   createTableTarget,
+  decodeProbeBytes,
   validationProbeScale,
   type AtmospherePass,
+  type ProbeSample,
 } from './atmosphereLut';
 import {
   ATMOSPHERE_SPECS,
@@ -464,7 +467,7 @@ describe('table validation probe', () => {
       const lo = Math.round((s * 255 - hi) * 255);
       return (hi + lo / 255) / 255 / scale;
     };
-    function validates(body: string, gain: { tau?: number; rayleigh?: number; mie?: readonly [number, number] } = {}): boolean {
+    async function validates(body: string, gain: { tau?: number; rayleigh?: number; mie?: readonly [number, number] } = {}): Promise<boolean> {
       const params = atmosphereParams(body);
       const lut = new AtmosphereLut({} as unknown as THREE.WebGLRenderer, { register: false });
       const sample = (fraction: number, steps: number) => computeSingleScattering(
@@ -474,43 +477,194 @@ describe('table validation probe', () => {
       const tau = opticalDepthToTopBoundary(params, params.bottomRadius, 1, 400);
       const rayleigh = sample(SCATTERING_VALIDATION_SAMPLE.altitudeFraction, 40).rayleigh;
       const mie = sample(MIE_VALIDATION_SAMPLE.altitudeFraction, 50).mie;
-      (lut as unknown as { readSample: (s: { mode: number; scattering?: THREE.Texture; scale: number }) => number[] })
-        .readSample = (s) => {
-          let texel: number[];
-          if (s.mode === 0) texel = [...tau].map((c) => c * (gain.tau ?? 1));
-          else if (s.scattering === textures.scattering) texel = rayleigh.map((c) => c * (gain.rayleigh ?? 1.4));
-          else texel = [mie[1] * (gain.mie?.[0] ?? 1), mie[2] * (gain.mie?.[1] ?? 1), 0, 1];
-          while (texel.length < 4) texel.push(1);
-          return texel.map((c) => blit(c, s.scale));
-        };
+      const readOne = (s: ProbeSample): number[] => {
+        let texel: number[];
+        if (s.mode === 0) texel = [...tau].map((c) => c * (gain.tau ?? 1));
+        else if (s.scattering === textures.scattering) texel = rayleigh.map((c) => c * (gain.rayleigh ?? 1.4));
+        else texel = [mie[1] * (gain.mie?.[0] ?? 1), mie[2] * (gain.mie?.[1] ?? 1), 0, 1];
+        while (texel.length < 4) texel.push(1);
+        return texel.map((c) => blit(c, s.scale));
+      };
+      (lut as unknown as { readSamples: (s: readonly ProbeSample[]) => Promise<number[][]> })
+        .readSamples = async (list) => list.map(readOne);
       const targets = {
         transmittance: { texture: textures.tau },
         scattering: { texture: textures.scattering },
         mieColour: { texture: textures.mieColour },
       };
       try {
-        return (lut as unknown as { validate(p: AtmosphereParams, t: unknown): boolean }).validate(params, targets);
+        return await (lut as unknown as { validate(p: AtmosphereParams, t: unknown, g: number): Promise<boolean> })
+          .validate(params, targets, 0);
       } finally {
         lut.dispose();
       }
     }
 
-    it('passes a correct single-Mie colour table on every body', () => {
+    it('passes a correct single-Mie colour table on every body', async () => {
       // Mars at Earth's old fixed scale read its single-Mie colour as the clamp,
       // under the band's floor: refused whatever the GPU baked.
-      for (const body of BODIES) expect(validates(body), body).toBe(true);
+      for (const body of BODIES) expect(await validates(body), body).toBe(true);
     });
 
-    it('still refuses a black, a half-written or a saturated table, on every body', () => {
+    it('still refuses a black, a half-written or a saturated table, on every body', async () => {
       for (const body of BODIES) {
-        expect(validates(body, { mie: [0, 0] }), `${body} black colour table`).toBe(false);
-        expect(validates(body, { mie: [1, 0.2] }), `${body} blue under its floor`).toBe(false);
-        expect(validates(body, { mie: [4, 1] }), `${body} green over its ceiling`).toBe(false);
-        expect(validates(body, { rayleigh: 0.3 }), `${body} dim scattering`).toBe(false);
-        expect(validates(body, { rayleigh: 1e3 }), `${body} saturated scattering`).toBe(false);
-        expect(validates(body, { tau: 0.5 }), `${body} wrong optical depth`).toBe(false);
+        expect(await validates(body, { mie: [0, 0] }), `${body} black colour table`).toBe(false);
+        expect(await validates(body, { mie: [1, 0.2] }), `${body} blue under its floor`).toBe(false);
+        expect(await validates(body, { mie: [4, 1] }), `${body} green over its ceiling`).toBe(false);
+        expect(await validates(body, { rayleigh: 0.3 }), `${body} dim scattering`).toBe(false);
+        expect(await validates(body, { rayleigh: 1e3 }), `${body} saturated scattering`).toBe(false);
+        expect(await validates(body, { tau: 0.5 }), `${body} wrong optical depth`).toBe(false);
       }
     });
+
+    it('refuses the table when its readback throws', async () => {
+      const lut = new AtmosphereLut({} as unknown as THREE.WebGLRenderer, { register: false });
+      (lut as unknown as { readSamples: () => Promise<never> }).readSamples = async () => {
+        throw new Error('fence failed');
+      };
+      const targets = {
+        transmittance: { texture: textures.tau },
+        scattering: { texture: textures.scattering },
+        mieColour: { texture: textures.mieColour },
+      };
+      try {
+        expect(await (lut as unknown as { validate(p: AtmosphereParams, t: unknown, g: number): Promise<boolean> })
+          .validate(atmosphereParams('Earth'), targets, 0)).toBe(false);
+      } finally {
+        lut.dispose();
+      }
+    });
+  });
+});
+
+describe('the validation readback, against a stand-in GL', () => {
+  // readSamples' own mechanics, with the probe's draw stubbed: each sample's
+  // two byte passes land at their own offsets of one pack buffer, the bytes are
+  // fetched only once the fence has passed (or the frame limit has), the pack
+  // buffer is never left bound across a draw or after the call, and every path
+  // out — answer, failure, abort — deletes the buffer and the fence.
+  const GL = {
+    PIXEL_PACK_BUFFER: 0x88eb, STREAM_READ: 0x88e1, RGBA: 0x1908, UNSIGNED_BYTE: 0x1401,
+    SYNC_GPU_COMMANDS_COMPLETE: 0x9117, ALREADY_SIGNALED: 0x911a, TIMEOUT_EXPIRED: 0x911b,
+    CONDITION_SATISFIED: 0x911c, WAIT_FAILED: 0x911d,
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** The bytes the stand-in GPU writes for sample `i`, byte pass `b`. */
+  const texel = (i: number, b: number): number[] => [10 * i + b + 1, 20 * i + b + 2, 30 * i + b + 3, 255 - b];
+
+  function rig(opts: { signalAfter: number; fail?: boolean; onWait?: (lut: AtmosphereLut, calls: number) => void }) {
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 0));
+    const events: string[] = [];
+    const buffer = { id: 'pack' };
+    const sync = { id: 'fence' };
+    let bound: object | null = null;
+    let store = new Uint8Array(0);
+    let waits = 0;
+    let uByte = -1;
+    let lut: AtmosphereLut;
+    const gl = {
+      ...GL,
+      createBuffer: () => buffer,
+      bindBuffer: (target: number, b: object | null) => { expect(target).toBe(GL.PIXEL_PACK_BUFFER); bound = b; },
+      bufferData: (_t: number, size: number, usage: number) => {
+        expect(bound).toBe(buffer); expect(usage).toBe(GL.STREAM_READ); store = new Uint8Array(size);
+      },
+      readPixels: (x: number, y: number, w: number, h: number, format: number, type: number, offset: unknown) => {
+        expect(bound).toBe(buffer);
+        expect([x, y, w, h, format, type]).toEqual([0, 0, 4, 4, GL.RGBA, GL.UNSIGNED_BYTE]);
+        expect(typeof offset).toBe('number');
+        const at = offset as number;
+        const i = Math.floor(at / 128);
+        expect(at % 128).toBe(uByte * 64);
+        store.set(texel(i, uByte), at);
+        events.push(`read ${i}.${uByte}`);
+      },
+      fenceSync: (cond: number, flags: number) => { expect([cond, flags]).toEqual([GL.SYNC_GPU_COMMANDS_COMPLETE, 0]); events.push('fence'); return sync; },
+      clientWaitSync: (s: object, flags: number, timeout: number) => {
+        expect([s, flags, timeout]).toEqual([sync, 0, 0]);
+        waits++;
+        events.push('wait');
+        opts.onWait?.(lut, waits);
+        if (opts.fail) return GL.WAIT_FAILED;
+        return waits >= opts.signalAfter ? GL.ALREADY_SIGNALED : GL.TIMEOUT_EXPIRED;
+      },
+      getBufferSubData: (target: number, src: number, dst: Uint8Array) => {
+        expect(target).toBe(GL.PIXEL_PACK_BUFFER); expect(bound).toBe(buffer); expect(src).toBe(0);
+        dst.set(store); events.push('fetch');
+      },
+      deleteSync: (s: object) => { expect(s).toBe(sync); events.push('deleteSync'); },
+      deleteBuffer: (b: object) => { expect(b).toBe(buffer); events.push('deleteBuffer'); },
+      isContextLost: () => false,
+    };
+    const renderer = { getContext: () => gl, getRenderTarget: () => null, setRenderTarget: () => undefined };
+    lut = new AtmosphereLut(renderer as unknown as THREE.WebGLRenderer, { register: false });
+    const probe = { uniforms: { uByte: { get value() { return uByte; }, set value(v: number) { uByte = v; } } } };
+    const internals = lut as unknown as {
+      seatProbe: () => unknown; draw: () => void; probeTarget: unknown;
+      readSamples(s: readonly ProbeSample[], g: number): Promise<number[][]>; generation: number;
+    };
+    internals.probeTarget = { dispose: () => undefined };
+    internals.seatProbe = () => probe;
+    internals.draw = () => {
+      // No draw may run with the pack buffer bound: three's own reads would land in it.
+      expect(bound).toBeNull();
+      events.push(`draw ${uByte}`);
+    };
+    const samples: ProbeSample[] = [0, 1, 2].map((i) => ({ mode: 1, scale: 1 / (i + 1) }));
+    const run = () => internals.readSamples(samples, internals.generation);
+    return { run, events, waits: () => waits, bound: () => bound, samples, lut };
+  }
+
+  it('reads each sample from its own offset once the fence has passed', async () => {
+    const r = rig({ signalAfter: 3 });
+    const out = await r.run();
+    r.samples.forEach((s, i) => {
+      expect(out[i]).toEqual(decodeProbeBytes(Uint8Array.from(texel(i, 0)), Uint8Array.from(texel(i, 1)), s.scale));
+    });
+    expect(r.waits()).toBe(3);
+    expect(r.events.indexOf('fetch')).toBeGreaterThan(r.events.lastIndexOf('wait'));
+    expect(r.events.slice(0, 7)).toEqual(['draw 0', 'read 0.0', 'draw 1', 'read 0.1', 'draw 0', 'read 1.0', 'draw 1']);
+    expect(r.events.slice(-2)).toEqual(['deleteSync', 'deleteBuffer']);
+    expect(r.bound()).toBeNull();
+    r.lut.dispose();
+  });
+
+  it('reads anyway once the frame limit has passed, rather than leave the tier without an answer', async () => {
+    const r = rig({ signalAfter: Number.POSITIVE_INFINITY });
+    const out = await r.run();
+    expect(r.waits()).toBe(READBACK_MAX_FRAMES);
+    expect(out[2]).toEqual(decodeProbeBytes(Uint8Array.from(texel(2, 0)), Uint8Array.from(texel(2, 1)), 1 / 3));
+    expect(r.bound()).toBeNull();
+    r.lut.dispose();
+  });
+
+  it('throws on a failed fence and leaves nothing behind', async () => {
+    const r = rig({ signalAfter: 1, fail: true });
+    await expect(r.run()).rejects.toThrow(/fence failed/);
+    expect(r.events).not.toContain('fetch');
+    expect(r.events.slice(-2)).toEqual(['deleteSync', 'deleteBuffer']);
+    expect(r.bound()).toBeNull();
+    r.lut.dispose();
+  });
+
+  it('throws when the bake is cut short while it waits', async () => {
+    const r = rig({
+      signalAfter: Number.POSITIVE_INFINITY,
+      onWait: (lut, calls) => { if (calls === 2) (lut as unknown as { generation: number }).generation++; },
+    });
+    await expect(r.run()).rejects.toThrow(/cut short/);
+    expect(r.waits()).toBe(2);
+    expect(r.events.slice(-2)).toEqual(['deleteSync', 'deleteBuffer']);
+    r.lut.dispose();
+  });
+
+  it('decodes a sample as the high byte plus the low byte of the remainder, over the scale', () => {
+    const v = decodeProbeBytes(Uint8Array.of(128, 0, 255, 1), Uint8Array.of(51, 0, 0, 255), 0.5);
+    expect(v[0]).toBeCloseTo((128 + 51 / 255) / 255 / 0.5, 12);
+    expect(v[1]).toBe(0);
+    expect(v[2]).toBeCloseTo(2, 12);
+    expect(v[3]).toBeCloseTo((1 + 1) / 255 / 0.5, 12);
   });
 });
 

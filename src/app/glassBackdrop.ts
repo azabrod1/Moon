@@ -31,8 +31,8 @@
  * dither and its supersample's box (`uBox`, where the variant carries one)
  * are held off for this draw and put back. On the upscale route the finishing
  * pass's own 8-bit target holds the frame already, but at the scene's size and
- * not on every route; the half-size draw serves every route the same way and
- * costs a quarter of a canvas over the panels alone.
+ * not on every route; the half-size draw serves every route the same way, and
+ * over the panels alone it is a hundredth of a millisecond (below).
  *
  * **The blur.** One separable Gaussian per panel at quarter size, inside the
  * panel's own box, the box's edges mirrored — what Chromium and WebKit draw:
@@ -42,11 +42,11 @@
  * (app/glassRects.ts), less the 2-pixel blur the 4 × 4 prefilter and the
  * final bilinear stretch already add, so a 2px blur is a 2px blur and a 30px
  * one is not 30.07. Both passes run at quarter size, horizontal into a
- * scratch target and vertical back into the quarter-size source: the plan
- * that preceded this drew the vertical pass at full size as part of the
- * composite, which reads its whole kernel per canvas pixel — sixteen times
- * the taps for a picture that is a smooth blur either way, and the browsers
- * themselves blur a large radius at reduced size and stretch it back. Taps
+ * scratch target and vertical back into the quarter-size source. A vertical
+ * pass drawn at the canvas's size inside the composite would read its whole
+ * kernel per canvas pixel — sixteen times the taps for a picture that is a
+ * smooth blur either way — and the browsers themselves blur a large radius at
+ * reduced size and stretch it back. Taps
  * are the Gaussian truncated at 3σ, read in bilinear pairs (two texels a
  * fetch), normalised by their own sum. Each read is mirrored into the box and
  * then held half a texel inside it, so a bilinear tap never reaches a texel
@@ -65,13 +65,23 @@
  * does not cover is discarded, so the canvas outside the panels is the
  * finishing pass's to the byte.
  *
- * Where two panels overlap, the later one's blurred copy wins the overlap in
- * the shared targets; the two blurs are of the same picture, so it does not
- * show. Nothing is drawn and no target is touched in a frame with no glass on
- * screen; the targets are made at the first frame that has some, for the
- * canvas's size, and re-made only when that size changes. The four programs
- * are linked at boot under the loading screen (`warm`), so the first panel
- * opened mid-session links nothing.
+ * Two panels that overlap are never drawn here: both go back to the browser
+ * (app/glassRects.ts). Two that come within a texel of each other share the
+ * margin of the targets, and the later one's copy wins it; both are blurs of
+ * the same picture, so it does not show. Nothing is drawn and no target is
+ * touched in a frame with no glass on screen; the targets are made at the
+ * first frame that has some, for the canvas's size, and re-made only when
+ * that size changes. The three programs of its own are linked at boot under
+ * the loading screen (`warm`), so the first panel opened mid-session links
+ * nothing; the half-size draw is the finishing pass's own program.
+ *
+ * **What it costs.** M5 Max, Chromium on Metal, the ship view at 1.05 R at
+ * High (3456 × 2234) with seven panels up: the frame rate went from 103–106
+ * fps with the browser's blur to the display's 120, the same as with no blur
+ * at all, and the compositor's 51-encoder side work per frame is gone. Its
+ * own GPU time, read off a Metal trace: the half-size draw 0.011 ms, the box
+ * 0.005, the two blur passes 0.016 and 0.026, and the composite too small to
+ * separate from the canvas pass it rides in.
  *
  * Which frames carry the engine's glass, and the class that turns the
  * browser's blur off for them, is main's drawWorldFrame: the composer's

@@ -10,8 +10,14 @@
  * values from each one's computed style, so a panel restyled in CSS is drawn
  * with its new blur without anything here changing, and the registry never
  * holds a value of its own that could drift from the stylesheet. The two
- * properties are registered without inheritance, so an element whose own
- * rule is not in force reads 0 and is not glass.
+ * properties are registered without inheritance (`@property`), so an element
+ * whose own rule is not in force reads 0 and is not glass. That holds only
+ * where `@property` exists (Chromium, Safari 16.4 and later); an older engine
+ * inherits them like any custom property, and a child of a glass panel reads
+ * its parent's values — harmless, because a glass element under a glass
+ * ancestor is never drawn (below), and every spelling of the blur carries a
+ * fallback for `--glass-sat`, so a rule that does not set it never computes
+ * to an invalid filter.
  *
  * **Registered from code.** The marked elements are collected once at boot,
  * and again by `refresh()`. There is no observer on the page: the frame
@@ -22,7 +28,7 @@
  * it — so `refresh()` is for the next one.
  *
  * **What the browser draws, reproduced.** Chromium and WebKit leave a
- * backdrop unblurred in four cases, and the engine leaves the same ones:
+ * backdrop unblurred in three cases, and the engine leaves the same ones:
  *  - the element is not rendered (`display: none` anywhere up the tree,
  *    `visibility: hidden`), or its own opacity is 0;
  *  - an ancestor has opacity below 1, a filter, a mask, a clip-path, a blend
@@ -58,21 +64,32 @@
  * scaled the same way, and by the element's own transform (a panel scaled in
  * as it opens blurs in its own coordinates).
  *
- * **When.** The scan runs at the top of every animation frame, where the
- * layout the browser made for the last frame is still clean, so reading it
- * forces nothing; CSS transitions have already been ticked to this frame's
- * time. If anything moved since the last drawn frame, main draws this tick
- * even where the frame-rate setting would have skipped it, so a menu never
- * opens with its tint over an unblurred picture and a closed panel never
- * leaves its blur behind. On a tick that draws, a second pass right before
- * the draw — after the mode's own DOM writes — re-reads visibility and
- * opacity, which need style and not layout, and reads a box again only where
- * it may have moved: an element that has just appeared, or one that moved in
- * the last GLASS_VOLATILE_DRAWS drawn frames. So a control the mode shows
- * during its update is blurred on its first frame, a panel the mode
- * positions every frame (the surface view's tracking pill, the Look-inside
- * hover card) is blurred where it is drawn and not a frame behind, and a
- * still interface reads no layout inside the frame at all.
+ * **When.** The full scan runs at the top of every animation frame, before
+ * the mode's own DOM writes, where the layout the browser made for the last
+ * frame is clean unless something wrote to the page between frames (a timer,
+ * an event): then the scan's first box read lays the page out inside the
+ * frame instead of after it — the same layout, moved, not added (gates.md
+ * §5 counted 24 such in 3 s at Earth, with the same 24 outside the frame
+ * when the browser blurs). CSS transitions have already been ticked to this
+ * frame's time. If anything moved since the last drawn frame, main draws
+ * this tick even where the frame-rate setting would have skipped it, so a
+ * menu never opens with its tint over an unblurred picture and a closed
+ * panel never leaves its blur behind. After the mode's update a second pass
+ * (`recheck`) runs on every tick that has a glass route — before the draw
+ * on a tick that draws, and on one that does not, so that a panel the mode
+ * itself showed, hid or moved in its update makes the tick draw after all.
+ * It re-reads visibility and opacity, which need style and not layout, and
+ * reads a box again only where it may have moved: an element that has just
+ * appeared, one that moved in the last GLASS_VOLATILE_DRAWS drawn frames, or
+ * every element when the canvas itself changed size since the scan (a phone
+ * turned on its side: the boxes were mapped through the old size). So a
+ * control the mode shows during its update is blurred on its first frame, a
+ * panel the mode positions every frame (the surface view's tracking pill,
+ * the Look-inside hover card) is blurred where it is drawn and not a frame
+ * behind, and a still interface reads no layout in the second pass at all.
+ * One case is left a display frame behind: a panel shown by a promise that
+ * settles after the frame's draw, in the same task (main's afterNextDraw);
+ * the next tick's scan draws it.
  *
  * **Glass over glass.** Where two shown panels overlap, both go back to the
  * browser's blur for as long as they do (handOverOverlaps): the engine blurs
@@ -241,19 +258,6 @@ export function blocksBackdrop(style: GlassStyle, marked: boolean): boolean {
   return false;
 }
 
-/** Visibility as the browser renders it: `checkVisibility` where there is
- *  one (both spellings of its option, old and new), else the walk. */
-function rendered(el: GlassElement, read: (el: GlassElement) => GlassStyle): boolean {
-  if (typeof el.checkVisibility === 'function') {
-    return el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true });
-  }
-  const style = read(el);
-  if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
-  for (let e: GlassElement | null = el; e; e = e.parentElement) {
-    if (read(e).display === 'none') return false;
-  }
-  return true;
-}
 
 /** How many drawn frames an element that moved keeps having its box read
  *  fresh before the draw. A panel the mode positions every frame (the
@@ -269,6 +273,26 @@ interface Track {
   drawn: GlassRect | null;
   /** Drawn frames left in which its box is read fresh before the draw. */
   volatile: number;
+}
+
+function sameCanvas(a: GlassCanvas, b: GlassCanvas | null): boolean {
+  return b !== null && a.bufferWidth === b.bufferWidth && a.bufferHeight === b.bufferHeight
+    && a.rect.left === b.rect.left && a.rect.top === b.rect.top
+    && a.rect.width === b.rect.width && a.rect.height === b.rect.height;
+}
+
+/**
+ * What a drawn frame means for the class that turns the browser's blur off
+ * and for the change test: the class is on exactly when the frame carried the
+ * engine's glass (the route was live and every panel was drawn, or there was
+ * none to draw); a frame on the engine's route that could not draw its glass
+ * keeps the browser's blur and forgets what was drawn, so the next scan reads
+ * a change and draws again; a frame off the route leaves the change test
+ * alone (no scan runs there).
+ */
+export function glassFrameOutcome(routeLive: boolean, frameComplete: boolean): { engineClass: boolean; drawn: 'mark' | 'forget' | 'keep' } {
+  if (!routeLive) return { engineClass: false, drawn: 'keep' };
+  return frameComplete ? { engineClass: true, drawn: 'mark' } : { engineClass: false, drawn: 'forget' };
 }
 
 function sameBox(a: GlassRect | null, b: GlassRect | null): boolean {
@@ -288,6 +312,11 @@ export class GlassRegistry {
   /** What the last drawn frame drew, flattened, for the change test. */
   private drawnKey: number[] = [];
   private readonly ancestorVerdict = new Map<GlassElement, boolean>();
+  /** Per pass, where there is no checkVisibility: whether an element or an
+   *  ancestor of it has `display: none`, each element judged once. */
+  private readonly displayNone = new Map<GlassElement, boolean>();
+  /** The canvas the last full scan mapped its boxes through. */
+  private scanCanvas: GlassCanvas | null = null;
   private surplusSaid = false;
   /** The last full scan's own time, ms, for the readout. */
   lastScanMs = 0;
@@ -366,7 +395,9 @@ export class GlassRegistry {
   scan(): boolean {
     const t0 = this.now();
     const canvas = this.canvas();
+    this.scanCanvas = canvas;
     this.ancestorVerdict.clear();
+    this.displayNone.clear();
     for (const el of this.elements) this.track(el).seen = this.readElement(el, canvas, null);
     this.handOverOverlaps();
     this.lastScanMs = this.now() - t0;
@@ -433,11 +464,16 @@ export class GlassRegistry {
   recheck(): boolean {
     const t0 = this.now();
     const canvas = this.canvas();
+    // The canvas resized since the scan (the viewport sync runs between the
+    // two): every box was mapped through the old size, so none is reused.
+    const resized = !sameCanvas(canvas, this.scanCanvas);
+    this.scanCanvas = canvas;
     this.ancestorVerdict.clear();
+    this.displayNone.clear();
     this.boxReads = 0;
     for (const el of this.elements) {
       const t = this.track(el);
-      const settled = t.seen !== null && t.volatile === 0 && sameBox(t.seen, t.drawn);
+      const settled = !resized && t.seen !== null && t.volatile === 0 && sameBox(t.seen, t.drawn);
       t.seen = this.readElement(el, canvas, settled ? t.seen : null);
     }
     this.handOverOverlaps();
@@ -479,6 +515,28 @@ export class GlassRegistry {
     return out;
   }
 
+  /** Visibility as the browser renders it: `checkVisibility` where there is
+   *  one (both spellings of its option, old and new), else the walk up the
+   *  tree for `display: none`, memoised per pass so the 48 elements' shared
+   *  ancestors are read once. */
+  private rendered(el: GlassElement): boolean {
+    if (typeof el.checkVisibility === 'function') {
+      return el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true });
+    }
+    const style = this.styleOf(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    return !this.hiddenUp(el);
+  }
+
+  private hiddenUp(el: GlassElement): boolean {
+    let verdict = this.displayNone.get(el);
+    if (verdict === undefined) {
+      verdict = this.styleOf(el).display === 'none' || (el.parentElement !== null && this.hiddenUp(el.parentElement));
+      this.displayNone.set(el, verdict);
+    }
+    return verdict;
+  }
+
   /** Whether some ancestor of `el` is a backdrop root that is not the page;
    *  each ancestor judged once per scan. */
   private underBackdropRoot(el: GlassElement): boolean {
@@ -500,7 +558,7 @@ export class GlassRegistry {
     // Rendered first: most registered elements are hidden at any moment, and
     // a browser computes the style of an element under `display: none` out
     // of band on every read, where the visibility test needs none of it.
-    if (!rendered(el, this.styleOf)) return null;
+    if (!this.rendered(el)) return null;
     const style = this.styleOf(el);
     const blur = glassBlurOf(style);
     if (blur <= 0) return null;

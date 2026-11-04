@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
 import {
-  GLASS_MAX_RECTS, GLASS_VOLATILE_DRAWS, GlassRegistry, blocksBackdrop, boxToBuffer, clampCornerRadii, glassCoverage,
+  GLASS_MAX_RECTS, GLASS_VOLATILE_DRAWS, GlassRegistry, glassFrameOutcome, blocksBackdrop, boxToBuffer, clampCornerRadii, glassCoverage,
   parseColourAlpha, parseRadius, type GlassElement, type GlassStyle,
 } from './glassRects';
 
@@ -46,7 +46,7 @@ function rules(css: string): Array<{ selector: string; body: string }> {
 const LITERAL_GLASS = new Set(['.pk-planet']);
 
 /** The two spellings a glass rule may use. */
-const GLASS_VALUES = new Set(['blur(var(--glass-blur))', 'blur(var(--glass-blur)) saturate(var(--glass-sat))']);
+const GLASS_VALUES = new Set(['blur(var(--glass-blur))', 'blur(var(--glass-blur)) saturate(var(--glass-sat, 100%))']);
 
 const glassRules = rules(styleText).filter((r) => /(^|[;\s])(-webkit-)?backdrop-filter\s*:/.test(r.body));
 
@@ -83,7 +83,9 @@ describe('the glass seam in index.html', () => {
         // The engine's own rules: the browser's blur off, and back on for
         // two panels that overlap.
         if (rule.selector.includes('[data-glass-browser]')) {
-          expect(rule.body).toMatch(/(^|\s)backdrop-filter:\s*blur\(var\(--glass-blur\)\) saturate\(var\(--glass-sat\)\) !important/);
+          // With the fallback: an engine without @property never reads an
+          // unset --glass-sat as an invalid filter and drops both blurs.
+          expect(rule.body).toMatch(/(^|\s)backdrop-filter:\s*blur\(var\(--glass-blur\)\) saturate\(var\(--glass-sat, 100%\)\) !important/);
         } else {
           expect(rule.body).toMatch(/backdrop-filter:\s*none !important/);
         }
@@ -96,6 +98,14 @@ describe('the glass seam in index.html', () => {
         expect(rule.body, rule.selector).toMatch(/--glass-blur:\s*\d+px/);
         if (v.includes('saturate')) expect(rule.body, rule.selector).toMatch(/--glass-sat:\s*\d+%/);
         else expect(rule.body, rule.selector).not.toMatch(/--glass-sat/);
+      }
+    }
+  });
+
+  it('never transitions `all` on a glass rule: the class flip would animate the browser\'s blur away over the engine\'s', () => {
+    for (const rule of glassRules) {
+      for (const m of rule.body.matchAll(/(?:^|[;\s])transition\s*:\s*([^;]+);/g)) {
+        expect(/(^|,|\s)all(\s|,|$)/.test(m[1]), `${rule.selector}: transition ${m[1]}`).toBe(false);
       }
     }
   });
@@ -257,6 +267,20 @@ interface FakeOpts {
   radius?: string;
   box?: { left: number; top: number; width: number; height: number };
   layoutWidth?: number;
+}
+
+/** An element of an engine with no checkVisibility (Safari before 17.4). */
+class OldFakeEl implements GlassElement {
+  boxReads = 0;
+  constructor(public parentElement: OldFakeEl | null, public opts: FakeOpts) {}
+  hasAttribute(name: string): boolean { return name === 'data-glass' && this.opts.marked === true; }
+  toggleAttribute(_name: string, force: boolean): boolean { return force; }
+  getBoundingClientRect() {
+    this.boxReads++;
+    const b = this.opts.box ?? { left: 0, top: 0, width: 0, height: 0 };
+    return { ...b, right: b.left + b.width, bottom: b.top + b.height };
+  }
+  get offsetWidth(): number { return this.opts.box?.width ?? 0; }
 }
 
 class FakeEl implements GlassElement {
@@ -482,6 +506,48 @@ describe('GlassRegistry', () => {
     expect(card.attrs.size + menu.attrs.size).toBe(0);
   });
 
+  it('walks the tree for display: none where there is no checkVisibility, once per ancestor per pass', () => {
+    const root = new OldFakeEl(null, {});
+    const body = new OldFakeEl(root, {});
+    const hiddenBranch = new OldFakeEl(body, { display: 'none' });
+    const shownBranch = new OldFakeEl(body, {});
+    const els = [
+      new OldFakeEl(hiddenBranch, { marked: true, blur: 12, box }),
+      new OldFakeEl(shownBranch, { marked: true, blur: 12, box }),
+      new OldFakeEl(shownBranch, { marked: true, blur: 12, box: { ...box, top: 300 }, visibility: 'hidden' }),
+    ];
+    const reads = new Map<GlassElement, number>();
+    const counting = (el: GlassElement): GlassStyle => {
+      reads.set(el, (reads.get(el) ?? 0) + 1);
+      return styleOf(el);
+    };
+    const reg = new GlassRegistry(() => els, counting as (el: GlassElement) => GlassStyle, desktop, () => 0);
+    reg.scan();
+    expect(reg.rects()).toHaveLength(1);
+    expect(els[0].boxReads).toBe(0);
+    // Live styles are fetched once per element for the session, whatever the walks.
+    reg.scan();
+    reg.recheck();
+    for (const n of reads.values()) expect(n).toBe(1);
+  });
+
+  it('reads every box fresh in the pre-draw pass when the canvas changed size since the scan', () => {
+    const { body } = page();
+    const panel = new FakeEl(body, { marked: true, blur: 12, box });
+    let canvas = desktop();
+    const reg = new GlassRegistry(() => [panel], styleOf, () => canvas, () => 0);
+    reg.scan();
+    reg.markDrawn();
+    reg.scan();
+    // Between the scan and the draw the viewport sync gave the canvas a new
+    // drawing buffer (a phone turned, a window dragged to another display).
+    canvas = { rect: { left: 0, top: 0, width: 1000, height: 600 }, bufferWidth: 2500, bufferHeight: 1500 };
+    const reads = panel.boxReads;
+    expect(reg.recheck()).toBe(true);
+    expect(panel.boxReads).toBe(reads + 1);
+    expect(reg.rects()[0]).toMatchObject({ x0: 250, x1: 500, y0: 1500 - 350, y1: 1500 - 250 });
+  });
+
   it('draws at most GLASS_MAX_RECTS', () => {
     const { body } = page();
     const els = Array.from({ length: GLASS_MAX_RECTS + 3 }, (_, i) => new FakeEl(body, { marked: true, blur: 8, box: { left: i * 10, top: 0, width: 8, height: 8 } }));
@@ -517,5 +583,26 @@ describe('blocksBackdrop', () => {
     const glass = styleOf(new FakeEl(null, { blur: 30 }));
     expect(blocksBackdrop(glass, true)).toBe(true);
     expect(blocksBackdrop(base, true)).toBe(false);
+  });
+});
+
+describe('glassFrameOutcome', () => {
+  it('turns the browser\'s blur off exactly for a frame that drew the engine\'s', () => {
+    expect(glassFrameOutcome(true, true)).toEqual({ engineClass: true, drawn: 'mark' });
+  });
+  it('keeps the browser\'s blur and forces the next draw when the engine could not draw its glass', () => {
+    expect(glassFrameOutcome(true, false)).toEqual({ engineClass: false, drawn: 'forget' });
+    // And forgetting makes the very next scan read as a change.
+    const { body } = page();
+    const reg = registry([new FakeEl(body, { marked: true, blur: 12, box: { left: 0, top: 0, width: 10, height: 10 } })]);
+    reg.scan();
+    reg.markDrawn();
+    expect(reg.scan()).toBe(false);
+    reg.forgetDrawn();
+    expect(reg.scan()).toBe(true);
+  });
+  it('leaves the change test alone off the route', () => {
+    expect(glassFrameOutcome(false, true)).toEqual({ engineClass: false, drawn: 'keep' });
+    expect(glassFrameOutcome(false, false)).toEqual({ engineClass: false, drawn: 'keep' });
   });
 });

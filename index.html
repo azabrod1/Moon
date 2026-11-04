@@ -116,7 +116,8 @@
        goes with it: under the browser it blurred only what its glass ancestor
        painted, and with the ancestor's blur gone it would blur the canvas.
        Registered without inheritance, so an element reads its own rule's
-       values and never a parent's. */
+       values and never a parent's — where @property exists; every spelling
+       of the blur gives --glass-sat a fallback for the engines without it. */
     @property --glass-blur { syntax: '<length>'; inherits: false; initial-value: 0px; }
     @property --glass-sat { syntax: '<percentage>'; inherits: false; initial-value: 100%; }
     body.glass-engine [data-glass],
@@ -127,8 +128,8 @@
     /* Two glass panels overlapping: both blurred by the browser again
        (glassRects.ts handOverOverlaps), so the upper one blurs the lower. */
     body.glass-engine [data-glass][data-glass-browser] {
-      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)) !important;
-      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)) !important;
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%)) !important;
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%)) !important;
     }
 
     /* ═══ Obsidian material — liquid-glass surfaces ═══
@@ -141,8 +142,8 @@
         linear-gradient(168deg, rgba(255,255,255,0.05), rgba(255,255,255,0.012) 38%, rgba(0,0,0,0.05)),
         rgba(8, 10, 15, var(--glass-a));
       --glass-blur: 30px; --glass-sat: 160%;
-      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%));
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat, 100%));
       border: 1px solid rgba(255, 255, 255, 0.085);
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.09),
         inset 0 -1px 0 rgba(255,255,255,0.025),
@@ -1657,7 +1658,11 @@
       font-family: var(--font);
       pointer-events: none;
       opacity: 0;
-      transition: all 0.25s ease;
+      /* Opacity and position only: a transition on `all` would also animate
+         the backdrop-filter that body.glass-engine switches off, and the
+         browser's blur would fade out over the engine's for a quarter of a
+         second. */
+      transition: opacity 0.25s ease, transform 0.25s ease;
       z-index: 25;
       /* Long event toasts wrap instead of clipping off both edges (phones)
          or stretching to a 700px pill (desktop). width: max-content opts out

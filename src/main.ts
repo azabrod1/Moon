@@ -98,7 +98,7 @@ import { parseNightExposureParam, setDevNightExposure, type NightExposureOverrid
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedDownParam, parseFusedParam } from './app/FusedOutputPass';
 import { GlassBackdrop, GlassSourcePass, parseGlassParam } from './app/glassBackdrop';
-import { GlassRegistry, type GlassElement, type GlassStyle } from './app/glassRects';
+import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
   seaWindTexture, seaWindTextureFrom, setSeaWindMips,
@@ -211,7 +211,8 @@ renderer.domElement.classList.add('scene-canvas');
 // instead of by the browser (app/glassBackdrop.ts), and the registry that
 // reads where each panel sits (app/glassRects.ts). `?glass=0` on any build
 // builds neither, and every panel keeps the browser's blur. Its programs are
-// linked here, under the loading screen.
+// linked, its targets made and each pipeline drawn once under the loading
+// screen (glass.warm, once the canvas has its size).
 const glass = parseGlassParam(location.search) ? new GlassBackdrop() : null;
 const glassRegistry = glass
   ? new GlassRegistry(
@@ -223,7 +224,6 @@ const glassRegistry = glass
     },
   )
   : null;
-glass?.warm(renderer);
 document.body.appendChild(renderer.domElement);
 /** Set once the context is lost: the GPU frame clock's fences die with it. */
 let contextLost = false;
@@ -447,6 +447,9 @@ function glassRouteLive(): boolean {
 /** The tick whose top the registry last scanned at, so the frame knows
  *  whether a pre-draw pass will do or it needs the full scan. */
 let glassScannedTick = -1;
+/** The tick whose pre-draw pass already ran after the mode's update; the
+ *  frame then draws what it read. Cleared by every drawn frame. */
+let glassRecheckedTick = -1;
 /** Whether body.glass-engine is on: the browser's blur off for every glass
  *  element, because the frame on screen drew it. Written only by the frame
  *  (setGlassEngineClass), and only when it changes. */
@@ -2254,6 +2257,9 @@ function setPlanetariumBloom(on: boolean) {
 
 applyRenderResolution();
 buildComposer(planetariumCamera, PLANETARIUM_BLOOM, planetariumBloomEnabled());
+// The glass's programs, targets and pipelines, under the loading screen and
+// at the canvas's own size (app/glassBackdrop.ts warm).
+glass?.warm(renderer);
 
 // The bloom pass's own targets, switched back and forth against the picture
 // they had. It reaches into the live pass rather than rebuilding the chain: a
@@ -2397,6 +2403,11 @@ function devRenderTargets() {
     upTarget: size(upscalePass?.target),
     // Half the bloom pass's requested resolution: the first mip it blurs.
     bloomMip0: size(bloomMip),
+    // The renderer's glass (app/glassBackdrop.ts): the half-size source, the
+    // quarter-size copy and its scratch; null before the first glass frame.
+    glassHalf: size(glass?.targetOf('half')),
+    glassQuarter: size(glass?.targetOf('quarter')),
+    glassScratch: size(glass?.targetOf('scratch')),
   };
 }
 
@@ -2409,11 +2420,12 @@ function drawWorldFrame() {
   // the first frame of the route).
   const glassLive = glassRouteLive();
   if (glass && glassRegistry) {
-    if (glassLive) {
+    if (glassLive && glassRecheckedTick !== tickSeq) {
       if (glassScannedTick === tickSeq) glassRegistry.recheck();
       else glassRegistry.scan();
       glassScannedTick = tickSeq;
     }
+    glassRecheckedTick = -1;
     glass.setFrame(glassLive ? glassRegistry.rects() : []);
   }
   // The system map draws its own scene straight to the backbuffer (it owns a
@@ -2460,10 +2472,10 @@ function drawWorldFrame() {
     // back on the frame it stops: the class and the canvas land together. A
     // frame that had glass to draw and could not (the finishing pass not yet
     // drawn once on a new composer) keeps the browser's, and is drawn again.
-    const engine = glassLive && glass.frameComplete;
-    setGlassEngineClass(engine);
-    if (engine) glassRegistry.markDrawn();
-    else if (glassLive) glassRegistry.forgetDrawn();
+    const outcome = glassFrameOutcome(glassLive, glass.frameComplete);
+    setGlassEngineClass(outcome.engineClass);
+    if (outcome.drawn === 'mark') glassRegistry.markDrawn();
+    else if (outcome.drawn === 'forget') glassRegistry.forgetDrawn();
     glass.endFrame();
   }
 }
@@ -4385,7 +4397,7 @@ async function init() {
     // Under the cover the gate itself decides (draw on request only), so the
     // cap must not skip the requested frame; a failed boot draws nothing
     // either way.
-    const willDraw = covered || frameCapHeld() || forced || due;
+    let willDraw = covered || frameCapHeld() || forced || due;
     noteProgramLinks();
     if (import.meta.env.DEV && willDraw) surfacePerfFrameStart(rafTimestamp);
     if (import.meta.env.DEV) smoothTraceFrameStart(rafTimestamp, willDraw);
@@ -4436,6 +4448,23 @@ async function init() {
     // planetarium's per-frame solar adaptation.
     if (exposurePin !== null) exposureCurrent = exposurePin;
     renderer.toneMappingExposure = exposureCurrent;
+    // The glass again, after the mode's own update: a panel the update
+    // showed, hid or moved (the Land button appearing, the Look-inside hover
+    // card following the pointer) is read now, before the draw; and on a tick
+    // that was not going to draw, a change found here draws it after all —
+    // with the resolution rule's sample taken as for any draw — so the page
+    // never paints a panel's tint over a canvas without its blur. After the
+    // update rather than in place of the top-of-tick scan: the update's own
+    // writes would make every box read here lay the page out inside the
+    // frame, where the second pass reads only the boxes that can have moved.
+    if (glassRegistry && glassScannedTick === tickSeq && glassRouteLive()) {
+      const glassChanged = glassRegistry.recheck();
+      glassRecheckedTick = tickSeq;
+      if (glassChanged && !willDraw) {
+        willDraw = true;
+        stepQuality(now);
+      }
+    }
     let drew = false;
     sensorTickMs = 0;
     if (willDraw && bootRender.shouldRender()) {

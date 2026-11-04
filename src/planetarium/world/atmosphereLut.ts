@@ -1761,10 +1761,14 @@ export class AtmosphereLut {
         irradiance: targets.irradiance.texture,
         mieColour: targets.mieColour.texture,
       };
+      // The scratch is done with: validation reads only the resident tables,
+      // and GL holds a deleted target until the draws queued against it have
+      // run, so the bake's peak memory goes now rather than after the wait.
+      this.disposeScratch(targets);
       // The readback spans a few frames; a bake cut short meanwhile is an
       // abort, not a device that failed its check.
       const validated = await this.validate(params, targets, generation);
-      if (this.disposed || this.contextLost || generation !== this.generation) {
+      if (this.cutShort(generation)) {
         record(false, true);
         return false;
       }
@@ -1777,8 +1781,7 @@ export class AtmosphereLut {
         this.capable = false;
         return false;
       }
-      // Only the scratch goes; the four resident tables live on in `tables`.
-      this.disposeScratch(targets);
+      // The four resident tables live on in `tables` (the scratch went above).
       this.ready.set(body, tables);
       this.residentTargets.set(body, residentTargetsOf(targets));
       targets = null;
@@ -1790,7 +1793,7 @@ export class AtmosphereLut {
       // A draw into a context that has just gone throws out of three before the
       // lost-context event is dispatched, and that throw says nothing about the
       // device — only a failure under a live context marks it incapable.
-      const cutShort = this.contextLost || this.disposed || generation !== this.generation;
+      const cutShort = this.cutShort(generation);
       debugWarn('Atmosphere LUT bake failed; staying on the analytic tier',
         { body, cutShort, err: String(err) });
       record(false, cutShort);
@@ -2365,9 +2368,18 @@ export class AtmosphereLut {
       const reads = await this.readSamples(plan.map((p) => p.sample), generation);
       return plan.every((p, i) => validationSampleHolds(p.label, reads[i], p.expected, p.band));
     } catch (err) {
-      debugWarn('Atmosphere LUT validation threw', { err: String(err) });
+      if (!this.cutShort(generation)) debugWarn('Atmosphere LUT validation threw', { err: String(err) });
       return false;
     }
+  }
+
+  /** Whether the bake that started at `generation` has been overtaken: disposed,
+   *  or its context lost. The context is asked directly as well as through the
+   *  flag, because the lost-context event that sets the flag arrives a task
+   *  after the context has gone, and a frame can run in between. */
+  private cutShort(generation: number): boolean {
+    return this.disposed || this.contextLost || generation !== this.generation
+      || (this.renderer.getContext() as WebGL2RenderingContext).isContextLost();
   }
 
   /** The three validation samples with their CPU references, in check order. */
@@ -2547,11 +2559,14 @@ export class AtmosphereLut {
       }
       sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
       if (!sync) throw new Error('Atmosphere LUT readback: no fence');
+      // Hand the fence to the driver now rather than at the frame's own flush,
+      // which a tick that does not draw never makes. Once per bake.
+      gl.flush();
       for (let frame = 1; ; frame++) {
         await nextFrame();
-        if (this.disposed || this.contextLost || generation !== this.generation) {
-          throw new Error('Atmosphere LUT readback cut short');
-        }
+        // Before the status: a wait on a lost context reports WAIT_FAILED,
+        // which must read as an abort, never as a device that failed.
+        if (this.cutShort(generation)) throw new Error('Atmosphere LUT readback cut short');
         const status = gl.clientWaitSync(sync, 0, 0);
         if (status === gl.WAIT_FAILED) throw new Error('Atmosphere LUT readback fence failed');
         if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) break;
@@ -2564,7 +2579,9 @@ export class AtmosphereLut {
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
       }
     } finally {
-      if (!gl.isContextLost()) {
+      // Only on the context that made them: a context lost and restored while
+      // this waited (a hidden tab) has a new generation and none of these.
+      if (!gl.isContextLost() && (generation === this.generation || this.disposed)) {
         if (sync) gl.deleteSync(sync);
         gl.deleteBuffer(buffer);
       }

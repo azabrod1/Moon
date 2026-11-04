@@ -518,7 +518,8 @@ describe('table validation probe', () => {
     });
 
     it('refuses the table when its readback throws', async () => {
-      const lut = new AtmosphereLut({} as unknown as THREE.WebGLRenderer, { register: false });
+      const live = { getContext: () => ({ isContextLost: () => false }) };
+      const lut = new AtmosphereLut(live as unknown as THREE.WebGLRenderer, { register: false });
       (lut as unknown as { readSamples: () => Promise<never> }).readSamples = async () => {
         throw new Error('fence failed');
       };
@@ -553,7 +554,14 @@ describe('the validation readback, against a stand-in GL', () => {
   /** The bytes the stand-in GPU writes for sample `i`, byte pass `b`. */
   const texel = (i: number, b: number): number[] => [10 * i + b + 1, 20 * i + b + 2, 30 * i + b + 3, 255 - b];
 
-  function rig(opts: { signalAfter: number; fail?: boolean; onWait?: (lut: AtmosphereLut, calls: number) => void }) {
+  function rig(opts: {
+    signalAfter: number;
+    fail?: boolean;
+    onWait?: (lut: AtmosphereLut, calls: number) => void;
+    /** The context goes from the wait with this number on: the GL reports it
+     *  lost and fails the wait, before any lost-context event has arrived. */
+    loseAt?: number;
+  }) {
     vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 0));
     const events: string[] = [];
     const buffer = { id: 'pack' };
@@ -562,6 +570,7 @@ describe('the validation readback, against a stand-in GL', () => {
     let store = new Uint8Array(0);
     let waits = 0;
     let uByte = -1;
+    let lost = false;
     let lut: AtmosphereLut;
     const gl = {
       ...GL,
@@ -581,12 +590,13 @@ describe('the validation readback, against a stand-in GL', () => {
         events.push(`read ${i}.${uByte}`);
       },
       fenceSync: (cond: number, flags: number) => { expect([cond, flags]).toEqual([GL.SYNC_GPU_COMMANDS_COMPLETE, 0]); events.push('fence'); return sync; },
+      flush: () => { events.push('flush'); },
       clientWaitSync: (s: object, flags: number, timeout: number) => {
         expect([s, flags, timeout]).toEqual([sync, 0, 0]);
         waits++;
         events.push('wait');
         opts.onWait?.(lut, waits);
-        if (opts.fail) return GL.WAIT_FAILED;
+        if (opts.fail || lost) return GL.WAIT_FAILED;
         return waits >= opts.signalAfter ? GL.ALREADY_SIGNALED : GL.TIMEOUT_EXPIRED;
       },
       getBufferSubData: (target: number, src: number, dst: Uint8Array) => {
@@ -595,7 +605,10 @@ describe('the validation readback, against a stand-in GL', () => {
       },
       deleteSync: (s: object) => { expect(s).toBe(sync); events.push('deleteSync'); },
       deleteBuffer: (b: object) => { expect(b).toBe(buffer); events.push('deleteBuffer'); },
-      isContextLost: () => false,
+      isContextLost: () => {
+        if (opts.loseAt !== undefined && waits >= opts.loseAt) lost = true;
+        return lost;
+      },
     };
     const renderer = { getContext: () => gl, getRenderTarget: () => null, setRenderTarget: () => undefined };
     lut = new AtmosphereLut(renderer as unknown as THREE.WebGLRenderer, { register: false });
@@ -624,6 +637,7 @@ describe('the validation readback, against a stand-in GL', () => {
     });
     expect(r.waits()).toBe(3);
     expect(r.events.indexOf('fetch')).toBeGreaterThan(r.events.lastIndexOf('wait'));
+    expect(r.events.indexOf('flush')).toBe(r.events.indexOf('fence') + 1);
     expect(r.events.slice(0, 7)).toEqual(['draw 0', 'read 0.0', 'draw 1', 'read 0.1', 'draw 0', 'read 1.0', 'draw 1']);
     expect(r.events.slice(-2)).toEqual(['deleteSync', 'deleteBuffer']);
     expect(r.bound()).toBeNull();
@@ -648,15 +662,79 @@ describe('the validation readback, against a stand-in GL', () => {
     r.lut.dispose();
   });
 
-  it('throws when the bake is cut short while it waits', async () => {
-    const r = rig({
-      signalAfter: Number.POSITIVE_INFINITY,
-      onWait: (lut, calls) => { if (calls === 2) (lut as unknown as { generation: number }).generation++; },
-    });
+  it('throws when the LUT is disposed while it waits, and still deletes its objects', async () => {
+    const r = rig({ signalAfter: Number.POSITIVE_INFINITY, onWait: (lut, calls) => { if (calls === 2) lut.dispose(); } });
     await expect(r.run()).rejects.toThrow(/cut short/);
     expect(r.waits()).toBe(2);
     expect(r.events.slice(-2)).toEqual(['deleteSync', 'deleteBuffer']);
+    expect(r.bound()).toBeNull();
+  });
+
+  it('reads a context lost before its event arrives as cut short, not as a failed fence', async () => {
+    // The GL already answers lost and fails the wait; the flag the event sets is still clear.
+    const r = rig({ signalAfter: Number.POSITIVE_INFINITY, loseAt: 2 });
+    await expect(r.run()).rejects.toThrow(/cut short/);
+    expect(r.events).not.toContain('deleteSync');
+    expect(r.events).not.toContain('deleteBuffer');
     r.lut.dispose();
+  });
+
+  it('leaves the objects of a context lost and restored while it waited alone', async () => {
+    const r = rig({
+      signalAfter: Number.POSITIVE_INFINITY,
+      onWait: (lut, calls) => { if (calls === 2) { lut.onContextLost(); (lut as unknown as { contextLost: boolean }).contextLost = false; } },
+    });
+    await expect(r.run()).rejects.toThrow(/cut short/);
+    expect(r.events).not.toContain('deleteSync');
+    expect(r.events).not.toContain('deleteBuffer');
+    r.lut.dispose();
+  });
+
+  describe('a bake whose validation is cut short or fails', () => {
+    // runBake around validate(), with the GPU work stubbed out: no steps, no
+    // cost probe, real (unallocated) targets. What the bake records, and
+    // whether the device is marked incapable, is the point.
+    function bakeWith(validate: (lut: AtmosphereLut) => Promise<boolean>) {
+      const gl = { isContextLost: () => false };
+      const renderer = { getContext: () => gl, info: { programs: [] } };
+      const lut = new AtmosphereLut(renderer as unknown as THREE.WebGLRenderer, { register: false });
+      const internals = lut as unknown as {
+        probeCapability: () => boolean; ensureMaterials: () => void; buildSteps: () => unknown[];
+        measurePassCosts: () => Promise<number>; validate: () => Promise<boolean>; capable: boolean | null;
+      };
+      internals.probeCapability = () => true;
+      internals.ensureMaterials = () => undefined;
+      internals.buildSteps = () => [];
+      internals.measurePassCosts = async () => 0;
+      internals.validate = () => validate(lut);
+      return { lut, capable: () => internals.capable };
+    }
+
+    it('records an abort and leaves the device alone when the context goes during the readback', async () => {
+      const b = bakeWith(async (lut) => { lut.onContextLost(); return false; });
+      expect(await b.lut.bake('Earth')).toBe(false);
+      const row = b.lut.stats().at(-1)!;
+      expect([row.validated, row.aborted]).toEqual([false, true]);
+      expect(b.capable()).toBeNull();
+      b.lut.dispose();
+    });
+
+    it('marks the device incapable when the readback answers and the table fails', async () => {
+      const b = bakeWith(async () => false);
+      expect(await b.lut.bake('Earth')).toBe(false);
+      const row = b.lut.stats().at(-1)!;
+      expect([row.validated, row.aborted]).toEqual([false, false]);
+      expect(b.capable()).toBe(false);
+      b.lut.dispose();
+    });
+
+    it('hands over the tables when the readback passes', async () => {
+      const b = bakeWith(async () => true);
+      expect(await b.lut.bake('Earth')).toBe(true);
+      expect(b.lut.tables('Earth')).toBeDefined();
+      expect(b.lut.stats().at(-1)!.validated).toBe(true);
+      b.lut.dispose();
+    });
   });
 
   it('decodes a sample as the high byte plus the low byte of the remainder, over the scale', () => {

@@ -80,8 +80,13 @@ describe('the glass seam in index.html', () => {
     for (const rule of glassRules) {
       const selectors = rule.selector.split(',').map((s) => s.trim());
       if (selectors.every((s) => s.startsWith('body.glass-engine'))) {
-        // The engine's own rule: it switches the browser's blur off.
-        expect(rule.body).toMatch(/backdrop-filter:\s*none !important/);
+        // The engine's own rules: the browser's blur off, and back on for
+        // two panels that overlap.
+        if (rule.selector.includes('[data-glass-browser]')) {
+          expect(rule.body).toMatch(/(^|\s)backdrop-filter:\s*blur\(var\(--glass-blur\)\) saturate\(var\(--glass-sat\)\) !important/);
+        } else {
+          expect(rule.body).toMatch(/backdrop-filter:\s*none !important/);
+        }
         continue;
       }
       if (selectors.some((s) => LITERAL_GLASS.has(s))) continue;
@@ -257,8 +262,13 @@ interface FakeOpts {
 class FakeEl implements GlassElement {
   boxReads = 0;
   constructor(public parentElement: FakeEl | null, public opts: FakeOpts) {}
+  attrs = new Set<string>();
   hasAttribute(name: string): boolean {
-    return name === 'data-glass' && this.opts.marked === true;
+    return (name === 'data-glass' && this.opts.marked === true) || this.attrs.has(name);
+  }
+  toggleAttribute(name: string, force: boolean): boolean {
+    if (force) this.attrs.add(name); else this.attrs.delete(name);
+    return force;
   }
   getBoundingClientRect() {
     this.boxReads++;
@@ -450,6 +460,26 @@ describe('GlassRegistry', () => {
     const reads = pill.boxReads;
     drawTick();
     expect(pill.boxReads).toBe(reads + 1);
+  });
+
+  it('hands two overlapping panels back to the browser while they overlap, and takes them back after', () => {
+    const { body } = page();
+    const card = new FakeEl(body, { marked: true, blur: 30, box: { left: 10, top: 40, width: 200, height: 100 } });
+    const menu = new FakeEl(body, { marked: true, blur: 30, box: { left: 150, top: 20, width: 100, height: 300 }, display: 'none' });
+    const button = new FakeEl(body, { marked: true, blur: 12, box: { left: 400, top: 10, width: 30, height: 30 } });
+    const reg = registry([card, menu, button]);
+    reg.scan();
+    expect(reg.rects()).toHaveLength(2);
+    menu.opts.display = 'block';
+    expect(reg.scan()).toBe(true);
+    expect(reg.rects()).toHaveLength(1);
+    expect(card.attrs.has('data-glass-browser') && menu.attrs.has('data-glass-browser')).toBe(true);
+    expect(button.attrs.has('data-glass-browser')).toBe(false);
+    expect(reg.browserBlurred).toBe(2);
+    menu.opts.display = 'none';
+    reg.scan();
+    expect(reg.rects()).toHaveLength(2);
+    expect(card.attrs.size + menu.attrs.size).toBe(0);
   });
 
   it('draws at most GLASS_MAX_RECTS', () => {

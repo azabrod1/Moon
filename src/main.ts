@@ -4140,6 +4140,8 @@ function installDevHooks() {
         route: glassRouteLive() ? 'engine' : 'browser',
         engineClass: glassEngineClass,
         registered: glassRegistry.registered,
+        // Overlapping panels handed back to the browser's blur (app/glassRects.ts).
+        browserBlurred: glassRegistry.browserBlurred,
         drawSeq,
         rects: (glassEngineClass ? glassRegistry.rects() : []).map((r) => ({
           x0: Math.round(r.x0 * 10) / 10, y0: Math.round(r.y0 * 10) / 10,

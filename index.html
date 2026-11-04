@@ -124,6 +124,12 @@
       -webkit-backdrop-filter: none !important;
       backdrop-filter: none !important;
     }
+    /* Two glass panels overlapping: both blurred by the browser again
+       (glassRects.ts handOverOverlaps), so the upper one blurs the lower. */
+    body.glass-engine [data-glass][data-glass-browser] {
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)) !important;
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)) !important;
+    }
 
     /* ═══ Obsidian material — liquid-glass surfaces ═══
        Near-black glass with a faint top-lit gradient + inset hairline highlights.

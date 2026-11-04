@@ -74,6 +74,11 @@
  * hover card) is blurred where it is drawn and not a frame behind, and a
  * still interface reads no layout inside the frame at all.
  *
+ * **Glass over glass.** Where two shown panels overlap, both go back to the
+ * browser's blur for as long as they do (handOverOverlaps): the engine blurs
+ * the canvas alone and would leave the lower panel's text crisp under the
+ * upper one's tint.
+ *
  * At most GLASS_MAX_RECTS are drawn; the surplus is left undrawn and DEV says
  * so once. The interface never shows more than about a dozen.
  */
@@ -209,6 +214,7 @@ export interface GlassStyle {
 export interface GlassElement {
   readonly parentElement: GlassElement | null;
   hasAttribute(name: string): boolean;
+  toggleAttribute(name: string, force: boolean): boolean;
   getBoundingClientRect(): { left: number; top: number; right: number; bottom: number; width: number; height: number };
   checkVisibility?(options?: Record<string, boolean>): boolean;
   readonly offsetWidth?: number;
@@ -278,6 +284,7 @@ export class GlassRegistry {
   private elements: GlassElement[] = [];
   private readonly tracks = new Map<GlassElement, Track>();
   private readonly styles = new Map<GlassElement, GlassStyle>();
+  private readonly handedOver = new Set<GlassElement>();
   /** What the last drawn frame drew, flattened, for the change test. */
   private drawnKey: number[] = [];
   private readonly ancestorVerdict = new Map<GlassElement, boolean>();
@@ -338,7 +345,7 @@ export class GlassRegistry {
     const out: GlassRect[] = [];
     for (const el of this.elements) {
       const rect = this.tracks.get(el)?.seen;
-      if (!rect) continue;
+      if (!rect || this.handedOver.has(el)) continue;
       if (out.length >= GLASS_MAX_RECTS) {
         if (import.meta.env.DEV && !this.surplusSaid) {
           this.surplusSaid = true;
@@ -361,8 +368,57 @@ export class GlassRegistry {
     const canvas = this.canvas();
     this.ancestorVerdict.clear();
     for (const el of this.elements) this.track(el).seen = this.readElement(el, canvas, null);
+    this.handOverOverlaps();
     this.lastScanMs = this.now() - t0;
     return this.changed();
+  }
+
+  /** Panels left to the browser because they overlap another (handOverOverlaps). */
+  get browserBlurred(): number {
+    return this.handedOver.size;
+  }
+
+  /**
+   * Glass over glass goes back to the browser, both panels. The engine blurs
+   * the canvas alone, so a panel over another would show the lower one's
+   * text and controls crisp through its tint, where the browser blurs them
+   * away (the phone's tour card under the ☰ menu is the case that happens).
+   * While two panels overlap, each carries `data-glass-browser`, which gives
+   * it its own CSS blur back under the engine class (index.html), and the
+   * engine draws neither: the upper one's backdrop is then the canvas and the
+   * lower panel, as it always was. Both, because which of the two is on top
+   * is the stacking order's to say and not the boxes'; the cost is one or
+   * two browser blurs for as long as the overlap lasts.
+   */
+  private handOverOverlaps(): void {
+    const shown: Array<[GlassElement, GlassRect]> = [];
+    for (const el of this.elements) {
+      const r = this.tracks.get(el)?.seen;
+      if (r) shown.push([el, r]);
+    }
+    const over = new Set<GlassElement>();
+    for (let i = 0; i < shown.length; i++) {
+      for (let j = i + 1; j < shown.length; j++) {
+        const a = shown[i][1];
+        const b = shown[j][1];
+        if (Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > 0.5 && Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) > 0.5) {
+          over.add(shown[i][0]);
+          over.add(shown[j][0]);
+        }
+      }
+    }
+    for (const el of [...this.handedOver]) {
+      if (!over.has(el)) {
+        el.toggleAttribute('data-glass-browser', false);
+        this.handedOver.delete(el);
+      }
+    }
+    for (const el of over) {
+      if (!this.handedOver.has(el)) {
+        el.toggleAttribute('data-glass-browser', true);
+        this.handedOver.add(el);
+      }
+    }
   }
 
   /**
@@ -384,6 +440,7 @@ export class GlassRegistry {
       const settled = t.seen !== null && t.volatile === 0 && sameBox(t.seen, t.drawn);
       t.seen = this.readElement(el, canvas, settled ? t.seen : null);
     }
+    this.handOverOverlaps();
     this.lastRecheckReads = this.boxReads;
     this.lastRecheckMs = this.now() - t0;
     return this.changed();

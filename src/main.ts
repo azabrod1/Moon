@@ -448,8 +448,13 @@ function glassRouteLive(): boolean {
  *  whether a pre-draw pass will do or it needs the full scan. */
 let glassScannedTick = -1;
 /** The tick whose pre-draw pass already ran after the mode's update; the
- *  frame then draws what it read. Cleared by every drawn frame. */
+ *  frame then draws what it read. Cleared by every drawn frame and at the
+ *  end of every tick, so a draw outside the tick (the reveal) reads the page
+ *  again. */
 let glassRecheckedTick = -1;
+/** Draws the after-update pass forced on a tick that was not going to draw
+ *  (DEV readout: with panels in motion decided at the top, they are rare). */
+let glassLateDraws = 0;
 /** Whether body.glass-engine is on: the browser's blur off for every glass
  *  element, because the frame on screen drew it. Written only by the frame
  *  (setGlassEngineClass), and only when it changes. */
@@ -4166,6 +4171,10 @@ function installDevHooks() {
         scanMs: glassRegistry.lastScanMs,
         recheckMs: glassRegistry.lastRecheckMs,
         recheckReads: glassRegistry.lastRecheckReads,
+        // Draws the after-update pass forced on ticks that were not going to
+        // draw, since boot, and whether a panel is in motion now.
+        lateDraws: glassLateDraws,
+        moving: glassRegistry.moving,
         targets: glass.targets(),
       }
       : { route: 'browser', door: '?glass=0' }),
@@ -4386,10 +4395,15 @@ async function init() {
     const due = frameCadence.due(rafTimestamp);
     // The glass on screen, read while the last frame's layout is still clean:
     // a panel that opened, closed, faded or moved since the last drawn frame
-    // is drawn this tick, cap or no cap (app/glassRects.ts).
+    // is drawn this tick, cap or no cap (app/glassRects.ts); and while any
+    // panel is in motion (moved, appeared or went within the registry's
+    // volatile window) every tick draws, decided here, before the resolution
+    // rule's sample and the mode's update, so the tick is an ordinary drawing
+    // tick: the update presents its labels and markers for it, and a panel
+    // the update moves is drawn where it lands.
     let glassMoved = false;
     if (glassRegistry && glassRouteLive()) {
-      glassMoved = glassRegistry.scan();
+      glassMoved = glassRegistry.scan() || glassRegistry.moving;
       glassScannedTick = tickSeq;
     }
     const forced = forcedDrawRequest || glassMoved;
@@ -4450,18 +4464,28 @@ async function init() {
     renderer.toneMappingExposure = exposureCurrent;
     // The glass again, after the mode's own update: a panel the update
     // showed, hid or moved (the Land button appearing, the Look-inside hover
-    // card following the pointer) is read now, before the draw; and on a tick
-    // that was not going to draw, a change found here draws it after all —
-    // with the resolution rule's sample taken as for any draw — so the page
-    // never paints a panel's tint over a canvas without its blur. After the
+    // card following the pointer) is read now, before the draw. After the
     // update rather than in place of the top-of-tick scan: the update's own
     // writes would make every box read here lay the page out inside the
-    // frame, where the second pass reads only the boxes that can have moved.
+    // frame, where this pass reads only the boxes that can have moved.
+    //
+    // On a tick that was not going to draw, a change found here draws it
+    // after all, so the page never paints a panel's tint over a canvas
+    // without its blur. That case is rare — a panel in motion already made
+    // the tick a drawing one at the top — and is a panel's first change with
+    // nothing moving before it (the Land button appearing as the ship comes
+    // close). It has a price, paid knowingly: the update ran as a tick that
+    // presents nothing, so this one frame shows the camera-anchored work
+    // (labels, dots, the bracket, the ruler, the corner chart) as the last
+    // drawn frame left it, and the resolution rule's sample is taken here,
+    // after the update, so this tick's sliced work is charged to the interval
+    // this draw closes rather than the next one.
     if (glassRegistry && glassScannedTick === tickSeq && glassRouteLive()) {
       const glassChanged = glassRegistry.recheck();
       glassRecheckedTick = tickSeq;
       if (glassChanged && !willDraw) {
         willDraw = true;
+        glassLateDraws++;
         stepQuality(now);
       }
     }
@@ -4488,6 +4512,9 @@ async function init() {
     // explain by itself, which is the only case fewer pixels would fix.
     // The GPU clock's fence and flush are the sensor's, not the app's: they
     // reach the controller as the interval's sensorMs instead.
+    // The pre-draw pass belongs to this tick: a draw outside it (the reveal)
+    // reads the page again.
+    glassRecheckedTick = -1;
     loopBusyMs = performance.now() - now - sensorTickMs;
     if (loopBusyMs > busyMaxSinceDraw) busyMaxSinceDraw = loopBusyMs;
     busySumSinceDraw += loopBusyMs;

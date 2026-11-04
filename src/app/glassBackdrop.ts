@@ -79,14 +79,14 @@
  * (app/glassRects.ts). Two that come within a texel of each other share the
  * margin of the targets, and the later one's copy wins it; both are blurs of
  * the same picture, so it does not show. Nothing is drawn and no target is
- * touched in a frame with no glass on screen; the targets are made at the
- * first frame that has some, for the canvas's size, and re-made only when
- * that size changes. Its three programs of its own (the box, the blur, the
- * composite) are linked at boot under the loading screen, its targets made at
- * the canvas's size and every pass drawn once there with a panel that covers
- * nothing (`warm`), so the first panel opened mid-session links nothing and
- * builds no pipeline state; the half-size draw is the finishing pass's own
- * program, drawn into an 8-bit target in that same first frame.
+ * touched in a frame with no glass on screen, except the one warm-up frame:
+ * its three programs of its own (the box, the blur, the composite) are
+ * linked at boot under the loading screen, and the first frame drawn on a
+ * glass route draws a panel that covers nothing through every pass
+ * (`warm`), which makes the targets for the canvas's size — re-made only when
+ * that size changes — so the first panel opened mid-session links nothing,
+ * allocates nothing and builds no pipeline state. The half-size draw is the
+ * finishing pass's own program, drawn into an 8-bit target in that frame.
  *
  * **What it costs.** M5 Max, Chromium on Metal, the ship view at 1.05 R at
  * High (3456 × 2234) with seven panels up: the frame rate went from 103–106
@@ -168,8 +168,8 @@ export function glassPairTaps(sigma: number): { centre: number; pairs: Array<{ w
 export function glassMirrorInto(p: number, lo: number, hi: number): number {
   const first = Math.ceil(lo - 0.5) + 0.5;
   const last = Math.floor(hi - 0.5) + 0.5;
-  if (last < first) return 0.5 * (lo + hi);
   const len = hi - lo;
+  if (len <= 0 || last < first) return 0.5 * (lo + hi);
   let t = (((p - lo) % (2 * len)) + 2 * len) % (2 * len);
   if (t > len) t = 2 * len - t;
   return Math.min(Math.max(lo + t, first), last);
@@ -241,12 +241,12 @@ out vec4 fragColor;
 // centres lie inside the box, so a bilinear read never reaches a texel
 // centred outside it, wherever in a texel the box's edges fall
 // (glassMirrorInto is the same arithmetic, for the tests). A box too narrow
-// to hold a texel centre reads its middle.
+// to hold a texel centre, or of no width at all, reads its middle.
 float mirrorInto(float p, float lo, float hi) {
   float first = ceil(lo - 0.5) + 0.5;
   float last = floor(hi - 0.5) + 0.5;
-  if (last < first) return 0.5 * (lo + hi);
   float len = hi - lo;
+  if (len <= 0.0 || last < first) return 0.5 * (lo + hi);
   float t = mod(p - lo, 2.0 * len);
   t = t > len ? 2.0 * len - t : t;
   return clamp(lo + t, first, last);
@@ -476,13 +476,15 @@ export class GlassBackdrop {
   }
 
   /**
-   * Ready everything now — at boot, under the loading screen, once the canvas
-   * has its size — so the first panel shown mid-session pays for nothing:
-   * the three programs linked, the three targets made and bound once at the
-   * canvas's size (three gives a target its GL storage on the first bind),
-   * and the next frame that draws drawn with a panel that covers nothing, so
-   * every pass, the half-size finishing draw and the composite included, has
-   * its pipeline state built by the driver before anyone sees a frame.
+   * Ready everything now — at boot, under the loading screen — so the first
+   * panel shown mid-session pays for nothing: the three programs linked here,
+   * and the next frame drawn on a glass route drawn with a panel that covers
+   * nothing, which makes the three targets at the canvas's size and binds
+   * them (three gives a target its GL storage on the first bind) and has the
+   * driver build every pass's pipeline state, the half-size finishing draw
+   * and the composite included, before anyone sees a frame. A route that
+   * never carries the glass (`?fused=0`, the direct route) never reaches that
+   * frame and allocates nothing.
    */
   warm(renderer: THREE.WebGLRenderer): void {
     const scene = new THREE.Scene();
@@ -492,14 +494,6 @@ export class GlassBackdrop {
       scene.add(mesh);
     }
     renderer.compile(scene, this.camera);
-    renderer.getDrawingBufferSize(this.bufferSize);
-    this.ensureTargets(Math.max(1, Math.floor(this.bufferSize.x)), Math.max(1, Math.floor(this.bufferSize.y)));
-    const previous = renderer.getRenderTarget();
-    for (const target of [this.half, this.quarter, this.scratch]) {
-      renderer.setRenderTarget(target);
-      renderer.clear(true, false, false);
-    }
-    renderer.setRenderTarget(previous);
     this.warmPending = true;
   }
 
@@ -523,7 +517,11 @@ export class GlassBackdrop {
   /** The frame is drawn: keep its statistics and carry no glass until the
    *  next setFrame. */
   endFrame(): void {
-    this.lastStats = { rects: this.realRects, drew: this.sourceDrawn, skipped: this.skipReason };
+    // A frame with no panel of its own (the warm-up's) reports no draw and no
+    // skip: there was nothing of the reader's to draw.
+    this.lastStats = this.realRects > 0
+      ? { rects: this.realRects, drew: this.sourceDrawn, skipped: this.skipReason }
+      : { rects: 0, drew: false, skipped: null };
     this.frameRects = [];
     this.realRects = 0;
     this.sourceDrawn = false;

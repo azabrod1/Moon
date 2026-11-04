@@ -92,6 +92,13 @@ describe('glassMirrorInto', () => {
     }
   });
 
+  it('reads the middle of a box of no width, never dividing by it', () => {
+    for (const lo of [3, 3.5, 7.25]) {
+      for (const p of [-4, lo, lo + 9.3]) expect(glassMirrorInto(p, lo, lo)).toBe(lo);
+    }
+    expect(source).toContain('if (len <= 0.0 || last < first) return 0.5 * (lo + hi);');
+  });
+
   it('is a mirror inside the box: a point and its reflection read the same place', () => {
     const [lo, hi] = [4.2, 20.6];
     for (const d of [0.3, 1.1, 2.6]) {
@@ -205,8 +212,13 @@ describe('GlassBackdrop against a recording renderer', () => {
     expect(renders[0].dither).toBe(0);
     expect(renders[0].box).toBe(0);
     expect(renders.every((c) => c.autoClear === false && c.target !== null)).toBe(true);
-    // Every offscreen pass opens with a clear of its own target.
-    for (const c of renders) expect(r.calls.some((d) => d.op === 'clear' && d.target === c.target)).toBe(true);
+    // Every offscreen pass opens with a clear of its own target, before its draw.
+    let cleared: unknown = undefined;
+    for (const c of r.calls) {
+      if (c.op === 'target') cleared = undefined;
+      else if (c.op === 'clear') cleared = c.target;
+      else expect(cleared, 'a pass drew before clearing its target').toBe(c.target);
+    }
     const u = (fin.material as THREE.ShaderMaterial).uniforms;
     expect(u.uDither.value).toBe(1);
     expect(u.uBox.value).toBe(1);
@@ -216,18 +228,25 @@ describe('GlassBackdrop against a recording renderer', () => {
     expect(glass.frameComplete).toBe(true);
   });
 
-  it('puts the finishing pass\'s uniforms and autoClear back even when a draw throws', () => {
-    const glass = new GlassBackdrop();
-    const r = new FakeRenderer();
-    r.failOnRender = 0;
-    const fin = finishing();
-    glass.setFrame([panel]);
-    expect(() => glass.drawSource(asRenderer(r), scene, fin)).toThrow('lost context');
-    const u = (fin.material as THREE.ShaderMaterial).uniforms;
-    expect(u.uDither.value).toBe(1);
-    expect(u.uBox.value).toBe(1);
-    expect(r.autoClear).toBe(true);
-    expect(glass.frameComplete).toBe(false);
+  it('puts the finishing pass\'s uniforms, its own textures and autoClear back even when a draw throws', () => {
+    for (const failAt of [0, 2]) {
+      const glass = new GlassBackdrop();
+      const r = new FakeRenderer();
+      r.failOnRender = failAt;
+      const fin = finishing();
+      glass.setFrame([panel]);
+      expect(() => glass.drawSource(asRenderer(r), scene, fin)).toThrow('lost context');
+      const u = (fin.material as THREE.ShaderMaterial).uniforms;
+      expect(u.uDither.value).toBe(1);
+      expect(u.uBox.value).toBe(1);
+      expect(r.autoClear).toBe(true);
+      expect(glass.frameComplete).toBe(false);
+      // The third draw is the horizontal blur: by then both of the glass's
+      // own materials hold a texture, and neither is left holding one.
+      const own = glass as unknown as { boxMaterial: THREE.RawShaderMaterial; blurMaterial: THREE.RawShaderMaterial };
+      expect(own.boxMaterial.uniforms.tSource.value).toBeNull();
+      expect(own.blurMaterial.uniforms.tSource.value).toBeNull();
+    }
   });
 
   it('leaves a frame to the browser while the finishing pass has not built its defines', () => {
@@ -263,22 +282,25 @@ describe('GlassBackdrop against a recording renderer', () => {
     expect(r.calls).toEqual([]);
   });
 
-  it('warms: makes the targets at the canvas\'s size, then draws one invisible panel through every pass, once', () => {
+  it('warms: allocates nothing until a glass route draws, then one invisible panel through every pass, once', () => {
     const glass = new GlassBackdrop();
     const r = new FakeRenderer();
     glass.warm(asRenderer(r));
-    expect(glass.targetOf('half')).toMatchObject({ width: 200, height: 100 });
-    expect(glass.targetOf('quarter')).toMatchObject({ width: 100, height: 50 });
-    expect(glass.targetOf('scratch')).toMatchObject({ width: 100, height: 50 });
-    r.calls = [];
+    // A route that never carries the glass never makes its targets.
+    expect(glass.targetOf('half')).toBeNull();
+    expect(r.calls).toEqual([]);
     glass.setFrame([]);
     glass.drawSource(asRenderer(r), scene, finishing());
     glass.composite(asRenderer(r));
+    expect(glass.targetOf('half')).toMatchObject({ width: 200, height: 100 });
+    expect(glass.targetOf('quarter')).toMatchObject({ width: 100, height: 50 });
+    expect(glass.targetOf('scratch')).toMatchObject({ width: 100, height: 50 });
     expect(r.calls.filter((c) => c.op === 'render')).toHaveLength(5);
     // The frame had no panel of its own: the browser's blur is not involved.
     expect(glass.frameComplete).toBe(true);
     glass.endFrame();
-    expect(glass.stats().rects).toBe(0);
+    // A frame with none of the reader's panels reports no draw and no skip.
+    expect(glass.stats()).toEqual({ rects: 0, drew: false, skipped: null });
     r.calls = [];
     glass.setFrame([]);
     glass.drawSource(asRenderer(r), scene, finishing());

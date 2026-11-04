@@ -87,6 +87,10 @@
  * panel the mode positions every frame (the surface view's tracking pill,
  * the Look-inside hover card) is blurred where it is drawn and not a frame
  * behind, and a still interface reads no layout in the second pass at all.
+ * While any panel is volatile (moved, appeared or went in the last
+ * GLASS_VOLATILE_DRAWS drawn frames) main draws every tick, decided at the
+ * top before the update, so a panel the update keeps moving never needs the
+ * second pass to force a draw.
  * One case is left a display frame behind: a panel shown by a promise that
  * settles after the frame's draw, in the same task (main's afterNextDraw);
  * the next tick's scan draws it.
@@ -483,15 +487,27 @@ export class GlassRegistry {
   }
 
   /** The frame drew this tick's rects: they are what the next change is
-   *  measured against, and an element whose box moved since the last drawn
-   *  frame has its box read fresh before the next GLASS_VOLATILE_DRAWS. */
+   *  measured against, and an element whose box moved, or that appeared or
+   *  went, since the last drawn frame is volatile for the next
+   *  GLASS_VOLATILE_DRAWS: its box is read fresh before each draw, and main
+   *  draws every tick while any element is (`moving`). */
   markDrawn(): void {
     for (const t of this.tracks.values()) {
-      if (t.seen && t.drawn && !sameBox(t.seen, t.drawn)) t.volatile = GLASS_VOLATILE_DRAWS;
+      const appearedOrWent = (t.seen === null) !== (t.drawn === null);
+      if (appearedOrWent || (t.seen && t.drawn && !sameBox(t.seen, t.drawn))) t.volatile = GLASS_VOLATILE_DRAWS;
       else if (t.volatile > 0) t.volatile--;
       t.drawn = t.seen;
     }
     this.drawnKey = this.key();
+  }
+
+  /** Whether any panel moved, appeared or went within the last
+   *  GLASS_VOLATILE_DRAWS drawn frames: main then draws every tick, cap or
+   *  no cap, deciding so before the mode's update, so the tick is an ordinary
+   *  drawing tick and a panel the update moves is drawn where it lands. */
+  get moving(): boolean {
+    for (const t of this.tracks.values()) if (t.volatile > 0) return true;
+    return false;
   }
 
   /** Forget what was drawn, so the next scan reads as a change. */

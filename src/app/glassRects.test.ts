@@ -441,8 +441,9 @@ describe('GlassRegistry', () => {
     const shown = new FakeEl(body, { marked: true, blur: 12, box });
     const later = new FakeEl(body, { marked: true, blur: 12, box: { ...box, top: 300 }, display: 'none' });
     const reg = registry([shown, later]);
+    // Shown long enough to have settled (an appearance is volatile too).
+    for (let i = 0; i <= GLASS_VOLATILE_DRAWS; i++) { reg.scan(); reg.markDrawn(); }
     reg.scan();
-    reg.markDrawn();
     const reads = shown.boxReads;
     // The mode shows a control during its update.
     later.opts.display = 'block';
@@ -467,7 +468,9 @@ describe('GlassRegistry', () => {
       reg.recheck();
       reg.markDrawn();
     };
-    drawTick();
+    // Shown and still long enough to have settled (an appearance is volatile).
+    for (let i = 0; i <= GLASS_VOLATILE_DRAWS; i++) drawTick();
+    expect(reg.moving).toBe(false);
     // The mode moves it inside a drawing tick's update: the first move is
     // caught at the next tick's top, the frame after that is read fresh.
     drawTick(110);
@@ -516,19 +519,41 @@ describe('GlassRegistry', () => {
       new OldFakeEl(shownBranch, { marked: true, blur: 12, box }),
       new OldFakeEl(shownBranch, { marked: true, blur: 12, box: { ...box, top: 300 }, visibility: 'hidden' }),
     ];
-    const reads = new Map<GlassElement, number>();
+    // A fourth glass element under the shown branch, so two walks share it
+    // and the body above it.
+    els.push(new OldFakeEl(shownBranch, { marked: true, blur: 12, box: { ...box, left: 400 } }));
+    const fetched = new Map<GlassElement, number>();
+    const displayReads = new Map<GlassElement, number>();
     const counting = (el: GlassElement): GlassStyle => {
-      reads.set(el, (reads.get(el) ?? 0) + 1);
-      return styleOf(el);
+      fetched.set(el, (fetched.get(el) ?? 0) + 1);
+      const live = styleOf(el);
+      return new Proxy(live, {
+        get(target, prop, receiver) {
+          if (prop === 'display') displayReads.set(el, (displayReads.get(el) ?? 0) + 1);
+          return Reflect.get(target, prop, receiver);
+        },
+      });
     };
     const reg = new GlassRegistry(() => els, counting as (el: GlassElement) => GlassStyle, desktop, () => 0);
-    reg.scan();
-    expect(reg.rects()).toHaveLength(1);
+    const perPass = (pass: () => void): Map<GlassElement, number> => {
+      displayReads.clear();
+      pass();
+      return new Map(displayReads);
+    };
+    const first = perPass(() => reg.scan());
+    expect(reg.rects()).toHaveLength(2);
     expect(els[0].boxReads).toBe(0);
-    // Live styles are fetched once per element for the session, whatever the walks.
-    reg.scan();
-    reg.recheck();
-    for (const n of reads.values()) expect(n).toBe(1);
+    // Each element's display is read at most once a pass, the shared
+    // ancestors included: three walks pass through the body, two through the
+    // shown branch.
+    for (const n of first.values()) expect(n).toBe(1);
+    expect(first.get(body)).toBe(1);
+    expect(first.get(shownBranch)).toBe(1);
+    // A new pass reads them again, once — the memo is the pass's, not the
+    // session's, so a panel hidden between passes is seen hidden.
+    for (const n of perPass(() => reg.recheck()).values()) expect(n).toBe(1);
+    // And the live styles themselves are fetched once per element for the session.
+    for (const n of fetched.values()) expect(n).toBe(1);
   });
 
   it('reads every box fresh in the pre-draw pass when the canvas changed size since the scan', () => {
@@ -546,6 +571,28 @@ describe('GlassRegistry', () => {
     expect(reg.recheck()).toBe(true);
     expect(panel.boxReads).toBe(reads + 1);
     expect(reg.rects()[0]).toMatchObject({ x0: 250, x1: 500, y0: 1500 - 350, y1: 1500 - 250 });
+  });
+
+  it('is moving for GLASS_VOLATILE_DRAWS drawn frames after a panel appears, moves or goes, and still after', () => {
+    const { body } = page();
+    const panel = new FakeEl(body, { marked: true, blur: 12, box, display: 'none' });
+    const reg = registry([panel]);
+    const draw = (): void => { reg.scan(); reg.recheck(); reg.markDrawn(); };
+    draw();
+    expect(reg.moving).toBe(false);
+    panel.opts.display = 'block';
+    draw();
+    expect(reg.moving).toBe(true);
+    for (let i = 0; i < GLASS_VOLATILE_DRAWS; i++) draw();
+    expect(reg.moving).toBe(false);
+    panel.opts.box = { ...box, left: 105 };
+    draw();
+    expect(reg.moving).toBe(true);
+    for (let i = 0; i < GLASS_VOLATILE_DRAWS; i++) draw();
+    expect(reg.moving).toBe(false);
+    panel.opts.display = 'none';
+    draw();
+    expect(reg.moving).toBe(true);
   });
 
   it('draws at most GLASS_MAX_RECTS', () => {

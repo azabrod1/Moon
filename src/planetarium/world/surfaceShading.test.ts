@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { paintRing, STRIP_WIDTH } from '../planets/rings';
 import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
@@ -25,6 +27,7 @@ import {
   clearSurfaceAir,
   createSurfaceAirFx,
   seatSurfaceAirRadius,
+  setDevSurfaceAirFade,
   SURFACE_AIR_FADE_S,
   OCEAN_BEAM_CAP,
   OCEAN_BEAM_KNEE,
@@ -73,6 +76,7 @@ import { NIGHT_WEIGHT_ZERO_SIN } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
+import { smootherstep } from '../../shared/math/smoothstep';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
 import { setPerfSwitch } from '../../app/perfSwitches';
 
@@ -907,21 +911,99 @@ describe('the haze fade and the glint cap', () => {
     bindSurfaceAir(air, tables, 1, 1);
     expect(air.uAirDensity.value).toBe(1);
     expect(air.uAirBlend.value).toBe(0);
-    advanceSurfaceAir(air, SURFACE_AIR_FADE_S / 2);
-    expect(air.uAirBlend.value).toBeCloseTo(0.5, 6);
+    // The blend is the eased image of a linear clock: a quarter of the way in
+    // it is smootherstep(1/4), well short of a quarter, and halfway it is half.
+    advanceSurfaceAir(air, SURFACE_AIR_FADE_S / 4);
+    expect(air.uAirBlend.value).toBeCloseTo(smootherstep(0.25), 12);
+    expect(air.uAirBlend.value).toBeLessThan(0.11);
+    advanceSurfaceAir(air, SURFACE_AIR_FADE_S / 4);
+    expect(air.uAirBlend.value).toBeCloseTo(0.5, 12);
     // A rebind every frame, as the mode does, must not restart the fade.
     bindSurfaceAir(air, tables, 1, 1);
-    expect(air.uAirBlend.value).toBeCloseTo(0.5, 6);
+    expect(air.uAirBlend.value).toBeCloseTo(0.5, 12);
     advanceSurfaceAir(air, 10);
     expect(air.uAirBlend.value).toBe(1);
     clearSurfaceAir(air);
     expect(air.uAirBlend.value).toBe(0);
+    // A second switch-on starts the clock from nothing again.
+    bindSurfaceAir(air, tables, 1, 1);
+    advanceSurfaceAir(air, SURFACE_AIR_FADE_S / 4);
+    expect(air.uAirBlend.value).toBeCloseTo(smootherstep(0.25), 12);
+    clearSurfaceAir(air);
     // The A/B pin finishes the fade at once — but only for air that is on.
     settleSurfaceAir(air);
     expect(air.uAirBlend.value).toBe(0);
     bindSurfaceAir(air, tables, 1, 1);
     settleSurfaceAir(air);
     expect(air.uAirBlend.value).toBe(1);
+    advanceSurfaceAir(air, 0.016);
+    expect(air.uAirBlend.value).toBe(1);
+  });
+
+  it('takes as long over the switch-on as it says, eased at both ends, frame by frame', () => {
+    expect(SURFACE_AIR_FADE_S).toBe(4);
+    const air = createSurfaceAirFx();
+    const tables = {
+      transmittance: air.uTransmittance.value,
+      scattering: air.uScattering.value,
+      irradiance: air.uIrradiance.value,
+      params: atmosphereParams('Earth'),
+    } as Parameters<typeof bindSurfaceAir>[1];
+    bindSurfaceAir(air, tables, 1, 1);
+    const dt = 1 / 120;
+    const blends: number[] = [];
+    for (let i = 0; i < 4 * 120 + 5; i++) {
+      advanceSurfaceAir(air, dt);
+      blends.push(air.uAirBlend.value as number);
+    }
+    // Monotone, and done exactly at the fade's length (to a frame's rounding).
+    for (let i = 1; i < blends.length; i++) expect(blends[i]).toBeGreaterThanOrEqual(blends[i - 1]);
+    expect(blends[4 * 120 - 3]).toBeLessThan(1);
+    expect(blends[4 * 120 + 1]).toBe(1);
+    // The first and the last frame of the fade move it by next to nothing —
+    // no step in the colour where the fade starts or ends — and the middle
+    // frame by the most.
+    const steps = blends.slice(1).map((b, i) => b - blends[i]);
+    const middle = steps[2 * 120];
+    expect(blends[0]).toBeLessThan(1e-5);
+    expect(steps[0]).toBeLessThan(middle / 1000);
+    expect(steps[4 * 120 - 2]).toBeLessThan(middle / 1000);
+  });
+
+  it.runIf(import.meta.env.DEV)('runs the switch-on over the DEV ?airfade length, and 0 is one frame', () => {
+    const air = createSurfaceAirFx();
+    const tables = {
+      transmittance: air.uTransmittance.value,
+      scattering: air.uScattering.value,
+      irradiance: air.uIrradiance.value,
+      params: atmosphereParams('Earth'),
+    } as Parameters<typeof bindSurfaceAir>[1];
+    try {
+      expect(setDevSurfaceAirFade(8)).toBe(8);
+      bindSurfaceAir(air, tables, 1, 1);
+      advanceSurfaceAir(air, 4);
+      expect(air.uAirBlend.value).toBeCloseTo(0.5, 12);
+      clearSurfaceAir(air);
+      expect(setDevSurfaceAirFade(0)).toBe(0);
+      bindSurfaceAir(air, tables, 1, 1);
+      advanceSurfaceAir(air, 0.001);
+      expect(air.uAirBlend.value).toBe(1);
+    } finally {
+      expect(setDevSurfaceAirFade(null)).toBe(SURFACE_AIR_FADE_S);
+    }
+  });
+
+  it('brings the Moon in on the air\'s blend, through its one shared uniform', () => {
+    // Scaled where it is written, so every reader of the uniform — the
+    // ground, the haze's Moon column, the shell — takes it with no multiply of
+    // its own and is exactly the computed value once the blend is 1. The Moon
+    // is written after the frame's fade step, and a settling dev pin writes it
+    // again, so neither leaves a frame of last frame's blend on it.
+    const mode = readFileSync(fileURLToPath(new URL('../PlanetariumMode.ts', import.meta.url)), 'utf8');
+    expect(mode).toContain('const blend = air.uAirBlend.value as number;\n'
+      + '    irradiance.set(value[0] * blend, value[1] * blend, value[2] * blend);');
+    expect(mode).toMatch(/advanceSurfaceAir\(air, [^\n]*\);\n {4}this\.syncMoonlight\(planet\);/);
+    expect(mode).toContain('if (settle && (planet.fx?.air?.uAirDensity.value ?? 0) > 0) this.syncMoonlight(planet);');
   });
 
   it('seats the body radius on the air the moment it exists, so the deck\'s bump reads it before any tables bind', () => {
@@ -1763,9 +1845,9 @@ describe('the cloud deck lit as a cloud (CLOUD_LIGHT, on unless ?cloudlight=0)',
     expect(block).toContain(`outgoingLight += ${wrap}\n`
       + '        * (cloudGeoIrradiance * BRDF_Lambert( material.diffuseContribution ) - reflectedLight.directDiffuse);');
     // The sky by day, only with tables, joined to the night ambient along the
-    // night weight's complement.
+    // night weight's complement, and arriving on the air's blend.
     expect(block).toContain('if (uAirDensity > 0.0) {');
-    expect(block).toContain(`* (${sky} * (1.0 - nightWeight(skyMuS)));`);
+    expect(block).toContain(`* (${sky} * (1.0 - nightWeight(skyMuS)) * uAirBlend);`);
     expect(block).toContain('getIrradiance(uIrradiance, skyR, skyMuS) * uAirlightScale * uSolarIrradiance');
     // Light only: nothing here touches the alpha, which is the deck's coverage.
     expect(block).not.toMatch(/\.a\s*[*+-]?=|gl_FragColor/);
@@ -1789,7 +1871,8 @@ describe('the cloud deck lit as a cloud (CLOUD_LIGHT, on unless ?cloudlight=0)',
     const on = resolveDefine(fragmentOf(globe), 'CLOUD_SHADOW', true);
     const fill = import.meta.env.DEV ? 'uCloudShadowSkyFill' : CLOUD_SHADOW_SKY_FILL.toFixed(4);
     expect(on).toContain(`if (${import.meta.env.DEV ? 'uCloudShadowSkyFill > 0.0 && ' : ''}uAirDensity > 0.0) {`);
-    expect(on).toContain(`* (cloudShade * ${fill} * (1.0 - nightWeight(fillMuS)));`);
+    // The sky's light, so it arrives on the air's blend with the rest of it.
+    expect(on).toContain(`* (cloudShade * ${fill} * (1.0 - nightWeight(fillMuS)) * uAirBlend);`);
     // After the diffuse cut that makes the shade, before the eclipse factor.
     const at = on.indexOf('float fillMuS');
     expect(at).toBeGreaterThan(on.indexOf('float cloudShade = pow('));

@@ -112,37 +112,37 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '8e5be46c37eb278c1d05c2657ef68d6d0e39b0422a680a8683db9d4dc8940810';
-const PROD_FRAGMENT_HASH = '25349f00c4e612ef89ccb71966691bd6427c5b4f34870e8243960aef3a073750';
+const DEV_FRAGMENT_HASH = 'fe391a12b6ca02a79901708afdc7f8524fe5e21376bcbd0b0f4eceb502b49b74';
+const PROD_FRAGMENT_HASH = '8104990d89d4dd87d8ce000ad042bd6ffb4040e758928d159beabfcc9d479f98';
 /** The same two texts with the lobe along the wind's define OFF
  *  (`?seaaxis=0`, world/surfaceShading SEA_AXIS), resolved as the
  *  preprocessor resolves it: the hashes the shipped texts carried before the
  *  lobe had an axis, unchanged. Every pin below is of a text with the define
  *  resolved off as well, so each holds the text it held before. */
-const SEA_AXIS_OFF_DEV_FRAGMENT_HASH = '519ed718ec719260fe0bc47e3bdf48ee6d217e8a30667d343ea130b695432321';
-const SEA_AXIS_OFF_PROD_FRAGMENT_HASH = '4010b98ee9dc8257265cfdf911dcc863216fc31b8bf31952191e08ec3242ccfc';
+const SEA_AXIS_OFF_DEV_FRAGMENT_HASH = '0180f9b5193796777dfb52e045b0396e36eb2eba6450273a958019b1369e14dd';
+const SEA_AXIS_OFF_PROD_FRAGMENT_HASH = '3e8580f59dc98df2b76989473f329714b18aab445448bdc96bd70d17f2e1beaf';
 const PROD_NIGHT_FRAGMENT_HASH = '153b8fc4a780eb6cd90703dc46a9ac081f6242161bf95d4af6e8f1ea02adbfd8';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = 'db3e630e2a527115f4054b355e4d061e6e9304c4d40c3059556f0e020cc3d590';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '24a06488f8d562a855b5b3d498423939111f328bc3a58409162b5b0cbc29a8dc';
+const FIELD_OFF_DEV_FRAGMENT_HASH = 'bce1f9958d37002b9cb44240fd44b768c2c50dba242e64878654d13634d71aa3';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '4f7b677194669c4070a763bb5799f59c7e33cf90951ae6338838b5ee359b0ba7';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all, and
  *  the later single-Mie colour's and lobe along the wind's defines resolved
  *  off. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '10b1d62670d2c93ec48e47912ca84efddda14f84c032affe7a6cbaf5a2c6cb01';
+const PRE_FIELD_PROD_FRAGMENT_HASH = '2f5d100defff8f8d23e050fe8e5f26c16085fc0993afcb7fe2975f2464cd8053';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = 'aed79e611468b52dd1ef5eda429bde0a9c077b324b2a488033b1b5f1bf2bfaf4';
-const OFF_PROD_FRAGMENT_HASH = 'c20863dfc078a3cb6429db0aa3067146dd2cb6599cba7de712d76294c194c2b4';
+const OFF_DEV_FRAGMENT_HASH = '49473393cf7847a1825b98ba3ad69ea663864b7c4fcddb87bf5e5b0420010f28';
+const OFF_PROD_FRAGMENT_HASH = '47f3689d66891d7f1ed48a8f9cc8b8e2f4a0f505aa6a974c526d432aa35fdf57';
 /** The injected surface text and the LUT shell's with the single-Mie colour's
  *  define OFF (`?mieexact=0`), resolved as the preprocessor resolves it: the
  *  hashes these texts carried before the colour table existed, unchanged. */
-const MIE_OFF_DEV_FRAGMENT_HASH = '02de4679891b3031b123fe9273496b31badb0df549380e9c077fc6d90ee93e73';
-const MIE_OFF_PROD_FRAGMENT_HASH = '61d15f57db0cf6818bad7d3b1789a23be580cba36720a9d4574d5ddd459daf4d';
+const MIE_OFF_DEV_FRAGMENT_HASH = '95cc6691817ca87ec6f3347858634be6111641462e863b56471e6ff9c7243520';
+const MIE_OFF_PROD_FRAGMENT_HASH = '5901ab322e1ace89cdb9a80b34f94f64461d478aa4ed244abdff77caf475301d';
 const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
 /** A skeleton that also carries the colour map's and the roughness map's
  *  chunks, so the sea's remap (WATER_GLOSS_GLSL, spliced at
@@ -153,14 +153,14 @@ const SEA_SKELETON = '#include <common>\nvoid main() {\n#include <map_fragment>\
 /** The text through SEA_SKELETON with the whitecaps' define OFF, resolved as
  *  the preprocessor resolves it: the hashes the same skeleton gave at
  *  2eac15ab, before the whitecaps existed, unchanged. */
-const WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH = '676df203d3b50c6c80691203ff6d4762de70a60926cd1699d590ce67efb2d55e';
-const WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH = '719870523f3979b81e5682cfb6a2a4a61fc151ab8e0ccc7776f68864a2d6b6d1';
+const WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH = 'cd3ce71f23d6e6173d1b51a07d2a4fe9f8c9f8016a338a896bea4c9c7c963c98';
+const WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH = '0679e018c4084c44c7ce3e82f5328371f2f90c65513951f1f9770f0e9ea0eb98';
 /** The same text with the whitecaps OFF and the lobe along the wind ON: the
  *  base plus the SEA_AXIS read of the wind's axis beside its speed, taken
  *  when the two merged (2026-10-09), so a later edit to the sea chunk is seen
  *  on the default build and not only on the base's. */
-const WHITECAPS_OFF_SEA_AXIS_ON_DEV_FRAGMENT_HASH = '56a71d3b8e0064bc959672f1a52557a505c0363e0be700494300b1541819b118';
-const WHITECAPS_OFF_SEA_AXIS_ON_PROD_FRAGMENT_HASH = '694bdfaacc1ca2dde8df0ecad996691d6632a357a21d537c3aa633fc62a6ab2e';
+const WHITECAPS_OFF_SEA_AXIS_ON_DEV_FRAGMENT_HASH = '427a01367af9c86a4077e1096a1accf9faf94d884559a47f49574a393e07cd4f';
+const WHITECAPS_OFF_SEA_AXIS_ON_PROD_FRAGMENT_HASH = 'dd2b405a7bdff4eecf52636279f54535ed08d055e20f078d1b716086e1feba59';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.

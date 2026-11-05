@@ -69,6 +69,7 @@ import {
   devGlintUniforms,
   nightLiftUniform,
   setDevOceanRoughness,
+  setDevSurfaceAirFade,
   setDevSurfaceHaze,
   SURFACE_HAZE_CLEAR_VIEW,
   rebindSeaWindMap,
@@ -4312,6 +4313,13 @@ function installDevHooks() {
     // An empty value is a mistyped link, not a request for zero.
     const haze = new URLSearchParams(location.search).get('haze');
     if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
+    // `?airfade=8` runs the air's arrival when a body's tables bind over that
+    // many seconds instead of SURFACE_AIR_FADE_S, and `?airfade=0` puts all of
+    // it on in one frame: the switch-on slowed down to watch, or with no fade
+    // to compare against. DEV only; an empty value is a mistyped link and
+    // changes nothing.
+    const airFade = new URLSearchParams(location.search).get('airfade');
+    if (airFade && Number.isFinite(Number(airFade))) setDevSurfaceAirFade(Number(airFade));
     // `?nightexposure=0.1,0.35` sets the night side's exposure curve for the
     // session, a third and a fourth number its speeds toward the day and back
     // toward the night, and a fifth its ceiling

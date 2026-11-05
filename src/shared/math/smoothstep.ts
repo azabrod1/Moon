@@ -21,3 +21,19 @@ export function smoothstepEdges(edge0: number, edge1: number, x: number): number
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return smoothstepUnclamped(t);
 }
+
+/**
+ * Perlin's smootherstep, `t³(6t² − 15t + 10)`, clamped to [0, 1]: an ease
+ * whose first AND second derivatives are zero at both ends, so something
+ * driven by it starts and stops without a visible kick in its rate as well as
+ * in its value. The ends are returned as the exact constants 0 and 1, so a
+ * caller that multiplies by the result at either end multiplies by exactly
+ * that number — and the polynomial is held to [0, 1] as well, because in
+ * doubles it rounds to 1.0000000000000002 a hair short of t = 1, and a fade
+ * that stops there is not exactly on.
+ */
+export function smootherstep(t: number): number {
+  if (!(t > 0)) return 0;
+  if (t >= 1) return 1;
+  return Math.min(1, t * t * t * (t * (6 * t - 15) + 10));
+}

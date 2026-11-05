@@ -28,7 +28,10 @@
  *    `readRenderTargetPixels`: that call ignores its layer argument for a 3D
  *    target, and its readability gate can refuse a perfectly healthy device.
  *    Fail-closed — anything non-finite, or zero where the reference says it must
- *    not be, marks the tier unavailable for the session.
+ *    not be, marks the tier unavailable for the session. The readback goes
+ *    through a pixel-pack buffer and a fence polled a frame at a time, never a
+ *    synchronous read: that one waits out the bake's last slice on the frame
+ *    the tier goes live (`readSamples`).
  *
  * Four tables stay resident per body: the transmittance (as optical depth),
  * the sky's irradiance, the scattering table (Rayleigh and every higher order
@@ -1758,7 +1761,17 @@ export class AtmosphereLut {
         irradiance: targets.irradiance.texture,
         mieColour: targets.mieColour.texture,
       };
-      const validated = this.validate(params, targets);
+      // The scratch is done with: validation reads only the resident tables,
+      // and GL holds a deleted target until the draws queued against it have
+      // run, so the bake's peak memory goes now rather than after the wait.
+      this.disposeScratch(targets);
+      // The readback spans a few frames; a bake cut short meanwhile is an
+      // abort, not a device that failed its check.
+      const validated = await this.validate(params, targets, generation);
+      if (this.cutShort(generation)) {
+        record(false, true);
+        return false;
+      }
       record(validated, false);
       if (!validated) {
         // Fail-closed: a table that cannot be read back is a table that cannot
@@ -1768,8 +1781,7 @@ export class AtmosphereLut {
         this.capable = false;
         return false;
       }
-      // Only the scratch goes; the four resident tables live on in `tables`.
-      this.disposeScratch(targets);
+      // The four resident tables live on in `tables` (the scratch went above).
       this.ready.set(body, tables);
       this.residentTargets.set(body, residentTargetsOf(targets));
       targets = null;
@@ -1781,7 +1793,7 @@ export class AtmosphereLut {
       // A draw into a context that has just gone throws out of three before the
       // lost-context event is dispatched, and that throw says nothing about the
       // device — only a failure under a live context marks it incapable.
-      const cutShort = this.contextLost || this.disposed || generation !== this.generation;
+      const cutShort = this.cutShort(generation);
       debugWarn('Atmosphere LUT bake failed; staying on the analytic tier',
         { body, cutShort, err: String(err) });
       record(false, cutShort);
@@ -2338,92 +2350,123 @@ export class AtmosphereLut {
    * channels is what makes this a test: "blue exceeds red" is also true of a
    * table where two channels have clipped to the probe's ceiling, and of most
    * ways a parameter can be wrong.
+   *
+   * The three references are integrated first, because each readback is ranged
+   * on its own reference (validationProbeScale); the three samples are then read
+   * back together without a stall (readSamples) and checked in order. Resolves
+   * false, never throws: an error anywhere is a table that cannot be trusted.
+   * The caller asks whether the bake was cut short before it reads a false as
+   * a failed device.
    */
-  private validate(params: AtmosphereParams, t: BakeTargets): boolean {
-    const check = (
-      label: string,
-      read: readonly number[],
-      expected: readonly number[],
-      band: { min: number; max: number },
-    ): boolean => {
-      for (let c = 0; c < expected.length; c++) {
-        const v = read[c];
-        const ok = Number.isFinite(v) && v >= expected[c] * band.min && v <= expected[c] * band.max;
-        if (!ok) {
-          debugWarn('Atmosphere LUT sample outside its band', {
-            label, channel: c, read: v, expected: expected[c], band,
-          });
-          return false;
-        }
-      }
-      return true;
-    };
+  private async validate(
+    params: AtmosphereParams,
+    t: BakeTargets,
+    generation: number,
+  ): Promise<boolean> {
     try {
-      // Straight up from the ground: a real optical depth, and one the
-      // reference integrates in well under a millisecond.
-      const uv = transmittanceUvFromRMu(params, params.bottomRadius, 1, this.sizes);
-      const tau = this.readSample({
-        mode: 0, uv, params, scale: OPTICAL_DEPTH_PROBE_SCALE,
-        transmittance: t.transmittance.texture,
-      });
-      const tauRef = opticalDepthToTopBoundary(
-        params, params.bottomRadius, 1, VALIDATION_TRANSMITTANCE_SAMPLES,
-      );
-      if (!check('opticalDepth', tau, tauRef, OPTICAL_DEPTH_VALIDATION_BAND)) return false;
-
-      // A sunlit sky ray a fifth of the way up the shell. The reference comes
-      // first: the readback is ranged on it (validationProbeScale).
-      const s = SCATTERING_VALIDATION_SAMPLE;
-      const r = params.bottomRadius
-        + s.altitudeFraction * (params.topRadius - params.bottomRadius);
-      const scRef = computeSingleScattering(
-        params, r, s.mu, s.muS, s.nu, false,
-        VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
-      ).rayleigh;
-      const uvwz = scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, this.sizes);
-      const coords = scatteringTexture3DCoords(uvwz, this.sizes);
-      const sc = this.readSample({
-        mode: 1,
-        params,
-        scattering: t.scattering.texture,
-        uvw0: coords.uvw0,
-        uvw1: coords.uvw1,
-        nuLerp: coords.lerp,
-        scale: validationProbeScale(scRef),
-      });
-      if (!check('singleScattering', sc, scRef, SCATTERING_VALIDATION_BAND)) return false;
-
-      // Single Mie's green and blue, at a sample of their own: Mie falls off
-      // over about a kilometre, so a few hundredths of the way up the shell it
-      // is already under anything the 8-bit blit or half-float's normals can
-      // hold, and the sample above would read zero here on every device. An
-      // RG texel reads back as (green, blue, 0, 1).
-      const m = MIE_VALIDATION_SAMPLE;
-      const rMie = params.bottomRadius
-        + m.altitudeFraction * (params.topRadius - params.bottomRadius);
-      const mieRef = computeSingleScattering(
-        params, rMie, m.mu, m.muS, m.nu, false,
-        VALIDATION_MIE_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
-      ).mie;
-      const mieColourRef = [mieRef[1], mieRef[2]];
-      const mieCoords = scatteringTexture3DCoords(
-        scatteringUvwzFromRMuMuSNu(params, rMie, m.mu, m.muS, m.nu, false, this.sizes),
-        this.sizes,
-      );
-      const mc = this.readSample({
-        mode: 1,
-        params,
-        scattering: t.mieColour.texture,
-        uvw0: mieCoords.uvw0,
-        uvw1: mieCoords.uvw1,
-        nuLerp: mieCoords.lerp,
-        scale: validationProbeScale(mieColourRef),
-      });
-      return check('singleMieColour', mc, mieColourRef, SCATTERING_VALIDATION_BAND);
+      const plan = this.validationPlan(params, t);
+      const reads = await this.readSamples(plan.map((p) => p.sample), generation);
+      return plan.every((p, i) => validationSampleHolds(p.label, reads[i], p.expected, p.band));
     } catch (err) {
-      debugWarn('Atmosphere LUT validation threw', { err: String(err) });
+      if (!this.cutShort(generation)) debugWarn('Atmosphere LUT validation threw', { err: String(err) });
       return false;
     }
+  }
+
+  /** Whether the bake that started at `generation` has been overtaken: disposed,
+   *  or its context lost. The context is asked directly as well as through the
+   *  flag, because the lost-context event that sets the flag arrives a task
+   *  after the context has gone, and a frame can run in between. */
+  private cutShort(generation: number): boolean {
+    return this.disposed || this.contextLost || generation !== this.generation
+      || (this.renderer.getContext() as WebGL2RenderingContext).isContextLost();
+  }
+
+  /** The three validation samples with their CPU references, in check order. */
+  private validationPlan(params: AtmosphereParams, t: BakeTargets): Array<{
+    label: string;
+    sample: ProbeSample;
+    expected: readonly number[];
+    band: { min: number; max: number };
+  }> {
+    // Straight up from the ground: a real optical depth, and one the
+    // reference integrates in well under a millisecond.
+    const uv = transmittanceUvFromRMu(params, params.bottomRadius, 1, this.sizes);
+    const tauRef = opticalDepthToTopBoundary(
+      params, params.bottomRadius, 1, VALIDATION_TRANSMITTANCE_SAMPLES,
+    );
+
+    // A sunlit sky ray a fifth of the way up the shell. The reference comes
+    // first: the readback is ranged on it (validationProbeScale).
+    const s = SCATTERING_VALIDATION_SAMPLE;
+    const r = params.bottomRadius
+      + s.altitudeFraction * (params.topRadius - params.bottomRadius);
+    const scRef = computeSingleScattering(
+      params, r, s.mu, s.muS, s.nu, false,
+      VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+    ).rayleigh;
+    const coords = scatteringTexture3DCoords(
+      scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, this.sizes),
+      this.sizes,
+    );
+
+    // Single Mie's green and blue, at a sample of their own: Mie falls off
+    // over about a kilometre, so a few hundredths of the way up the shell it
+    // is already under anything the 8-bit blit or half-float's normals can
+    // hold, and the sample above would read zero here on every device. An
+    // RG texel reads back as (green, blue, 0, 1).
+    const m = MIE_VALIDATION_SAMPLE;
+    const rMie = params.bottomRadius
+      + m.altitudeFraction * (params.topRadius - params.bottomRadius);
+    const mieRef = computeSingleScattering(
+      params, rMie, m.mu, m.muS, m.nu, false,
+      VALIDATION_MIE_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+    ).mie;
+    const mieColourRef = [mieRef[1], mieRef[2]];
+    const mieCoords = scatteringTexture3DCoords(
+      scatteringUvwzFromRMuMuSNu(params, rMie, m.mu, m.muS, m.nu, false, this.sizes),
+      this.sizes,
+    );
+
+    return [
+      {
+        label: 'opticalDepth',
+        sample: {
+          mode: 0, uv, params, scale: OPTICAL_DEPTH_PROBE_SCALE,
+          transmittance: t.transmittance.texture,
+        },
+        expected: tauRef,
+        band: OPTICAL_DEPTH_VALIDATION_BAND,
+      },
+      {
+        label: 'singleScattering',
+        sample: {
+          mode: 1,
+          params,
+          scattering: t.scattering.texture,
+          uvw0: coords.uvw0,
+          uvw1: coords.uvw1,
+          nuLerp: coords.lerp,
+          scale: validationProbeScale(scRef),
+        },
+        expected: scRef,
+        band: SCATTERING_VALIDATION_BAND,
+      },
+      {
+        label: 'singleMieColour',
+        sample: {
+          mode: 1,
+          params,
+          scattering: t.mieColour.texture,
+          uvw0: mieCoords.uvw0,
+          uvw1: mieCoords.uvw1,
+          nuLerp: mieCoords.lerp,
+          scale: validationProbeScale(mieColourRef),
+        },
+        expected: mieColourRef,
+        band: SCATTERING_VALIDATION_BAND,
+      },
+    ];
   }
 
   /**
@@ -2431,34 +2474,135 @@ export class AtmosphereLut {
    * A half-float `readRenderTargetPixels` is not an option: it ignores its
    * layer argument on a 3D target, and its readability gate can refuse a device
    * whose tables are perfectly good.
+   *
+   * Synchronous: each read waits for the GPU to finish everything queued before
+   * it, which is a stall on the frame that asks. The DEV readout uses it; the
+   * bake's own validation reads through `readSamples`, which does not wait.
    */
-  readSample(sample: {
-    mode: 0 | 1 | 2 | 3;
-    uv?: { u: number; v: number };
-    transmittance?: THREE.Texture;
-    scattering?: THREE.Texture;
-    irradiance?: THREE.Texture;
-    uvw0?: readonly [number, number, number];
-    uvw1?: readonly [number, number, number];
-    nuLerp?: number;
-    /** The single-Mie colour table, which mode 2 reads beside `scattering`
-     *  where the lookups read the exact colour. Left unbound, the sampler
-     *  reads three's empty 3D texture and the combined Mie comes back red
-     *  alone. */
-    mieColour?: THREE.Texture;
-    /** Modes 2 and 3 evaluate shader code that reads the body's own
-     *  parameters, so they need the same set the bake was given. */
-    params?: AtmosphereParams;
-    nu?: number;
-    r?: number;
-    muS?: number;
-    scale: number;
-  }): [number, number, number, number] {
+  readSample(sample: ProbeSample): [number, number, number, number] {
+    const probe = this.seatProbe(sample);
+    const target = this.probeTarget!;
+    const prevTarget = this.renderer.getRenderTarget();
+    const bytes = [new Uint8Array(PROBE_PASS_BYTES), new Uint8Array(PROBE_PASS_BYTES)];
+    try {
+      for (let b = 0; b < 2; b++) {
+        probe.uniforms.uByte.value = b;
+        this.draw(probe, target);
+        this.renderer.readRenderTargetPixels(target, 0, 0, PROBE_SIZE, PROBE_SIZE, bytes[b]);
+      }
+    } finally {
+      this.renderer.setRenderTarget(prevTarget);
+    }
+    return decodeProbeBytes(bytes[0], bytes[1], sample.scale);
+  }
+
+  /**
+   * Several samples read back without the main thread waiting on the GPU.
+   * Each draws exactly as `readSample` does — the same probe program, the same
+   * two byte passes into the same 4×4 target — but copies its texels into one
+   * pixel-pack buffer at its own offset instead of into script memory, so
+   * nothing waits at the copy. A fence after the last copy is polled once a
+   * frame, and the bytes are fetched once the GPU has passed it.
+   *
+   * Why: the copy into script memory waits for every draw queued ahead of it,
+   * and at the end of a bake that is the last slice of layer draws. Measured on
+   * an M5 Max in Chrome (ANGLE/Metal) at High, at 1.05 Earth radii: the first of
+   * the six synchronous reads waited 6.3-6.8 ms, which made three late frames
+   * in a row just as the tier went live.
+   *
+   * The pack buffer is bound only around each copy and the fetch, and unbound
+   * at once: a pack buffer left bound turns every other `readPixels` in the app
+   * into a copy into that buffer, and they all fail. The poll runs on the
+   * bake's own frames (`nextFrame`), never a timer, which a hidden or headless
+   * page throttles to seconds.
+   *
+   * A fence still unsignalled after READBACK_MAX_FRAMES is read anyway: that
+   * fetch waits, as every read did before, which is a late frame and never a
+   * missing answer. A fence the driver reports as failed throws, which the
+   * validation turns into a failed tier, as it does any other unreadable table.
+   * A bake cut short while waiting (a lost context, a dispose) throws too, and
+   * the caller sees the bake was cut short rather than a device that failed.
+   */
+  private async readSamples(
+    samples: readonly ProbeSample[],
+    generation: number,
+  ): Promise<Array<[number, number, number, number]>> {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    const bytes = new Uint8Array(samples.length * 2 * PROBE_PASS_BYTES);
+    const buffer = gl.createBuffer();
+    if (!buffer) throw new Error('Atmosphere LUT readback: no pixel-pack buffer');
+    let sync: WebGLSync | null = null;
+    try {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes.byteLength, gl.STREAM_READ);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      const prevTarget = this.renderer.getRenderTarget();
+      try {
+        samples.forEach((sample, i) => {
+          const probe = this.seatProbe(sample);
+          const target = this.probeTarget!;
+          for (let b = 0; b < 2; b++) {
+            probe.uniforms.uByte.value = b;
+            this.draw(probe, target);
+            // Reads from the target the draw left bound, as readRenderTargetPixels
+            // does after binding it (RGBA8, unsigned bytes: always readable).
+            this.renderer.setRenderTarget(target);
+            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+            gl.readPixels(
+              0, 0, PROBE_SIZE, PROBE_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, (i * 2 + b) * PROBE_PASS_BYTES,
+            );
+            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+          }
+        });
+      } finally {
+        this.renderer.setRenderTarget(prevTarget);
+      }
+      sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (!sync) throw new Error('Atmosphere LUT readback: no fence');
+      // Hand the fence to the driver now rather than at the frame's own flush,
+      // which a tick that does not draw never makes. Once per bake.
+      gl.flush();
+      for (let frame = 1; ; frame++) {
+        await nextFrame();
+        // Before the status: a wait on a lost context reports WAIT_FAILED,
+        // which must read as an abort, never as a device that failed.
+        if (this.cutShort(generation)) throw new Error('Atmosphere LUT readback cut short');
+        const status = gl.clientWaitSync(sync, 0, 0);
+        if (status === gl.WAIT_FAILED) throw new Error('Atmosphere LUT readback fence failed');
+        if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) break;
+        if (frame >= READBACK_MAX_FRAMES) break;
+      }
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buffer);
+      try {
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, bytes);
+      } finally {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      }
+    } finally {
+      // Only on the context that made them: a context lost and restored while
+      // this waited (a hidden tab) has a new generation and none of these.
+      if (!gl.isContextLost() && (generation === this.generation || this.disposed)) {
+        if (sync) gl.deleteSync(sync);
+        gl.deleteBuffer(buffer);
+      }
+    }
+    return samples.map((sample, i) => {
+      const at = i * 2 * PROBE_PASS_BYTES;
+      return decodeProbeBytes(
+        bytes.subarray(at, at + PROBE_PASS_BYTES),
+        bytes.subarray(at + PROBE_PASS_BYTES, at + 2 * PROBE_PASS_BYTES),
+        sample.scale,
+      );
+    });
+  }
+
+  /** The probe program set up for one sample, its 4×4 target made. */
+  private seatProbe(sample: ProbeSample): THREE.ShaderMaterial {
     this.ensureMaterials();
     const probe = this.materials!.probe;
     if (sample.params) setAtmosphereUniforms(probe, sample.params);
     if (!this.probeTarget) {
-      this.probeTarget = new THREE.WebGLRenderTarget(4, 4, {
+      this.probeTarget = new THREE.WebGLRenderTarget(PROBE_SIZE, PROBE_SIZE, {
         depthBuffer: false,
         stencilBuffer: false,
         samples: 0,
@@ -2481,24 +2625,78 @@ export class AtmosphereLut {
     }
     probe.uniforms.uNuLerp.value = sample.nuLerp ?? 0;
     probe.uniforms.uScale.value = sample.scale;
-
-    const prevTarget = this.renderer.getRenderTarget();
-    const bytes = [new Uint8Array(4 * 16), new Uint8Array(4 * 16)];
-    try {
-      for (let b = 0; b < 2; b++) {
-        probe.uniforms.uByte.value = b;
-        this.draw(probe, this.probeTarget);
-        this.renderer.readRenderTargetPixels(this.probeTarget, 0, 0, 4, 4, bytes[b]);
-      }
-    } finally {
-      this.renderer.setRenderTarget(prevTarget);
-    }
-    const out: [number, number, number, number] = [0, 0, 0, 0];
-    for (let c = 0; c < 4; c++) {
-      out[c] = (bytes[0][c] + bytes[1][c] / 255) / 255 / sample.scale;
-    }
-    return out;
+    return probe;
   }
+}
+
+/** One sample the probe program reads out of a table. */
+export interface ProbeSample {
+  mode: 0 | 1 | 2 | 3;
+  uv?: { u: number; v: number };
+  transmittance?: THREE.Texture;
+  scattering?: THREE.Texture;
+  irradiance?: THREE.Texture;
+  uvw0?: readonly [number, number, number];
+  uvw1?: readonly [number, number, number];
+  nuLerp?: number;
+  /** The single-Mie colour table, which mode 2 reads beside `scattering`
+   *  where the lookups read the exact colour. Left unbound, the sampler
+   *  reads three's empty 3D texture and the combined Mie comes back red
+   *  alone. */
+  mieColour?: THREE.Texture;
+  /** Modes 2 and 3 evaluate shader code that reads the body's own
+   *  parameters, so they need the same set the bake was given. */
+  params?: AtmosphereParams;
+  nu?: number;
+  r?: number;
+  muS?: number;
+  scale: number;
+}
+
+/** Whether every channel of one validation read sits inside its band around
+ *  the reference. Says which channel failed, and by how much, when one does. */
+function validationSampleHolds(
+  label: string,
+  read: readonly number[],
+  expected: readonly number[],
+  band: { min: number; max: number },
+): boolean {
+  for (let c = 0; c < expected.length; c++) {
+    const v = read[c];
+    const ok = Number.isFinite(v) && v >= expected[c] * band.min && v <= expected[c] * band.max;
+    if (!ok) {
+      debugWarn('Atmosphere LUT sample outside its band', {
+        label, channel: c, read: v, expected: expected[c], band,
+      });
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The probe target's side. Every texel holds the same value; the first is read. */
+const PROBE_SIZE = 4;
+/** One byte pass of the probe target: RGBA8 over PROBE_SIZE². */
+const PROBE_PASS_BYTES = 4 * PROBE_SIZE * PROBE_SIZE;
+
+/** How many frames the validation waits for its readback fence before it reads
+ *  anyway. The GPU runs a few frames behind the main thread (4-6 measured at
+ *  1.05 Earth radii on an M5 Max, more on a slow phone), so a second at 60 Hz
+ *  is far past any healthy answer. */
+export const READBACK_MAX_FRAMES = 60;
+
+/** A sample's value from its two byte passes: the high byte, then the low byte
+ *  of the remainder, over the readback scale. The first texel of each. */
+export function decodeProbeBytes(
+  high: Uint8Array,
+  low: Uint8Array,
+  scale: number,
+): [number, number, number, number] {
+  const out: [number, number, number, number] = [0, 0, 0, 0];
+  for (let c = 0; c < 4; c++) {
+    out[c] = (high[c] + low[c] / 255) / 255 / scale;
+  }
+  return out;
 }
 
 /** Optical depth runs to ~22 on a horizon path, which this scale would clip.
@@ -2592,7 +2790,7 @@ export function validationProbeScale(
  *  sample count below. */
 export const OPTICAL_DEPTH_VALIDATION_BAND = { min: 0.85, max: 1.15 } as const;
 
-/** Sample counts for the reference integrals inside `validate()`. This runs on
+/** Sample counts for the reference integrals inside `validationPlan()`. This runs on
  *  the device at the end of every bake, so it is coarser than the reference's
  *  own defaults — still far inside the bands above, and about a millisecond. */
 const VALIDATION_TRANSMITTANCE_SAMPLES = 200;

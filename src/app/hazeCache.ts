@@ -514,6 +514,8 @@ export interface HazeCacheState {
 const _camPos = new THREE.Vector3();
 const _bodyPos = new THREE.Vector3();
 const _layerPos = new THREE.Vector3();
+const _toCentre = new THREE.Vector3();
+const _axis = new THREE.Vector3();
 /** The table uniforms the pass reads off the body's air block each frame. */
 const LOOKUP_KEYS = Object.keys(atmosphereLookupUniforms());
 const _sphere = new THREE.Sphere();
@@ -663,6 +665,18 @@ export class HazeCache {
     _frustum.setFromProjectionMatrix(_viewProj);
     _sphere.set(_bodyPos, radiusAU * Math.max(subject.deckRadius, 1) * 1.02);
     if (!subject.globe.visible || !_frustum.intersectsSphere(_sphere)) { this.state.skipped = 'body not in view'; return; }
+    // A camera close to the body is inside that sphere wherever it looks, so
+    // the frustum test passes looking straight up from the Observatory too:
+    // the ground is in view only if the view's cone (the axis and the far
+    // corner's angle, a degree over) reaches the ground's silhouette cone.
+    _toCentre.subVectors(_bodyPos, _camPos);
+    const centreDist = _toCentre.length();
+    const groundEdge = Math.asin(Math.min((air.uBottomRadius.value as number) * radiusAU / centreDist, 1));
+    _axis.set(0, 0, -1).transformDirection(cam.matrixWorld);
+    const axisAngle = _axis.angleTo(_toCentre);
+    const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    const corner = Math.atan(tanY * Math.hypot(1, cam.aspect)) + THREE.MathUtils.degToRad(1);
+    if (axisAngle > groundEdge + corner) { this.state.skipped = 'ground not in view'; return; }
 
     const { width: W, height: H } = this.viewport();
     const div = this.state.divisor;

@@ -115,8 +115,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '7871f4f79004caa0ccae17c3a384dcf86e58eb4ff5d8fe4f9288f19a74eef631';
-const PROD_FRAGMENT_HASH = '36da92c2b61392af389fe4f524c69a7bfe513ca3a139644513525202d87cad23';
+const DEV_FRAGMENT_HASH = 'c112c0bbcee2a7f2000d77fa02d03cbdd8106a97b142617881a2af10f39b3766';
+const PROD_FRAGMENT_HASH = 'b49d14298535a6ed6e6ca9fa520132bad8ea5b219c8aec992aaea32a2ea1121f';
 /** The same two texts with the haze cache's define OFF (`?hazecache=0`,
  *  app/hazeCache.ts), resolved as the preprocessor resolves it: the hashes the
  *  shipped texts carried before the cache existed, unchanged. Every pin below
@@ -238,32 +238,37 @@ describe('the injected surface shader', () => {
     expect(parseHazeCacheParam('?hazecache=0')).toBe(false);
   });
 
-  it('reads the Sun\'s in-scatter from the haze cache only where it is trusted, and exactly otherwise', () => {
+  it('reads the haze from the cache only where it is trusted, and exactly otherwise', () => {
     const glsl = resolveDefine(compile(augmented('earth')).fragmentShader, 'HAZE_CACHE', true);
-    // The aerial block takes the Sun's in-scatter from the cache's function and
-    // scales it into the scene's light exactly as before.
-    expect(glsl).toMatch(/vec3 airS = hazeSunInscatter\(seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/);
-    const fn = glsl.slice(glsl.indexOf('vec3 hazeSunInscatter('), glsl.indexOf('\n}\n', glsl.indexOf('vec3 hazeSunInscatter(')));
-    // One fetch, explicit level 0, behind the layer's own switch.
-    expect(fn).toContain('if (uHazeOn > 0.0) {');
-    expect(fn).toContain('textureLod(uHazeSun, uv, 0.0)');
-    // The exact rules, on the fragment's own segment: the ground half of the
-    // table, grazing, the single-Mie cut-off with its margin, and the alpha.
-    expect(fn).toContain('a = hazeExactOnly(seg) ? 0.0 : cached.a;');
-    // One call site of the exact lookup in the shipped text, so the program
-    // holds one copy of it; the development probes are their own define.
-    const shipped = resolveDefine(fn, 'HAZE_PROBE', false);
-    expect(shipped.match(/aerialInscatter\(/g)).toHaveLength(1);
+    // The aerial block takes all three table quantities through one read and
+    // scales them into the scene's light exactly as before.
+    expect(glsl).toContain('HazeRead haze = hazeRead(seg, moonNight > 0.0 && uMoonIrradiance.g > 0.0);');
+    expect(glsl).toContain('vec3 airT = hazeTransmittance(haze);');
+    expect(glsl).toMatch(/vec3 airS = hazeSunInscatter\(haze, seg\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/);
+    expect(glsl).toMatch(/airS \+= hazeMoonInscatter\(haze, seg\)\s*\n\s*\* uMoonIrradiance \* moonNight;/);
+    // The cached transmittance is the one that dims the glint.
+    expect(glsl).toContain('seaGlint = mix(seaGlint, seaGlint * airT, airWeight);');
+    const shipped = resolveDefine(glsl, 'HAZE_PROBE', false);
+    const read = shipped.slice(shipped.indexOf('HazeRead hazeRead('), shipped.indexOf('\n}\n', shipped.indexOf('HazeRead hazeRead(')));
+    // One fetch per quantity, explicit level 0, behind the layer's own switch,
+    // each block's read clamped to its own texel centres.
+    expect(read).toContain('if (uHazeOn > 0.0) {');
+    expect(read).toContain('vec2 at = vec2(clamp(uv.x * uHazeAtlas.x, 0.5, uHazeAtlas.x - 0.5) / uHazeAtlas.y, uv.y);');
+    expect(read.match(/textureLod\(uHazeSun, /g)).toHaveLength(3);
+    // The exact rules, on the fragment's own segment, the Moon's cut-off where
+    // the Moon lights it; the exact transmittance wherever a < 1.
+    expect(read).toContain('h.a = hazeExactOnly(seg, moonOn) ? 0.0 : sunA.a;');
+    expect(read).toContain('if (h.a < 1.0) h.tExact = aerialTransmittance(uTransmittance, seg);');
+    expect(shipped).toContain('return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg.muS)\n      || (moonOn && hazeMieBand(hazeMoonMuS(seg)));');
+    expect(shipped).toContain('return muS >= -uHazeExact.y && muS <= 0.01 + uHazeExact.y;');
+    expect(shipped).toContain('return 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);');
+    expect(shipped).toContain('return h.a >= 1.0 ? h.t : h.a > 0.0 ? mix(h.tExact, h.t, h.a) : h.tExact;');
+    // Each in-scatter has one exact call site, reading the exact transmittance
+    // (the third match is the lookup's own definition).
+    expect(shipped.match(/aerialInscatter\(/g)).toHaveLength(3);
+    expect(shipped).toContain('vec3 exact = aerialInscatter(uScattering, seg, h.tExact);');
+    expect(shipped).toContain('vec3 exact = aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), h.tExact);');
     expect(augmented('earth').defines?.HAZE_PROBE).toBeUndefined();
-    expect(glsl).toContain('return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg);');
-    expect(glsl).toContain('return seg.muS >= -uHazeExact.y && seg.muS <= 0.01 + uHazeExact.y;');
-    expect(glsl).toContain('return 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);');
-    expect(fn).toContain('if (a >= 1.0) return cached.rgb;');
-    expect(fn).toContain('return a > 0.0 ? mix(exact, cached.rgb, a) : exact;');
-    // The transmittance and the Moon stay per fragment: still one traversal,
-    // and the Moon's lookup is the block's own.
-    expect(glsl).toContain('vec3 airT = aerialTransmittance(uTransmittance, seg);');
-    expect(glsl).toContain('aerialForLight(seg, normalize(uMoonDirWorld))');
     // The deck reads its own layer under the same names.
     const deck = augmented('cloud');
     const fx = surfaceShadingArgsOf(deck)!.fx;

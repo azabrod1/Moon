@@ -1,72 +1,93 @@
 /**
- * Earth's sunlit haze, evaluated once per small block of the screen instead of
- * once per surface fragment.
+ * Earth's haze, its table lookups evaluated once per small block of the screen
+ * instead of once per surface fragment.
  *
- * **Why.** Every fragment of Earth's ground and cloud deck adds the light the
- * air between it and the camera scatters toward the camera (world/
- * surfaceShading, "Aerial perspective, last"). The Sun's share of that light is
- * the frame's single most expensive term up close: eight dependent fetches
- * from the 3D scattering tables per fragment — two ends of the segment, two nu
- * slabs each, and the single-Mie colour beside each — where everything else in
- * the block is two 2D fetches. Measured on an M5 Max (Chromium, ANGLE/Metal,
- * High) the block costs about 0.9 ms of a frame at the postcard pose and 1.1 ms
- * straight down from 1.05 R, which is the difference between that frame
- * fitting a 120 Hz refresh and missing it. The light itself changes slowly
- * across the screen: it is the integral along a ray of a few kilometres of
- * scale height, and neighbouring rays a few pixels apart cross nearly the same
- * air.
+ * **Why.** Every fragment of Earth's ground and cloud deck is dimmed by the
+ * air between it and the camera and has that air's own light added (world/
+ * surfaceShading, "Aerial perspective, last"). That block is the frame's
+ * single most expensive term up close: two 2D fetches for the transmittance
+ * and eight dependent fetches from the 3D scattering tables for each light's
+ * in-scatter — two ends of the segment, two nu slabs each, and the single-Mie
+ * colour beside each — the Sun's always, the Moon's again on the night side.
+ * Measured on an M5 Max (Chromium, ANGLE/Metal, High) the block costs about
+ * 0.9 ms of a frame at the postcard pose and 1.1 ms straight down from 1.05 R,
+ * which is the difference between that frame fitting a 120 Hz refresh and
+ * missing it. The air itself changes slowly across the screen: each quantity
+ * is an integral along a ray through a few kilometres of scale height, and
+ * neighbouring rays a few pixels apart cross nearly the same air.
  *
- * **What is cached.** The Sun's in-scatter alone, at one unit of solar
- * irradiance, for each of the two layers the surfaces end their segments at —
- * the ground at the body's radius and the cloud deck at its stated altitude
- * (AIR_LOOKUP_RADIUS) — on a grid of one texel per `HAZE_CACHE_DIVISOR` ×
- * `HAZE_CACHE_DIVISOR` scene pixels, rebuilt every frame from nothing (no
- * history, so nothing can lag or smear). Each texel runs the surfaces' own
- * GLSL (`aerialSegment`, `aerialTransmittance`, `aerialInscatter`) on the
- * segment from the camera to where the ray through the texel's centre first
- * meets the layer's sphere. A surface fragment reads it with one bilinear
- * fetch. Everything else in the block stays per fragment and exact: the
- * segment, its transmittance (which also dims the sea's glint and is the only
- * term Earth's night-lights shell reads), the Moon's in-scatter, the haze
- * weight, the loading fade, the cloud shadow's share of the air, the eclipse
- * and the bridge to the scene's Sun. Earth only: every other body with tables
- * keeps its exact per-fragment haze, because Earth is where the cost is and a
- * body that is not cached cannot be moved by the cache.
+ * **What is cached.** The three table quantities of that block, at one unit
+ * of irradiance — the segment's transmittance (a colour), the Sun's
+ * in-scatter and the Moon's — for each of the two layers the surfaces end
+ * their segments at — the ground at the body's radius and the cloud deck at
+ * its stated altitude (AIR_LOOKUP_RADIUS) — on a grid of one cell per
+ * `HAZE_CACHE_DIVISOR` × `HAZE_CACHE_DIVISOR` scene pixels, rebuilt every frame
+ * from nothing (no history, so nothing can lag or smear). Each cell runs the
+ * surfaces' own GLSL (`aerialSegment`, `aerialTransmittance`,
+ * `aerialInscatter`, `aerialForLight`) on the segment from the camera to where
+ * the ray through the cell's centre first meets the layer's sphere. Everything
+ * else in the block stays per fragment and exact: the segment, the haze
+ * weight, the loading fade, the cloud shadow's share of the air, the eclipse,
+ * the Moon's own weight and irradiance, and the bridge to the scene's Sun.
+ * Earth's night-lights shell is its own material and stays exact. Earth only:
+ * every other body with tables keeps its exact per-fragment haze, because
+ * Earth is where the cost is and a body that is not cached cannot be moved by
+ * the cache.
+ *
+ * **The atlas.** A surface material may bind one more sampler and no more
+ * (the census holds the busiest program at 15 of 16 units), so each layer's
+ * three quantities share one RGBA16F texture: three blocks of the cache's
+ * width side by side, Sun's in-scatter with the alpha, then transmittance,
+ * then the Moon's in-scatter, a guard column between blocks. A surface reads
+ * each block with the same sampler at its own offset, its coordinate clamped
+ * to that block's texel centres, so a bilinear footprint never reaches across
+ * a block's edge — the guard is only a margin behind that clamp. The pass
+ * draws one quad per layer over the whole atlas: each texel finds its block
+ * from its column, evaluates its cell's segment once and only its own
+ * block's quantity. The transmittance is evaluated in all three blocks,
+ * because both in-scatters are near minus far carried back through it; that
+ * is two 2D fetches each. The Moon's block is skipped while no moonlight is
+ * bound, and in any cell whose ground point has the Sun too high for a
+ * fragment near it to take moonlight (HAZE_MOON_MARGIN_SIN).
  *
  * **Where the cache is not trusted.** The cached value is a different segment
  * from the fragment's own: the mesh is a polyhedron and the cache ends on the
- * true sphere, and between texel centres the value is interpolated. Both are
- * small where the light varies slowly and wrong where it does not, so a
- * fragment evaluates the Sun's in-scatter exactly, as it did before the cache
- * existed, when ANY of these holds:
+ * true sphere, and between cell centres the value is interpolated. Both are
+ * small where the air varies slowly and wrong where it does not, so a
+ * fragment evaluates all three exactly, as it did before the cache existed,
+ * when ANY of these holds:
  *
  *   - its segment does not reach the ground (the other half of the folded
  *     table, and the thin ring of deck outside the ground's silhouette);
  *   - it is seen within `HAZE_EXACT_GRAZING` of grazing (the haze weight's own
  *     grazing measure, at the segment's end): the limb, where the column
- *     changes fastest and a bilinear footprint of 8 or 16 pixels can reach
- *     across the silhouette;
- *   - its segment-entry Sun cosine lies within one cache texel's angle of the
- *     interval `0 … 0.01` over which `aerialInscatter` switches single Mie off
- *     below the horizon — a cut 0.57 degrees wide that interpolation would
- *     smear by a texel;
+ *     changes fastest and a footprint of 8 or 16 pixels can reach across the
+ *     silhouette;
+ *   - its segment-entry Sun cosine — or, where the Moon lights it, the Moon's
+ *     — lies within one cache texel's angle of the interval `0 … 0.01` over
+ *     which `aerialInscatter` switches single Mie off below the horizon, a cut
+ *     0.57 degrees wide that interpolation would smear by a texel;
  *   - the footprint's alpha says so (below).
  *
- * **The alpha contract.** Each texel's alpha is computed in the pass from the
- * geometry alone, no table fetch: the texel and its eight neighbours each cast
- * a ray through their centres, and the texel is trusted only if all nine reach
- * the ground. A trusted texel's alpha is its distance from the ground's
+ * **The alpha contract.** It lives in the Sun's block and decides all three
+ * reads at that coordinate. Each texel's alpha is computed in the pass from
+ * the geometry alone, no table fetch: the cell and its eight neighbours each
+ * cast a ray through their centres, and the cell is trusted only if all nine
+ * reach the ground. A trusted cell's alpha is its distance from the ground's
  * projected silhouette, in cache texels (the angle between its ray and the
  * body's centre against the silhouette cone `asin(R/|camera|)`, times the
  * scene camera's focal length in texels), mapped `(distance − 1) / 3` onto
- * 0 … 1; an untrusted one's is 0. Because the flag is dilated by one texel,
- * any 2 × 2 footprint that touches a texel whose own ray misses the ground
- * reads alpha exactly 0, with no neighbour reads in the surface shader. The
- * surface then takes: alpha 0 → exact; alpha 1 → the cache; in between →
- * exact and cache mixed by alpha, which is the band from about one to four
- * texels inside the silhouette. A texel whose own ray misses the ground stores
- * zero: every footprint that could weight it reads alpha 0 and takes the exact
- * branch, which never reads the cached colour, so the value is never used.
+ * 0 … 1; an untrusted one's is 0. Because the flag is dilated by one cell, any
+ * 2 × 2 footprint that touches a cell whose own ray misses the ground reads
+ * alpha exactly 0, with no neighbour reads in the surface shader. The surface
+ * then takes: alpha 0 → exact; alpha 1 → the cache; in between → exact and
+ * cache mixed by alpha, which is the band from about one to four texels inside
+ * the silhouette. The exact transmittance is evaluated wherever the alpha is
+ * below 1, because every exact term is carried back through it. A cell whose
+ * own ray misses the ground stores zero: every footprint that could weight it
+ * reads alpha 0 and takes the exact branch, so the value is never read. The
+ * cached transmittance dims the sea's glint where the fragment is on the
+ * cache, exactly as the exact one does elsewhere.
  *
  * **The pass.** A composer pass right before the scene's RenderPass and one
  * right after it (main.ts buildComposer, the planetarium's composer only).
@@ -110,10 +131,19 @@ import { perfSwitchOn } from './perfSwitches';
 /** Scene pixels per cache texel, each way. */
 export const HAZE_CACHE_DIVISOR = 4;
 /** The haze weight's grazing measure (1 − cos of the view angle at the
- *  segment's end) from which a fragment always evaluates the Sun's in-scatter
- *  exactly: about 78 degrees from straight down, the outer couple of percent
- *  of a disc's radius seen from afar. */
-export const HAZE_EXACT_GRAZING = 0.8;
+ *  segment's end) from which a fragment always evaluates the haze exactly:
+ *  about 72.5 degrees from straight down, the outer 5 % of a disc's radius
+ *  seen from afar. Measured, not chosen: at 0.8 the deck's cached
+ *  transmittance and light, interpolated across the last few texels where the
+ *  column lengthens fastest, left the twilight band of a far disc a step
+ *  darker in one channel in eight; at 0.7 that band is within the gate. */
+export const HAZE_EXACT_GRAZING = 0.7;
+/** How far past the surfaces' own moonlight limit (the subject's
+ *  `moonDayLimitSin`) the pass still evaluates the Moon's block, in the Sun's
+ *  elevation sine at the cell's ground point: about 6 degrees, more than the
+ *  ground two cells span anywhere short of the grazing band, so a cell left
+ *  empty is never weighted by a fragment that takes moonlight. */
+export const HAZE_MOON_MARGIN_SIN = 0.1;
 /** The single-Mie cut-off `aerialInscatter` applies, as the segment-entry Sun
  *  cosine at which it is complete. Its start is 0. */
 export const HAZE_MIE_CUT = 0.01;
@@ -223,7 +253,7 @@ vec3 hazeHalf(vec3 s) {
 // evaluated here at full resolution: 1 where the cache would be read (the
 // exact rules honoured), 2 the same stored through half float, 3 everywhere.
 vec3 hazeProbeInscatter(AerialSegment seg, vec3 airT) {
-  if (uHazeProbe < 2.5 && hazeExactOnly(seg)) return aerialInscatter(uScattering, seg, airT);
+  if (uHazeProbe < 2.5 && hazeExactOnly(seg, false)) return aerialInscatter(uScattering, seg, airT);
   vec2 ndc = 2.0 * (gl_FragCoord.xy - uHazeViewport.xy) / uHazeViewport.zw - 1.0;
   vec3 c = vAirCam / uPlanetRadius;
   vec3 d = hazeRayDir(ndc, uHazeRay, uHazeBasis);
@@ -239,13 +269,10 @@ vec3 hazeProbeInscatter(AerialSegment seg, vec3 airT) {
 }
 #endif
 ` : '';
-  const probeEntry = dev
-    ? '#ifdef HAZE_PROBE\n  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, airT);\n  hazeReason = 1.0;\n#endif\n'
-    : '';
   const reason = dev
     ? `#ifdef HAZE_PROBE
-    hazeReason = !seg.hitsGround ? 2.0 : hazeGrazing(seg) >= uHazeExact.x ? 3.0 : hazeMieBand(seg) ? 4.0
-        : cached.a <= 0.0 ? 5.0 : cached.a < 1.0 ? 6.0 : 7.0;
+    hazeReason = !seg.hitsGround ? 2.0 : hazeGrazing(seg) >= uHazeExact.x ? 3.0 : hazeMieBand(seg.muS) ? 4.0
+        : moonOn && hazeMieBand(hazeMoonMuS(seg)) ? 5.0 : sunA.a <= 0.0 ? 6.0 : sunA.a < 1.0 ? 7.0 : 8.0;
 #endif
 `
     : '';
@@ -254,33 +281,65 @@ uniform sampler2D uHazeSun;
 uniform float uHazeOn;
 uniform vec4 uHazeViewport;
 uniform vec2 uHazeExact;
+uniform vec3 uHazeAtlas;
 // The haze weight's own grazing measure, at the segment's end.
 float hazeGrazing(AerialSegment seg) {
   vec3 up = normalize(seg.origin + seg.view * seg.d);
   return 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);
 }
-// The segment-entry Sun inside the single-Mie cut-off, widened by the margin.
-bool hazeMieBand(AerialSegment seg) {
-  return seg.muS >= -uHazeExact.y && seg.muS <= ${HAZE_MIE_CUT.toFixed(2)} + uHazeExact.y;
+// A segment-entry light cosine inside the single-Mie cut-off, widened by the
+// margin: the Sun's, or the Moon's for its own share.
+bool hazeMieBand(float muS) {
+  return muS >= -uHazeExact.y && muS <= ${HAZE_MIE_CUT.toFixed(2)} + uHazeExact.y;
 }
-// Where the Sun's in-scatter is always evaluated exactly.
-bool hazeExactOnly(AerialSegment seg) {
-  return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg);
+float hazeMoonMuS(AerialSegment seg) {
+  return clampCosine(dot(seg.origin, normalize(uMoonDirWorld)) / seg.r);
 }
-${probe}// The cache's share of this fragment's Sun in-scatter: 0 off or untrusted,
-// 1 the cache alone. One call site of the exact lookup, so the program holds
-// one copy of it.
-vec3 hazeSunInscatter(AerialSegment seg, vec3 airT) {
-${probeEntry}  vec4 cached = vec4(0.0);
-  float a = 0.0;
-  if (uHazeOn > 0.0) {
+// Where every cached quantity is always evaluated exactly.
+bool hazeExactOnly(AerialSegment seg, bool moonOn) {
+  return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg.muS)
+      || (moonOn && hazeMieBand(hazeMoonMuS(seg)));
+}
+${probe}// What the cache holds for this fragment, and how far to trust it: a is 0
+// off or untrusted, 1 the cache alone, between the two a mix; the exact
+// transmittance is evaluated wherever a < 1, because every exact term reads it.
+struct HazeRead {
+  float a;
+  vec3 t;
+  vec3 sun;
+  vec3 moon;
+  vec3 tExact;
+};
+HazeRead hazeRead(AerialSegment seg, bool moonOn) {
+  HazeRead h = HazeRead(0.0, vec3(1.0), vec3(0.0), vec3(0.0), vec3(1.0));
+${dev ? '#ifdef HAZE_PROBE\n  hazeReason = 1.0;\n#endif\n' : ''}  if (uHazeOn > 0.0) {
     vec2 uv = (gl_FragCoord.xy - uHazeViewport.xy) / uHazeViewport.zw;
-    cached = textureLod(uHazeSun, uv, 0.0);
-${reason}    a = hazeExactOnly(seg) ? 0.0 : cached.a;
+    // The three blocks of the atlas side by side, each read clamped to its own
+    // texel centres, so a footprint never reaches across a block's edge.
+    vec2 at = vec2(clamp(uv.x * uHazeAtlas.x, 0.5, uHazeAtlas.x - 0.5) / uHazeAtlas.y, uv.y);
+    vec4 sunA = textureLod(uHazeSun, at, 0.0);
+${reason}    h.a = hazeExactOnly(seg, moonOn) ? 0.0 : sunA.a;
+    if (h.a > 0.0) {
+      h.sun = sunA.rgb;
+      h.t = textureLod(uHazeSun, at + vec2(uHazeAtlas.z, 0.0), 0.0).rgb;
+      if (moonOn) h.moon = textureLod(uHazeSun, at + vec2(2.0 * uHazeAtlas.z, 0.0), 0.0).rgb;
+    }
   }
-  if (a >= 1.0) return cached.rgb;
-  vec3 exact = aerialInscatter(uScattering, seg, airT);
-  return a > 0.0 ? mix(exact, cached.rgb, a) : exact;
+  if (h.a < 1.0) h.tExact = aerialTransmittance(uTransmittance, seg);
+  return h;
+}
+vec3 hazeTransmittance(HazeRead h) {
+  return h.a >= 1.0 ? h.t : h.a > 0.0 ? mix(h.tExact, h.t, h.a) : h.tExact;
+}
+vec3 hazeSunInscatter(HazeRead h, AerialSegment seg) {
+${dev ? '#ifdef HAZE_PROBE\n  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, h.tExact);\n#endif\n' : ''}  if (h.a >= 1.0) return h.sun;
+  vec3 exact = aerialInscatter(uScattering, seg, h.tExact);
+  return h.a > 0.0 ? mix(exact, h.sun, h.a) : exact;
+}
+vec3 hazeMoonInscatter(HazeRead h, AerialSegment seg) {
+  if (h.a >= 1.0) return h.moon;
+  vec3 exact = aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), h.tExact);
+  return h.a > 0.0 ? mix(exact, h.moon, h.a) : exact;
 }
 #endif
 `;
@@ -288,7 +347,7 @@ ${reason}    a = hazeExactOnly(seg) ? 0.0 : cached.a;
 
 /** The reasons the development readout names, by the code the surface writes
  *  (`hazeReason`); 0 is a fragment with no air in front of it. */
-export const HAZE_REASONS = ['no air', 'cache off', 'misses the ground', 'grazing', 'Mie cut-off', 'silhouette footprint', 'blend', 'cache'] as const;
+export const HAZE_REASONS = ['no air', 'cache off', 'misses the ground', 'grazing', 'Mie cut-off', 'Moon Mie cut-off', 'silhouette footprint', 'blend', 'cache'] as const;
 
 const PASS_VERTEX = /* glsl */ `
 void main() {
@@ -305,6 +364,9 @@ ${HAZE_RAY_GLSL}
 uniform sampler2D uTransmittance;
 uniform sampler3D uScattering;
 uniform vec3 uSunDirWorld;
+uniform vec3 uMoonDirWorld;
+uniform float uHazeMoonOn;
+uniform float uHazeMoonSin;
 uniform vec3 uHazeCam;
 uniform float uHazeLayerRadius;
 uniform vec4 uHazeRay;
@@ -321,22 +383,47 @@ bool hazeGroundRay(vec3 c, vec3 d) {
 }
 
 void main() {
-  vec2 uv = gl_FragCoord.xy / uHazeTexels;
+  // Which block of the atlas this texel is in, and which cell of it: blocks
+  // of the cache's width, a guard column after the first two. In integers: a
+  // GPU's float division is not correctly rounded, and the first column of a
+  // block, an exact multiple of the stride, can divide to just under its
+  // block number and be taken for the guard before it.
+  int cw = int(uHazeTexels.x + 0.5);
+  int xi = int(gl_FragCoord.x);
+  int block = xi / (cw + 1);
+  int local = xi - block * (cw + 1);
+  if (local >= cw) { gl_FragColor = vec4(0.0); return; }
+  vec2 uv = vec2((float(local) + 0.5) / float(cw), gl_FragCoord.y / uHazeTexels.y);
   vec2 ndc = uv * 2.0 - 1.0;
-  vec2 texel = 2.0 / uHazeTexels;
   vec3 c = uHazeCam;
+  vec3 d = hazeRayDir(ndc, uHazeRay, uHazeBasis);
+  float t = hazeSphereHit(c, d, uHazeLayerRadius);
+  // A cell whose own ray misses the ground holds nothing: every footprint
+  // that could weight it reads alpha 0 and is evaluated exactly.
+  if (!(t > 0.0) || !hazeGroundRay(c, d)) { gl_FragColor = vec4(0.0); return; }
+  // The Moon's block is empty while no moonlight is bound, and wherever the
+  // Sun stands so high over the cell's ground point that no fragment of its
+  // footprint can take moonlight (uHazeMoonSin) — decided before any lookup.
+  if (block == 2 && !(uHazeMoonOn > 0.0 && dot(normalize(c + d * t), normalize(uSunDirWorld)) < uHazeMoonSin)) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
+  AerialSegment seg = aerialSegment(c, c + d * t, normalize(uSunDirWorld));
+  if (!seg.valid) { gl_FragColor = vec4(0.0); return; }
+  vec3 airT = aerialTransmittance(uTransmittance, seg);
+  if (block == 2) {
+    // The Moon's in-scatter at one unit of irradiance.
+    gl_FragColor = vec4(aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT), 1.0);
+    return;
+  }
+  if (block == 1) { gl_FragColor = vec4(airT, 1.0); return; }
+  // The Sun's block carries the alpha that decides all three.
+  vec2 texel = 2.0 / uHazeTexels;
   bool trusted = true;
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
       trusted = trusted && hazeGroundRay(c, hazeRayDir(ndc + vec2(float(i), float(j)) * texel, uHazeRay, uHazeBasis));
     }
-  }
-  vec3 d = hazeRayDir(ndc, uHazeRay, uHazeBasis);
-  float t = hazeSphereHit(c, d, uHazeLayerRadius);
-  vec3 s = vec3(0.0);
-  if (t > 0.0 && hazeGroundRay(c, d)) {
-    AerialSegment seg = aerialSegment(c, c + d * t, normalize(uSunDirWorld));
-    if (seg.valid) s = aerialInscatter(uScattering, seg, aerialTransmittance(uTransmittance, seg));
   }
   float alpha = 0.0;
   if (trusted) {
@@ -345,7 +432,7 @@ void main() {
     float edge = asin(min(uBottomRadius / length(c), 1.0));
     alpha = clamp(((edge - angle) * uHazeFocal - 1.0) / 3.0, 0.0, 1.0);
   }
-  gl_FragColor = vec4(s, alpha);
+  gl_FragColor = vec4(aerialInscatter(uScattering, seg, airT), alpha);
 }
 `;
 
@@ -366,6 +453,9 @@ export function createHazeAirUniforms(dummy: THREE.Texture): Record<string, THRE
     uHazeOnDeck: { value: 0 },
     uHazeViewport: { value: new THREE.Vector4(0, 0, 1, 1) },
     uHazeExact: { value: new THREE.Vector2(HAZE_EXACT_GRAZING, 0) },
+    // The atlas's layout: the cache's width in texels, the atlas's, and one
+    // block's stride in texture coordinates.
+    uHazeAtlas: { value: new THREE.Vector3(1, 3, 1 / 3) },
   };
   if (import.meta.env.DEV) {
     u.uHazeProbe = { value: 0 };
@@ -390,6 +480,10 @@ export interface HazeCacheSubject {
   deck: THREE.Object3D | null;
   /** The deck's radius in the tables' radius units (1 = the ground). */
   deckRadius: number;
+  /** The Sun's elevation sine at a fragment's ground point from which the
+   *  surfaces take no moonlight (the night side's sun-down weight reaches
+   *  zero there: NIGHT_FILL's terminator width, the globe's and the deck's). */
+  moonDayLimitSin: number;
 }
 
 export type HazeProbe = 'off' | 'endpoint-sphere' | 'endpoint-sphere-half' | 'endpoint-sphere-raw';
@@ -409,6 +503,8 @@ export interface HazeCacheState {
   viewport: [number, number] | null;
   drawn: { ground: boolean; deck: boolean };
   mieMargin: number;
+  /** Whether moonlight is bound this frame, so the Moon's block was drawn. */
+  moonLit: boolean;
   skipped: string | null;
   /** The body-centred camera in radius units, the Sun's direction and the lens, for a probe that rebuilds the
    *  frame's geometry on the CPU. */
@@ -457,6 +553,7 @@ export class HazeCache {
       viewport: null,
       drawn: { ground: false, deck: false },
       mieMargin: 0,
+      moonLit: false,
       skipped: null,
       geometry: null,
     };
@@ -484,6 +581,9 @@ export class HazeCache {
     const uniforms: Record<string, THREE.IUniform> = {
       ...lookup,
       uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
+      uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
+      uHazeMoonOn: { value: 0 },
+      uHazeMoonSin: { value: 1 },
       uHazeCam: { value: new THREE.Vector3() },
       uHazeLayerRadius: { value: 1 },
       uHazeRay: { value: new THREE.Vector4() },
@@ -576,7 +676,9 @@ export class HazeCache {
     const vfov = THREE.MathUtils.degToRad(cam.fov);
     this.state.mieMargin = this.state.marginScale * div * (vfov / H);
 
+    const atlasW = 3 * cw + 2;
     (air.uHazeViewport.value as THREE.Vector4).set(0, 0, W, H);
+    (air.uHazeAtlas.value as THREE.Vector3).set(cw, atlasW, (cw + 1) / atlasW);
     (air.uHazeExact.value as THREE.Vector2).set(this.state.grazing, this.state.mieMargin);
     if (import.meta.env.DEV) {
       (air.uHazeRay.value as THREE.Vector4).copy(this.ray);
@@ -600,6 +702,10 @@ export class HazeCache {
     const u = material.uniforms;
     for (const key of LOOKUP_KEYS) u[key].value = air[key].value;
     (u.uSunDirWorld.value as THREE.Vector3).copy(sun);
+    (u.uMoonDirWorld.value as THREE.Vector3).copy(air.uMoonDirWorld.value as THREE.Vector3);
+    u.uHazeMoonOn.value = (air.uMoonIrradiance.value as THREE.Vector3).y > 0 ? 1 : 0;
+    this.state.moonLit = u.uHazeMoonOn.value === 1;
+    u.uHazeMoonSin.value = subject.moonDayLimitSin + HAZE_MOON_MARGIN_SIN;
     (u.uHazeRay.value as THREE.Vector4).copy(this.ray);
     (u.uHazeBasis.value as THREE.Matrix3).copy(this.basis);
     (u.uHazeTexels.value as THREE.Vector2).set(cw, ch);
@@ -618,7 +724,7 @@ export class HazeCache {
         layers.push({ layer: 'deck', mesh: subject.deck, radius: subject.deckRadius });
       }
       for (const { layer, mesh, radius } of layers) {
-        const target = this.ensureTarget(layer, cw, ch);
+        const target = this.ensureTarget(layer, atlasW, ch);
         // Each layer from its own mesh's centre, as its own vertex stage
         // derives `vAirCam`.
         const centre = layer === 'ground' ? _bodyPos : _layerPos.setFromMatrixPosition(mesh.matrixWorld);
@@ -627,6 +733,9 @@ export class HazeCache {
         );
         u.uHazeLayerRadius.value = radius;
         renderer.setRenderTarget(target);
+        // Cleared first though the quad covers every texel: a clear that opens
+        // the pass is a tile GPU's cue not to load the old contents at all.
+        renderer.clear(true, false, false);
         this.quad!.render(renderer);
         if (layer === 'ground') air.uHazeSun.value = target.texture;
         else air.uHazeSunDeck.value = target.texture;

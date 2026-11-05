@@ -83,15 +83,16 @@
  * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
  * where each archetype's segment really ends.
  *
- * The Sun's share of that in-scattered light is the expensive half of the
- * term, and on Earth it can be read from a screen-space cache instead
- * (app/hazeCache.ts, compiled under HAZE_CACHE unless `?hazecache=0`): one
- * fetch where the cache is trusted, the exact evaluation wherever it is not
- * — a segment that misses the ground, a view near grazing, a segment-entry
- * Sun inside the single-Mie cut-off, a footprint near the silhouette. Only
- * that one term moves: the segment, its transmittance, the Moon's share and
- * the weight stay per fragment, so the glint, the night lights and the
- * night side read exactly what they read before.
+ * On Earth the term's three table quantities — the transmittance, the Sun's
+ * in-scattered light and the Moon's — can be read from a screen-space cache
+ * instead (app/hazeCache.ts, compiled under HAZE_CACHE unless
+ * `?hazecache=0`): one fetch each where the cache is trusted, the exact
+ * evaluation wherever it is not — a segment that misses the ground, a view
+ * near grazing, a segment-entry Sun (or, where the Moon lights the fragment,
+ * Moon) inside the single-Mie cut-off, a footprint near the silhouette. The
+ * cached transmittance dims the sea's glint as the exact one did; the segment,
+ * the weight, the eclipse, the cloud shadow's share and Earth's night-lights
+ * shell (its own material, transmittance only) stay per fragment and exact.
  *
  * How much of that haze a DIRECT view shows is a body's own number
  * (SURFACE_HAZE_CLEAR_VIEW), and the weight it sets climbs to one at the
@@ -3319,10 +3320,12 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
     AerialSegment seg = aerialSegment(
         vAirCam / uPlanetRadius, airEnd, normalize(uSunDirWorld));
     if (seg.valid) {
-      vec3 airT = aerialTransmittance(uTransmittance, seg);
 #ifdef HAZE_CACHE
-      vec3 airS = hazeSunInscatter(seg, airT)
+      HazeRead haze = hazeRead(seg, moonNight > 0.0 && uMoonIrradiance.g > 0.0);
+      vec3 airT = hazeTransmittance(haze);
+      vec3 airS = hazeSunInscatter(haze, seg)
 #else
+      vec3 airT = aerialTransmittance(uTransmittance, seg);
       vec3 airS = aerialInscatter(uScattering, seg, airT)
 #endif
           * uAirlightScale * (uSolarIrradiance * sunVisible);
@@ -3332,7 +3335,11 @@ ${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal
       // and behind a uniform branch, so a day fragment, a new Moon and a body
       // with no moon at all cost a branch and no fetches.
       if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
+#ifdef HAZE_CACHE
+        airS += hazeMoonInscatter(haze, seg)
+#else
         airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
+#endif
             * uMoonIrradiance * moonNight;
       }
       // The tables arrive a few seconds into a session, and the haze they

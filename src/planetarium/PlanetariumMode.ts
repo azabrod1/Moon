@@ -18482,6 +18482,7 @@ export class PlanetariumMode {
       globe: earth.mesh,
       deck: drawn(earth.cloudsMesh) ? earth.cloudsMesh! : null,
       deckRadius: AIR_LOOKUP_RADIUS.cloud,
+      moonDayLimitSin: Math.max(NIGHT_FILL.earth.termWidth, NIGHT_FILL.cloud.termWidth),
     };
   }
 

@@ -14,9 +14,18 @@
  * exactly the constant three puts on texture.format, and the sRGB name must
  * resolve to something else.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { canSlice, compressedUploadFormat, hasSrgbTransfer } from './slicedUpload';
+import {
+  beginSlicedUpload,
+  canSlice,
+  compressedUploadFormat,
+  hasSrgbTransfer,
+  ktx2TranscodeFormats,
+  probeCompressedBands,
+  resetCompressedBandProbesForTests,
+  stepSlicedUpload,
+} from './slicedUpload';
 
 /** Extension objects as a driver exposes them, with the spec's enum values. */
 const ASTC = {
@@ -177,5 +186,239 @@ describe('hasSrgbTransfer', () => {
     expect(wide).not.toBe(THREE.SRGBColorSpace);
     expect(hasSrgbTransfer(wide)).toBe(true);
     expect(compressedUploadFormat(fakeGl(), THREE.RGBA_ASTC_4x4_Format, wide)).toBe(0x93d0);
+  });
+});
+
+describe('the compressed band probe', () => {
+  const NO_ERROR = 0;
+  const INVALID_ENUM = 0x0500;
+  const INVALID_OPERATION = 0x0502;
+  const CONTEXT_LOST_WEBGL = 0x9242;
+
+  /** The internal format three's own conversion allocates with: the sRGB
+   *  variant from the spec's table for an sRGB texture, the constant itself
+   *  otherwise. */
+  const threeAllocates = (format: number, srgb: boolean): number =>
+    (srgb ? FORMATS.find(([, constant]) => constant === format)![2] : format);
+
+  /**
+   * A renderer and a GL context the slicer can drive. `initTexture` stands in
+   * for three's allocation pass: it creates the record, allocates storage with
+   * `allocate` (three's conversion unless a test says otherwise) and stamps the
+   * version. A compressed band whose enum is not the storage's raises
+   * INVALID_OPERATION on the error queue and is otherwise recorded — which is
+   * what a driver does: no exception, an error flag, an empty texture.
+   */
+  function fakeRenderer(allocate = threeAllocates) {
+    const records = new Map<THREE.Texture, { __webglTexture?: object; __version?: number }>();
+    const storage = new Map<object, number>();
+    const allocations: Array<{ texture: THREE.Texture; internalFormat: number; width: number }> = [];
+    const bands: Array<{ storage: object | null; format: number; y: number; height: number }> = [];
+    const gl = {
+      NO_ERROR,
+      TEXTURE_2D: 0x0de1,
+      TEXTURE0: 0x84c0,
+      UNPACK_FLIP_Y_WEBGL: 0x9240,
+      UNPACK_PREMULTIPLY_ALPHA_WEBGL: 0x9241,
+      UNPACK_ALIGNMENT: 0x0cf5,
+      lost: false,
+      queue: [] as number[],
+      reads: 0,
+      bound: null as object | null,
+      getExtension: (name: string) => ALL_EXTENSIONS[name] ?? null,
+      isContextLost() { return this.lost; },
+      getError() {
+        this.reads++;
+        if (this.lost) return CONTEXT_LOST_WEBGL;
+        return this.queue.shift() ?? NO_ERROR;
+      },
+      pixelStorei() {},
+      compressedTexSubImage2D(_target: number, level: number, _x: number, y: number, _w: number, h: number, format: number) {
+        if (this.lost) return;
+        if (level === 0) bands.push({ storage: this.bound, format, y, height: h });
+        if (this.bound === null || storage.get(this.bound) !== format) this.queue.push(INVALID_OPERATION);
+      },
+    };
+    const record = (t: THREE.Texture) => {
+      let r = records.get(t);
+      if (!r) { r = {}; records.set(t, r); }
+      return r;
+    };
+    const renderer = {
+      getContext: () => gl,
+      properties: { get: record },
+      state: { bindTexture: (_target: number, tex: object | null) => { gl.bound = tex; } },
+      initTexture: (texture: THREE.Texture) => {
+        const r = record(texture);
+        r.__webglTexture ??= {};
+        gl.bound = r.__webglTexture;
+        if (gl.lost) return;
+        const internalFormat = allocate(texture.format as unknown as number, hasSrgbTransfer(texture.colorSpace));
+        storage.set(r.__webglTexture, internalFormat);
+        const width = (texture as THREE.CompressedTexture).mipmaps?.[0]?.width ?? 0;
+        allocations.push({ texture, internalFormat, width });
+        r.__version = texture.version;
+      },
+    } as unknown as THREE.WebGLRenderer;
+    const probes = () => allocations.filter((a) => a.width === 16).length;
+    /** The storage three's record holds for a texture. */
+    const storageOf = (t: THREE.Texture) => record(t).__webglTexture;
+    return { renderer, gl, allocations, bands, probes, storageOf };
+  }
+
+  /** A KTX2 rung as the loader hands it over: 1024×512 ASTC (the format this
+   *  Mac's UASTC containers become), base plus one level, sRGB by default. */
+  function container(colorSpace: string = THREE.SRGBColorSpace): THREE.CompressedTexture {
+    const mipmaps = [
+      { width: 1024, height: 512, data: new Uint8Array(256 * 128 * 16) },
+      { width: 512, height: 256, data: new Uint8Array(128 * 64 * 16) },
+    ];
+    const tex = new THREE.CompressedTexture(mipmaps as unknown as ImageData[], 1024, 512, THREE.RGBA_ASTC_4x4_Format);
+    tex.colorSpace = colorSpace;
+    tex.flipY = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  function finish(job: NonNullable<ReturnType<typeof beginSlicedUpload>>): string {
+    for (let i = 0; i < 1000; i++) {
+      const outcome = stepSlicedUpload(job, Number.POSITIVE_INFINITY);
+      if (outcome !== 'more') return outcome;
+    }
+    return 'never finished';
+  }
+
+  beforeEach(() => resetCompressedBandProbesForTests());
+
+  it('asks once per pair, and then bands every map of it without reading the error queue', () => {
+    const { renderer, gl, bands, probes, storageOf } = fakeRenderer();
+    const first = container();
+    const job = beginSlicedUpload(renderer, first)!;
+    expect(job).not.toBeNull();
+    expect(probes()).toBe(1);
+    // The drain's one read and the probe's own.
+    expect(gl.reads).toBe(2);
+    const readsBeforeBands = gl.reads;
+    expect(finish(job)).toBe('done');
+    expect(gl.reads).toBe(readsBeforeBands);
+    const own = bands.filter((b) => b.storage === storageOf(first));
+    expect(own.length).toBeGreaterThan(1);
+    expect(own.every((b) => b.format === 0x93d0)).toBe(true);
+    expect(gl.queue).toEqual([]);
+
+    const second = beginSlicedUpload(renderer, container())!;
+    expect(second).not.toBeNull();
+    expect(probes()).toBe(1);
+    expect(gl.reads).toBe(readsBeforeBands);
+    expect(finish(second)).toBe('done');
+    expect(gl.reads).toBe(readsBeforeBands);
+  });
+
+  it('a pair asked under the boot cover costs its first job nothing', () => {
+    const { renderer, gl, probes } = fakeRenderer();
+    expect(probeCompressedBands(renderer, THREE.RGBA_ASTC_4x4_Format, THREE.SRGBColorSpace)).toBe(true);
+    const reads = gl.reads;
+    const job = beginSlicedUpload(renderer, container())!;
+    expect(finish(job)).toBe('done');
+    expect(gl.reads).toBe(reads);
+    expect(probes()).toBe(1);
+  });
+
+  it('a pair the driver refuses uploads whole from its first job, with no band of a map ever attempted', () => {
+    // Storage allocated with the plain enum while the band speaks the sRGB
+    // one: the mismatch the derivation exists to prevent.
+    const { renderer, gl, allocations, bands, probes, storageOf } = fakeRenderer((format) => format);
+    const first = container();
+    expect(beginSlicedUpload(renderer, first)).toBeNull();
+    expect(probes()).toBe(1);
+    // Nothing allocated for the map itself, and the probe's band the only band.
+    expect(allocations.filter((a) => a.texture === first)).toEqual([]);
+    expect(bands).toHaveLength(1);
+    expect(bands[0].storage).not.toBe(storageOf(first));
+    const reads = gl.reads;
+    expect(beginSlicedUpload(renderer, container())).toBeNull();
+    expect(probes()).toBe(1);
+    expect(gl.reads).toBe(reads);
+    expect(bands).toHaveLength(1);
+  });
+
+  it('asks each colour space on its own', () => {
+    const { renderer, probes } = fakeRenderer();
+    finish(beginSlicedUpload(renderer, container(THREE.SRGBColorSpace))!);
+    finish(beginSlicedUpload(renderer, container(THREE.NoColorSpace))!);
+    expect(probes()).toBe(2);
+    finish(beginSlicedUpload(renderer, container(THREE.LinearSRGBColorSpace))!);
+    // Linear is linear, whichever linear space the texture names.
+    expect(probes()).toBe(2);
+  });
+
+  it('drains an error someone else left on the queue instead of blaming the format for it', () => {
+    const { renderer, gl } = fakeRenderer();
+    gl.queue.push(INVALID_ENUM);
+    expect(probeCompressedBands(renderer, THREE.RGBA_ASTC_4x4_Format, THREE.SRGBColorSpace)).toBe(true);
+    expect(gl.queue).toEqual([]);
+  });
+
+  it('on a lost context asks nothing and records nothing, and the next job asks again', () => {
+    const { renderer, gl, probes } = fakeRenderer();
+    gl.lost = true;
+    expect(probeCompressedBands(renderer, THREE.RGBA_ASTC_4x4_Format, THREE.SRGBColorSpace)).toBeNull();
+    // The job goes ahead as any job on a lost context does, and reports it.
+    const job = beginSlicedUpload(renderer, container());
+    expect(job).not.toBeNull();
+    expect(stepSlicedUpload(job!, Number.POSITIVE_INFINITY)).toBe('failed');
+    expect(probes()).toBe(0);
+    gl.lost = false;
+    expect(finish(beginSlicedUpload(renderer, container())!)).toBe('done');
+    expect(probes()).toBe(1);
+  });
+
+  it('keeps its verdict through a lost and restored context', () => {
+    // The answer is about which enum the driver takes for which storage, not
+    // about any GL object the loss takes away.
+    const { renderer, gl, probes } = fakeRenderer();
+    finish(beginSlicedUpload(renderer, container())!);
+    gl.lost = true;
+    expect(stepSlicedUpload(beginSlicedUpload(renderer, container())!, Number.POSITIVE_INFINITY)).toBe('failed');
+    gl.lost = false;
+    const reads = gl.reads;
+    expect(finish(beginSlicedUpload(renderer, container())!)).toBe('done');
+    expect(probes()).toBe(1);
+    expect(gl.reads).toBe(reads);
+  });
+
+  it('never probes a format it does not slice', () => {
+    const { renderer, probes } = fakeRenderer();
+    expect(probeCompressedBands(renderer, THREE.RGB_ETC1_Format, THREE.SRGBColorSpace)).toBeNull();
+    expect(probes()).toBe(0);
+  });
+});
+
+describe('ktx2TranscodeFormats', () => {
+  // The device shapes the app meets, by the extensions they expose, and what
+  // three's KTX2Loader transcodes an opaque UASTC and ETC1S container to there.
+  const has = (...names: string[]) => (name: string) => names.includes(name);
+  it('an Apple GPU: UASTC to ASTC, ETC1S to ETC2', () => {
+    expect(ktx2TranscodeFormats(has(
+      'WEBGL_compressed_texture_astc', 'EXT_texture_compression_bptc',
+      'WEBGL_compressed_texture_s3tc', 'WEBGL_compressed_texture_etc',
+    ))).toEqual([THREE.RGBA_ASTC_4x4_Format, THREE.RGB_ETC2_Format]);
+    expect(ktx2TranscodeFormats(has('WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc')))
+      .toEqual([THREE.RGBA_ASTC_4x4_Format, THREE.RGB_ETC2_Format]);
+  });
+  it('a desktop with BC only: both to BC7, asked once', () => {
+    expect(ktx2TranscodeFormats(has('EXT_texture_compression_bptc', 'WEBGL_compressed_texture_s3tc')))
+      .toEqual([THREE.RGBA_BPTC_Format]);
+  });
+  it('S3TC alone: both to DXT1', () => {
+    expect(ktx2TranscodeFormats(has('WEBGL_compressed_texture_s3tc'))).toEqual([THREE.RGBA_S3TC_DXT1_Format]);
+  });
+  it('ETC2 alone: both to ETC2', () => {
+    expect(ktx2TranscodeFormats(has('WEBGL_compressed_texture_etc'))).toEqual([THREE.RGB_ETC2_Format]);
+  });
+  it('nothing it slices: ETC1, PVRTC or no compression at all', () => {
+    expect(ktx2TranscodeFormats(has('WEBGL_compressed_texture_etc1'))).toEqual([]);
+    expect(ktx2TranscodeFormats(has('WEBGL_compressed_texture_pvrtc'))).toEqual([]);
+    expect(ktx2TranscodeFormats(has())).toEqual([]);
   });
 });

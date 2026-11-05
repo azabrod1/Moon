@@ -33,7 +33,10 @@
  *
  * Which leaves are covered is the streamer's rule (its header says when a tile
  * counts as drawn); this module only lays the index out and applies a cover.
- * Pure apart from three's BufferGeometry: no renderer, no DOM.
+ * Pure apart from three's BufferGeometry: no renderer, no DOM. The layout
+ * itself is arrays in and arrays out (`layoutGroundIndex`), so a body's fine
+ * sphere can be laid out in a worker (world/fineSpheres) and given its layout
+ * on the main thread (`adoptGroundIndex`); `layGroundIndex` is those two steps.
  */
 import * as THREE from 'three';
 
@@ -157,6 +160,58 @@ export function writeUncoveredRuns(
 }
 
 /**
+ * A sphere's index laid out for cutting, as plain arrays: the 2N index (the
+ * full list in [0, N), scratch after), the leaf grid and each leaf's start.
+ * Built by `layoutGroundIndex` from three's index alone, so it can be built in
+ * a worker and handed to `adoptGroundIndex` on the main thread — and that pair
+ * is exactly `layGroundIndex`, which is how both paths stay one recipe.
+ */
+export interface GroundLayout {
+  readonly index: Uint16Array | Uint32Array;
+  readonly full: number;
+  readonly cols: number;
+  readonly rows: number;
+  readonly start: Uint32Array;
+}
+
+/** Lay out a `width × height` sphere's triangle list (three's index, of either
+ *  width) for `leaf`-cell leaves. Pure: arrays in, arrays out. */
+export function layoutGroundIndex(
+  source: Uint16Array | Uint32Array,
+  width: number,
+  height: number,
+  leaf: number,
+): GroundLayout {
+  const full = source.length;
+  const index = new (source.constructor as Uint16ArrayConstructor | Uint32ArrayConstructor)(2 * full);
+  const { cols, rows, start } = layoutSphereTriangles(source, width, height, leaf, index);
+  return { index, full, cols, rows, start };
+}
+
+/**
+ * Give a sphere geometry a layout built for it: its index becomes the layout's
+ * 2N array and its draw range the full list, and the geometry is registered
+ * for cutting. The same rule as `layGroundIndex`: only before the geometry is
+ * ever drawn.
+ */
+export function adoptGroundIndex(geometry: THREE.BufferGeometry, layout: GroundLayout): GroundIndex {
+  const { index, full, cols, rows, start } = layout;
+  if (!geometry.index || geometry.index.count !== full || index.length !== 2 * full) {
+    throw new Error('ground index: the layout was not built from this geometry\'s triangle list');
+  }
+  geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  geometry.setDrawRange(0, full);
+  const gi: GroundIndex = {
+    geometry, full, cols, rows, start,
+    next: new Uint8Array(cols * rows),
+    held: new Uint8Array(cols * rows),
+    heldCount: -1,
+  };
+  layouts.set(geometry, gi);
+  return gi;
+}
+
+/**
  * Lay a sphere geometry out for cutting: its index becomes the 2N layout above
  * and its draw range the full list. Call it where the geometry is built, before
  * it is ever drawn — never on one that has been, whose index buffer and vertex
@@ -172,19 +227,7 @@ export function layGroundIndex(geometry: THREE.BufferGeometry, leaf: number): Gr
     throw new Error(`ground index: the geometry is not the ${width} × ${height} sphere it says it is`);
   }
   const source = index.array as Uint16Array | Uint32Array;
-  const full = source.length;
-  const array = new (source.constructor as Uint16ArrayConstructor | Uint32ArrayConstructor)(2 * full);
-  const { cols, rows, start } = layoutSphereTriangles(source, width, height, leaf, array);
-  geometry.setIndex(new THREE.BufferAttribute(array, 1));
-  geometry.setDrawRange(0, full);
-  const gi: GroundIndex = {
-    geometry, full, cols, rows, start,
-    next: new Uint8Array(cols * rows),
-    held: new Uint8Array(cols * rows),
-    heldCount: -1,
-  };
-  layouts.set(geometry, gi);
-  return gi;
+  return adoptGroundIndex(geometry, layoutGroundIndex(source, width, height, leaf));
 }
 
 /** The layout a geometry was laid out with, or undefined for any other. */

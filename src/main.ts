@@ -3364,15 +3364,20 @@ async function devHazeCoverage(waitDraws: (n: number) => Promise<unknown>): Prom
     const read = devReadScene({ raw: true }) as { pixels: Float32Array } | null;
     if (!read) return null;
     const n = new Array<number>(HAZE_REASONS.length).fill(0);
+    let mixed = 0;
     const px = read.pixels;
     for (let i = 0; i < px.length; i += 4) {
       const v = layer === 'deck' ? px[i + 1] : (px[i + 1] > 0 ? 0 : px[i]);
       if (!(v > 0)) continue;
-      const code = Math.round(v * 16 - 1);
-      if (code >= 0 && code < n.length) n[code]++;
+      // A pixel the surface only partly covers resolves (multisampling) to a
+      // fraction of its code: counted apart, never as a reason.
+      const x = v * 16 - 1;
+      const code = Math.round(x);
+      if (Math.abs(x - code) > 0.05 || code < 0 || code >= n.length) { mixed++; continue; }
+      n[code]++;
     }
     const total = n.reduce((a, b) => a + b, 0);
-    const out: Record<string, number> = { pixels: total };
+    const out: Record<string, number> = { pixels: total, mixedEdge: mixed };
     HAZE_REASONS.forEach((name, i) => { out[name] = total ? +(n[i] / total).toFixed(4) : 0; });
     return out;
   };

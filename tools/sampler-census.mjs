@@ -19,6 +19,9 @@
 //   - every program compiled with MIE_EXACT holds exactly the single-Mie
 //     colour table (uMieColour) more than the same row without it, and no
 //     row without it links uMieColour;
+//   - every program compiled with HAZE_CACHE holds exactly the haze cache
+//     (uHazeSun, app/hazeCache.ts) more than the same row without it, and no
+//     row without it links uHazeSun;
 //   - the live globe and deck, as this boot linked them, hold exactly what the
 //     census row with their defines holds — the check that the census builds
 //     the app's programs and not some other ones.
@@ -40,6 +43,7 @@ const baseUrl = arg('url', 'http://localhost:5174');
 const extra = arg('extra', '');
 const FIELD_SAMPLERS = ['uCloudPages', 'uCloudPageTable'];
 const MIE_SAMPLER = 'uMieColour';
+const HAZE_SAMPLER = 'uHazeSun';
 
 const failures = [];
 const fail = (message) => { failures.push(message); console.log(`  FAIL  ${message}`); };
@@ -109,6 +113,16 @@ try {
       }
     } else if (r.samplers.includes(MIE_SAMPLER)) {
       fail(`${key(r)}: ${MIE_SAMPLER} active without MIE_EXACT`);
+    }
+    // The haze cache's read: its one target more, and nothing else.
+    if (r.defines.includes('HAZE_CACHE')) {
+      const plain = find(r.surface, r.defines.filter((d) => d !== 'HAZE_CACHE'), r.tables, r.waterMask);
+      if (!plain) fail(`${key(r)}: no row without HAZE_CACHE to hold it to`);
+      else if (!same(r.samplers, [...plain.samplers, HAZE_SAMPLER])) {
+        fail(`${key(r)}: holds ${r.samplers.join(' ')}, wanted ${key(plain)} and ${HAZE_SAMPLER}`);
+      }
+    } else if (r.samplers.includes(HAZE_SAMPLER)) {
+      fail(`${key(r)}: ${HAZE_SAMPLER} active without HAZE_CACHE`);
     }
     const sea = r.samplers.filter((s) => s.startsWith('uSea'));
     if (r.surface === 'ground' && sea.length !== census.seaWindSamplers) {

@@ -83,6 +83,16 @@
  * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
  * where each archetype's segment really ends.
  *
+ * The Sun's share of that in-scattered light is the expensive half of the
+ * term, and on Earth it can be read from a screen-space cache instead
+ * (app/hazeCache.ts, compiled under HAZE_CACHE unless `?hazecache=0`): one
+ * fetch where the cache is trusted, the exact evaluation wherever it is not
+ * — a segment that misses the ground, a view near grazing, a segment-entry
+ * Sun inside the single-Mie cut-off, a footprint near the silhouette. Only
+ * that one term moves: the segment, its transmittance, the Moon's share and
+ * the weight stay per fragment, so the glint, the night lights and the
+ * night side read exactly what they read before.
+ *
  * How much of that haze a DIRECT view shows is a body's own number
  * (SURFACE_HAZE_CLEAR_VIEW), and the weight it sets climbs to one at the
  * horizon whatever the number, because that is where the ground's haze has to
@@ -181,6 +191,7 @@ import {
   surfaceDetailTexture,
 } from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
+import { createHazeAirUniforms, hazeCacheCompiled, hazeSurfaceDeclsGlsl } from '../../app/hazeCache';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
  *  own map states rather than a flat opacity (world/cloudDeck), it hazes and
@@ -2319,6 +2330,24 @@ vec3 albedoContrast( vec3 albedo ) {
 }
 `;
 
+/** The haze cache's read (app/hazeCache.ts), every line inside HAZE_CACHE's
+ *  own conditional, so with the define off the text is the one from before. */
+const HAZE_SURFACE_DECLS = hazeSurfaceDeclsGlsl(import.meta.env.DEV);
+
+/** The haze cache's development readout: the fragment's colour replaced by the
+ *  way its Sun in-scatter went (app/hazeCache.ts HAZE_REASONS), the ground's in
+ *  red and the deck's in green with its cover in blue — the deck drawn opaque
+ *  wherever it carries any, so its code is read back unblended. */
+export const HAZE_DIAG_GLSL = import.meta.env.DEV ? `#ifdef HAZE_CACHE
+  if (uHazeDiag > 0.5) {
+    float hazeCode = (hazeReason + 1.0) / 16.0;
+    outgoingLight = uAirLookupRadius > 0.0 ? vec3(0.0, hazeCode, diffuseColor.a) : vec3(hazeCode, 0.0, 0.0);
+    seaGlint = vec3(0.0);
+    if (uAirLookupRadius > 0.0) diffuseColor.a = diffuseColor.a > 0.02 ? 1.0 : 0.0;
+  }
+#endif
+` : '';
+
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 ${SURFACE_ARCHETYPE_MACROS}
 #if defined( USE_NORMALMAP_TANGENTSPACE ) && !defined( CLOUD_DECK )
@@ -2385,7 +2414,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}${CLOUD_FIELD_DECLS}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${HAZE_SURFACE_DECLS}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}${SMOOTH_TEXEL_GLSL}${SURFACE_DETAIL_GLSL}${SEA_LOBE_GLSL}${CLOUD_FIELD_DECLS}`;
 
 /**
  * three's <normal_fragment_maps>, with the tangent-space branch taken over.
@@ -3288,7 +3317,11 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
         vAirCam / uPlanetRadius, airEnd, normalize(uSunDirWorld));
     if (seg.valid) {
       vec3 airT = aerialTransmittance(uTransmittance, seg);
+#ifdef HAZE_CACHE
+      vec3 airS = hazeSunInscatter(seg, airT)
+#else
       vec3 airS = aerialInscatter(uScattering, seg, airT)
+#endif
           * uAirlightScale * (uSolarIrradiance * sunVisible);
 ${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal, one transmittance: only
       // the two angles that involve the source change, so the second source is
@@ -3307,7 +3340,7 @@ ${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal
       seaGlint = mix(seaGlint, seaGlint * airT, airWeight);
     }
   }
-  // The beam's cap, on what REACHES THE CAMERA: everything above scaled the
+${HAZE_DIAG_GLSL}  // The beam's cap, on what REACHES THE CAMERA: everything above scaled the
   // mirror term along with the light, so seaGlint is now its share of this
   // pixel. A shoulder — the term itself up to the knee, then an exponential
   // approach to the cap, continuous in value and slope at the knee, per
@@ -3819,6 +3852,9 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // the shell's ladder sharpened its own. The 1x1 stand-in until a body has
     // one — sampling it is never legal, because uCloudCityGlow is then 0.
     uNightLights: { value: dummies.map2D },
+    // The haze cache's read (app/hazeCache.ts): off, on the stand-in, until
+    // the cache's pass switches a layer on for one scene draw.
+    ...createHazeAirUniforms(dummies.map2D),
   };
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
@@ -3922,6 +3958,9 @@ export function clearSurfaceAir(air: SurfaceAirFx): void {
   air.uIrradiance.value = dummies.map2D;
   air.uScattering.value = dummies.map3D;
   air.uMieColour.value = dummies.map3D;
+  // The cache's targets go with a lost context too.
+  air.uHazeSun.value = dummies.map2D;
+  air.uHazeSunDeck.value = dummies.map2D;
 }
 
 export function augmentSurfaceMaterial(
@@ -4121,6 +4160,11 @@ export function augmentSurfaceMaterial(
       shader.uniforms.uCloudShadowSkyFill = cloudShadowShared.uCloudShadowSkyFill;
     }
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
+    // The deck reads the haze cache's deck layer under the same GLSL names.
+    if (archetype === 'cloud') {
+      shader.uniforms.uHazeSun = fx.air.uHazeSunDeck;
+      shader.uniforms.uHazeOn = fx.air.uHazeOnDeck;
+    }
     // The cloud field's slots (world/cloudFieldSlots), on the materials that
     // compile it: the planetarium's deck and its warm-up probe, and the ground
     // under the deck while its shadow reads the field. A ground takes them
@@ -4158,6 +4202,9 @@ export function augmentSurfaceMaterial(
     ...mat.defines,
     ...atmosphereTableDefines(atmosphereSessionSizes()),
     ...(deckProgram ? { CLOUD_DECK: '' } : {}),
+    // The haze cache's read, for the session (app/hazeCache.ts; `?hazecache=0`
+    // leaves it out and the program is the one from before the cache).
+    ...(hazeCacheCompiled() ? { HAZE_CACHE: '' } : {}),
   };
   // A sector re-augmented from a globe a deck stands over shares that globe's
   // fx, and takes the cloud shadow's define with it (setGroundUnderCloudDeck).

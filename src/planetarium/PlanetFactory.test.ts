@@ -3543,7 +3543,10 @@ describe('a colour-rung swap and the body\'s air', () => {
     bindSurfaceAir(fx.air, boundTables(), 4.26e-5, 1);
     applyColorTierTexture(mat, compressedTexture('clouds 8k ktx2'), TIER_RANK['8k']);
     const after = compiledUniforms(mat);
-    for (const key of Object.keys(fx.air)) expect(after[key], key).toBe(fx.air[key]);
+    // The deck reads the haze cache's deck layer under the ground layer's
+    // names (app/hazeCache.ts); every other slot is the air block's own.
+    const deckLayer: Record<string, unknown> = { uHazeSun: fx.air.uHazeSunDeck, uHazeOn: fx.air.uHazeOnDeck };
+    for (const key of Object.keys(fx.air)) expect(after[key], key).toBe(deckLayer[key] ?? fx.air[key]);
     expect(after.uAirLookupRadius.value).toBe(AIR_LOOKUP_RADIUS.cloud);
     expect(after.uAirDensity.value).toBe(1);
   });

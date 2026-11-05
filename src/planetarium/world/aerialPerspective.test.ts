@@ -41,11 +41,13 @@ import {
   CLOUD_LIGHT_WRAP,
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   SURFACE_HAZE_CLEAR_VIEW,
+  HAZE_DIAG_GLSL,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
   createSurfaceAirFx,
   seatSurfaceLook,
+  surfaceShadingArgsOf,
   type SurfaceArchetype, OCEAN_BEAM_CAP, OCEAN_BEAM_KNEE, OCEAN_GLINT_CAP,
   SEA_WATER_COLOUR, parseSeaAxisParam,
 } from './surfaceShading';
@@ -53,6 +55,7 @@ import { DEFAULT_ALBEDO_PIVOT, resetSurfaceLookForTests, setSurfaceLookOverride 
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { resolveDefine } from '../testing/glslDefine';
 import { CLOUD_FIELD_DIAGNOSTICS } from './cloudField';
+import { hazeSurfaceDeclsGlsl, parseHazeCacheParam } from '../../app/hazeCache';
 
 /**
  * Aerial perspective — the air between the camera and everything drawn in front
@@ -112,8 +115,14 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '8e5be46c37eb278c1d05c2657ef68d6d0e39b0422a680a8683db9d4dc8940810';
-const PROD_FRAGMENT_HASH = '25349f00c4e612ef89ccb71966691bd6427c5b4f34870e8243960aef3a073750';
+const DEV_FRAGMENT_HASH = 'cb99837bb43d989c610400ccb2934664abf8d47d4159c8793894fb4d32bd81b5';
+const PROD_FRAGMENT_HASH = 'b7fdbfbc4b241986d9ea6265c509ee24f55d1ed67f68a8f9578a08d0c156bf92';
+/** The same two texts with the haze cache's define OFF (`?hazecache=0`,
+ *  app/hazeCache.ts), resolved as the preprocessor resolves it: the hashes the
+ *  shipped texts carried before the cache existed, unchanged. Every pin below
+ *  is of a text with this define resolved off as well. */
+const HAZE_OFF_DEV_FRAGMENT_HASH = '8e5be46c37eb278c1d05c2657ef68d6d0e39b0422a680a8683db9d4dc8940810';
+const HAZE_OFF_PROD_FRAGMENT_HASH = '25349f00c4e612ef89ccb71966691bd6427c5b4f34870e8243960aef3a073750';
 /** The same two texts with the lobe along the wind's define OFF
  *  (`?seaaxis=0`, world/surfaceShading SEA_AXIS), resolved as the
  *  preprocessor resolves it: the hashes the shipped texts carried before the
@@ -210,6 +219,64 @@ describe('the injected surface shader', () => {
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
 
+  it('is the text it was with the haze cache\'s define off, after the preprocessor', () => {
+    // HAZE_CACHE (app/hazeCache.ts) is a compile-time define, on unless
+    // `?hazecache=0`. Every line it adds is a whole line inside its own
+    // conditional and the one line it replaces stands verbatim in its #else,
+    // so with it off every surface compiles the program from before the
+    // cache, character for character, in either build.
+    const shader = compile(augmented('earth'));
+    const off = resolveDefine(shader.fragmentShader, 'HAZE_CACHE', false);
+    expect(off).not.toMatch(/HAZE_CACHE|uHaze|hazeSunInscatter|hazeReason/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? HAZE_OFF_DEV_FRAGMENT_HASH : HAZE_OFF_PROD_FRAGMENT_HASH);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    expect(shader.vertexShader).not.toContain('HAZE_CACHE');
+    // On by default on every augmented surface, and the switch's reading.
+    expect(augmented('earth').defines?.HAZE_CACHE).toBe('');
+    expect(augmented('cloud').defines?.HAZE_CACHE).toBe('');
+    expect(parseHazeCacheParam('')).toBe(true);
+    expect(parseHazeCacheParam('?hazecache=0')).toBe(false);
+  });
+
+  it('reads the Sun\'s in-scatter from the haze cache only where it is trusted, and exactly otherwise', () => {
+    const glsl = resolveDefine(compile(augmented('earth')).fragmentShader, 'HAZE_CACHE', true);
+    // The aerial block takes the Sun's in-scatter from the cache's function and
+    // scales it into the scene's light exactly as before.
+    expect(glsl).toMatch(/vec3 airS = hazeSunInscatter\(seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/);
+    const fn = glsl.slice(glsl.indexOf('vec3 hazeSunInscatter('), glsl.indexOf('\n}\n', glsl.indexOf('vec3 hazeSunInscatter(')));
+    // One fetch, explicit level 0, behind the layer's own switch.
+    expect(fn).toContain('if (uHazeOn > 0.0) {');
+    expect(fn).toContain('textureLod(uHazeSun, uv, 0.0)');
+    // The exact rules, on the fragment's own segment: the ground half of the
+    // table, grazing, the single-Mie cut-off with its margin, and the alpha.
+    expect(fn).toContain('float a = hazeExactOnly(seg) ? 0.0 : cached.a;');
+    expect(glsl).toContain('return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg);');
+    expect(glsl).toContain('return seg.muS >= -uHazeExact.y && seg.muS <= 0.01 + uHazeExact.y;');
+    expect(glsl).toContain('return 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);');
+    expect(fn).toContain('if (a >= 1.0) return cached.rgb;');
+    expect(fn).toContain('return a > 0.0 ? mix(exact, cached.rgb, a) : exact;');
+    // The transmittance and the Moon stay per fragment: still one traversal,
+    // and the Moon's lookup is the block's own.
+    expect(glsl).toContain('vec3 airT = aerialTransmittance(uTransmittance, seg);');
+    expect(glsl).toContain('aerialForLight(seg, normalize(uMoonDirWorld))');
+    // The deck reads its own layer under the same names.
+    const deck = augmented('cloud');
+    const fx = surfaceShadingArgsOf(deck)!.fx;
+    const stub = { uniforms: {} as Record<string, THREE.IUniform>, vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}', fragmentShader: '#include <common>\nvoid main() {\n#include <opaque_fragment>\n}' };
+    (deck.onBeforeCompile as (s: typeof stub) => void)(stub);
+    expect(stub.uniforms.uHazeSun).toBe(fx.air.uHazeSunDeck);
+    expect(stub.uniforms.uHazeOn).toBe(fx.air.uHazeOnDeck);
+    const ground = augmented('earth');
+    const gfx = surfaceShadingArgsOf(ground)!.fx;
+    const gstub = { ...stub, uniforms: {} as Record<string, THREE.IUniform> };
+    (ground.onBeforeCompile as (s: typeof stub) => void)(gstub);
+    expect(gstub.uniforms.uHazeSun).toBe(gfx.air.uHazeSun);
+    expect(gstub.uniforms.uHazeOn).toBe(gfx.air.uHazeOn);
+    // Off in a fresh block, and on the stand-in.
+    expect(gfx.air.uHazeOn.value).toBe(0);
+    expect(gfx.air.uHazeOnDeck.value).toBe(0);
+  });
+
   it('is the text it was with the lobe along the wind\'s define off, after the preprocessor', () => {
     // SEA_AXIS (world/surfaceShading) is a compile-time define, on unless
     // `?seaaxis=0`. Every line it adds is a whole line inside its own
@@ -218,7 +285,7 @@ describe('the injected surface shader', () => {
     // lobe had an axis, character for character, in either build: these are
     // the two hashes the shipped texts carried then.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(shader.fragmentShader, 'SEA_AXIS', false);
+    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'SEA_AXIS', false), 'HAZE_CACHE', false);
     expect(off).not.toMatch(/SEA_AXIS|seaAxis|seaBeckmannAxis|uniform mat3 normalMatrix/);
     expect(hash(off)).toBe(import.meta.env.DEV ? SEA_AXIS_OFF_DEV_FRAGMENT_HASH : SEA_AXIS_OFF_PROD_FRAGMENT_HASH);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -242,8 +309,8 @@ describe('the injected surface shader', () => {
     const shader = compile(augmented('earth'));
     // The cloud field's define is resolved off too: the deck's alone, off
     // under `?cloudtiles=0` (world/cloudField).
-    const off = resolveDefine(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
-      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false), 'SEA_AXIS', false);
+    const off = resolveDefine(resolveDefine(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
+      'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false), 'SEA_AXIS', false), 'HAZE_CACHE', false);
     expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
     expect(hash(off)).toBe(import.meta.env.DEV ? OFF_DEV_FRAGMENT_HASH : OFF_PROD_FRAGMENT_HASH);
@@ -258,7 +325,8 @@ describe('the injected surface shader', () => {
     // with it off the ground, the deck and the LUT shell compile the programs
     // from before the colour table existed, character for character.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'MIE_EXACT', false), 'SEA_AXIS', false);
+    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'MIE_EXACT', false), 'SEA_AXIS', false),
+      'HAZE_CACHE', false);
     expect(off).not.toMatch(/MIE_EXACT|uMieColour|getScatteringAndMieColour3D|getMieColour3D/);
     expect(hash(off)).toBe(import.meta.env.DEV ? MIE_OFF_DEV_FRAGMENT_HASH : MIE_OFF_PROD_FRAGMENT_HASH);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -294,10 +362,12 @@ describe('the injected surface shader', () => {
     // The lobe along the wind (SEA_AXIS) reads the wind's axis in the same
     // chunk, so the base's text is the one with both off; the default build's
     // sea text, the lobe on and the foam off, is pinned beside it.
-    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', false);
+    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', false),
+      'HAZE_CACHE', false);
     expect(off).not.toMatch(/WHITECAPS|FOAM_ALBEDO|seaFoam|SEA_AXIS|seaAxisWind/);
     expect(hash(off)).toBe(import.meta.env.DEV ? WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH : WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH);
-    const axisOn = resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', true);
+    const axisOn = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', true),
+      'HAZE_CACHE', false);
     expect(axisOn).not.toMatch(/WHITECAPS|FOAM_ALBEDO|seaFoam/);
     expect(axisOn).toContain('vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);');
     expect(hash(axisOn)).toBe(import.meta.env.DEV ? WHITECAPS_OFF_SEA_AXIS_ON_DEV_FRAGMENT_HASH : WHITECAPS_OFF_SEA_AXIS_ON_PROD_FRAGMENT_HASH);
@@ -389,20 +459,21 @@ describe('the injected surface shader', () => {
     // and nothing else.
     for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
       const shader = compile(augmented(archetype));
-      const off = resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false), 'SEA_AXIS', false);
+      const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false), 'SEA_AXIS', false),
+        'HAZE_CACHE', false);
       expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
       expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : FIELD_OFF_PROD_FRAGMENT_HASH);
       // The blank lines are all of it: each chunk read as its one newline is
       // the same text...
-      expect(resolveDefine(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
-        'CLOUD_FIELD', false), 'SEA_AXIS', false), archetype).toBe(off);
+      expect(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
+        'CLOUD_FIELD', false), 'SEA_AXIS', false), 'HAZE_CACHE', false), archetype).toBe(off);
       // ...and with both chunks gone, newlines and all, the shipped text is
       // the one production compiled before the field reached it — once the
       // single-Mie colour, which came after, is resolved off as well.
       if (!import.meta.env.DEV) {
-        const without = resolveDefine(resolveDefine(resolveDefine(
+        const without = resolveDefine(resolveDefine(resolveDefine(resolveDefine(
           shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
-          'CLOUD_FIELD', false), 'MIE_EXACT', false), 'SEA_AXIS', false);
+          'CLOUD_FIELD', false), 'MIE_EXACT', false), 'SEA_AXIS', false), 'HAZE_CACHE', false);
         expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
       }
       expect(shader.vertexShader).not.toContain('CLOUD_FIELD');
@@ -435,6 +506,10 @@ describe('the injected surface shader', () => {
       expect(Object.values(CLOUD_FIELD_DIAGNOSTICS)).toEqual(['', '', '', '']);
     }
     const folded = shader.fragmentShader
+      // The haze cache's development probes and readout have no production
+      // reading: the shipped text is its read alone.
+      .replace(hazeSurfaceDeclsGlsl(true), hazeSurfaceDeclsGlsl(false))
+      .replace(HAZE_DIAG_GLSL, '')
       .replace(CLOUD_FIELD_DIAGNOSTICS.uniform, '')
       .replace(CLOUD_FIELD_DIAGNOSTICS.functions, '')
       .replace(CLOUD_FIELD_DIAGNOSTICS.probe, '')
@@ -491,7 +566,7 @@ describe('the injected surface shader', () => {
       .replace(/uBeamKnee/g, OCEAN_BEAM_KNEE.toFixed(2))
       .replace(/uBeamCap/g, OCEAN_BEAM_CAP.toFixed(2))
       .replace(/ \* uGlintKeep/g, '');
-    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uSeaSky|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag/);
+    expect(folded).not.toMatch(/uPerf|uProbe|uGlint|uSeaColour|uSeaSky|uCloudShadow(Depth|Air|Penumbra|Gamma)|uCloudLight|uCloudShadowSkyFill|uCloudGroundFill|uCloudFieldDiag|uHazeProbe|uHazeDiag|hazeReason/);
     expect(hash(import.meta.env.DEV ? folded : shader.fragmentShader)).toBe(PROD_FRAGMENT_HASH);
     const night = import.meta.env.DEV
       ? earthNightFragmentShader
@@ -585,7 +660,9 @@ describe('the layer rule', () => {
   }
 
   it('applies color * T + S exactly once, scaled into the scene\'s own light', () => {
-    const glsl = compile(augmented('earth')).fragmentShader;
+    // The text the driver compiles with the haze cache's define off; the
+    // cache's own path is pinned in the test after this one.
+    const glsl = resolveDefine(compile(augmented('earth')).fragmentShader, 'HAZE_CACHE', false);
     expect(glsl).toMatch(
       /vec3 airS = aerialInscatter\(uScattering, seg, airT\)\s*\n\s*\* uAirlightScale \* \(uSolarIrradiance \* sunVisible\);/,
     );

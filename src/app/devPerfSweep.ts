@@ -463,6 +463,9 @@ const EXPECTED_SWITCHES: Record<string, { off: string; on: string; needsReload?:
   // interface on screen, which the sweep leaves as it found it outside the
   // control row.
   'engine-glass': { off: 'Interface glass blurred by the browser again', on: 'Interface glass blurred by the renderer', exact: false },
+  // Earth's sunlit haze from a screen-space cache (app/hazeCache.ts): live,
+  // and an approximation by design, so never exact.
+  'haze-cache': { off: "Earth's sunlit haze per fragment again", on: "Earth's sunlit haze from a screen-space cache", exact: false },
 };
 
 /**

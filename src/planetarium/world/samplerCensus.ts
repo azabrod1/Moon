@@ -20,6 +20,8 @@
  * read, never alone); CLOUD_FIELD and CLOUD_LIGHT on the deck, in any
  * combination; MIE_EXACT, the single-Mie colour table's sampler, on and off
  * across all of those on both surfaces, whichever reading this session booted;
+ * HAZE_CACHE, the haze cache's one sampler (app/hazeCache.ts), on and off
+ * across every one of those combinations in the same way;
  * and the atmosphere tables' sizes (the full and the half tier,
  * a define set on every surface). The ocean's gloss is a uniform, not a
  * define, so it forks no program; what it rides on is the roughness map, and
@@ -86,7 +88,7 @@ export function linkedSamplers(renderer: THREE.WebGLRenderer, mat: THREE.Materia
   return { count: names.length, names: names.sort() };
 }
 
-const SWITCHES = ['CLOUD_SHADOW', 'CLOUD_FIELD', 'CLOUD_LIGHT', 'MIE_EXACT'] as const;
+const SWITCHES = ['CLOUD_SHADOW', 'CLOUD_FIELD', 'CLOUD_LIGHT', 'MIE_EXACT', 'HAZE_CACHE'] as const;
 /** The ground's cloud combinations: the field only beside the shadow. */
 const GROUND_CLOUD_SWITCHES: string[][] = [[], ['CLOUD_SHADOW'], ['CLOUD_SHADOW', 'CLOUD_FIELD']];
 /** The single-Mie colour's two readings, crossed with every other combination
@@ -94,7 +96,10 @@ const GROUND_CLOUD_SWITCHES: string[][] = [[], ['CLOUD_SHADOW'], ['CLOUD_SHADOW'
  *  colour table's sampler to whatever else a program holds. */
 const MIE_SWITCHES: string[][] = [[], ['MIE_EXACT']];
 const withMie = (combos: string[][]): string[][] => combos.flatMap((c) => MIE_SWITCHES.map((m) => [...c, ...m]));
-const GROUND_SWITCHES = withMie(GROUND_CLOUD_SWITCHES);
+/** The haze cache's read, crossed the same way: a session define, on unless
+ *  `?hazecache=0`, that adds its one sampler to whatever a program holds. */
+const withHaze = (combos: string[][]): string[][] => combos.flatMap((c) => [c, [...c, 'HAZE_CACHE']]);
+const GROUND_SWITCHES = withHaze(withMie(GROUND_CLOUD_SWITCHES));
 const TABLE_SIZES = { full: ATMOSPHERE_TABLE_SIZES_FULL, half: ATMOSPHERE_TABLE_SIZES_HALF } as const;
 
 /** Every subset of a list, the empty one first. */
@@ -111,13 +116,15 @@ function texel(kind: 'color' | 'data'): THREE.Texture {
   return tex;
 }
 
-/** A row's table defines, with the session's own MIE_EXACT taken out: the row
- *  states its own reading of that switch, whichever one this session boots. */
+/** A row's table defines, with the session's own MIE_EXACT and HAZE_CACHE
+ *  taken out: the row states its own reading of each, whichever one this
+ *  session boots. */
 function tableDefines(
   defines: Record<string, unknown> | undefined, tables: 'full' | 'half',
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...defines, ...atmosphereTableDefines(TABLE_SIZES[tables]) };
   delete out.MIE_EXACT;
+  delete out.HAZE_CACHE;
   return out;
 }
 
@@ -153,7 +160,7 @@ export function devSamplerCensus(
         made.push({ row: { surface: 'ground', defines: on, tables, waterMask }, mat });
       }
     }
-    for (const on of withMie(subsets(['CLOUD_FIELD', 'CLOUD_LIGHT']))) {
+    for (const on of withHaze(withMie(subsets(['CLOUD_FIELD', 'CLOUD_LIGHT'])))) {
       const mat = new THREE.MeshStandardMaterial({ map: texel('color'), normalMap: texel('data'), transparent: true });
       augmentSurfaceMaterial(mat, 'cloud');
       mat.defines = tableDefines(mat.defines, tables);

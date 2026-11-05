@@ -98,6 +98,10 @@ import { parseNightExposureParam, setDevNightExposure, type NightExposureOverrid
 import { DepthDiscardPass } from './app/DepthDiscardPass';
 import { BloomChainPass, FusedOutputPass, parseFusedDownParam, parseFusedParam } from './app/FusedOutputPass';
 import { GlassBackdrop, GlassSourcePass, parseGlassParam } from './app/glassBackdrop';
+import {
+  HAZE_REASONS, HazeCache, HazeCacheEndPass, HazeCachePass, hazeDiagUniform, parseHaze32fParam, parseHazeCacheParam,
+  parseHazeDivisorParam, parseHazeExactParam, setHazeCacheCompiled, type HazeProbe,
+} from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
@@ -374,6 +378,10 @@ setSeaAxisEnabled(parseSeaAxisParam(location.search));
 // MIE_EXACT define, world/atmosphereLut). Set here, before any material that
 // compiles the lookup exists; the picture as it was.
 setMieExactEnabled(parseMieExactParam(location.search));
+// `?hazecache=0`: Earth's sunlit haze evaluated per fragment everywhere, the
+// surfaces compiled without the cache's read (app/hazeCache.ts). Set here,
+// before any surface is augmented; the picture as it was.
+setHazeCacheCompiled(parseHazeCacheParam(location.search));
 // `?seacolour=0`: the sea drawn in the day map's painted navy again instead
 // of clear ocean water's own colour (world/surfaceShading SEA_WATER_COLOUR).
 setSeaColourEnabled(parseSeaColourParam(location.search));
@@ -996,6 +1004,17 @@ let sceneAllocSize: TargetSize = { width: 0, height: 0 };
 let sceneRectsLive: SceneRects = sceneRects({ width: 1, height: 1 }, { width: 1, height: 1 });
 /** The last clamp reported, so a tripwire that stays tripped says so once. */
 let sceneRectClampSaid = '';
+/** Earth's sunlit haze cache (app/hazeCache.ts): its pass runs before the
+ *  planetarium's scene draw, sized from the active draw rectangle. */
+const hazeCache = new HazeCache(
+  () => planetariumMode?.hazeCacheSubject() ?? null,
+  () => sceneRectsLive.draw,
+  {
+    divisor: parseHazeDivisorParam(location.search, import.meta.env.DEV),
+    ...parseHazeExactParam(location.search, import.meta.env.DEV),
+    f32: parseHaze32fParam(location.search, import.meta.env.DEV),
+  },
+);
 /** The sub-rect uniforms of the two passes that read a scene-sized target and
  *  are not ours to declare: the lens pass and the bloom bright pass. The
  *  finishing pass carries its own (app/UpscalePass.ts). */
@@ -1431,7 +1450,11 @@ function buildComposer(
   // found fast. The passes are sized again at the end of the build, once they
   // all exist.
   sizeComposerToScene(cam);
+  // Earth's haze cache is drawn for, and in force during, this one scene draw
+  // (app/hazeCache.ts): the planetarium's composer only, where Earth is.
+  if (cam === planetariumCamera) composer.addPass(new HazeCachePass(hazeCache, cam));
   composer.addPass(new RenderPass(scene, cam));
+  if (cam === planetariumCamera) composer.addPass(new HazeCacheEndPass(hazeCache));
   // The world's depth and stencil have no reader past this point
   // (app/DepthDiscardPass.ts). Enabled/disabled rather than added/removed, so
   // the A/B never rebuilds the chain it is being measured against.
@@ -3232,7 +3255,7 @@ let devInjectSeq = -1;
  */
 let devSceneReadTarget: THREE.WebGLRenderTarget | null = null;
 let devSceneReadQuad: FullScreenQuad | null = null;
-function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } = {}): unknown {
+function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number; raw?: boolean } = {}): unknown {
   if (!import.meta.env.DEV || !sceneTarget) return null;
   const cam = planetariumCamera;
   const draw = sceneTargetSize(window.innerWidth, window.innerHeight, scenePixelRatioFor(cam, getTargetPixelRatio()));
@@ -3276,6 +3299,7 @@ function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } =
   if (w <= 0 || h <= 0) return null;
   const pixels = new Float32Array(w * h * 4);
   renderer.readRenderTargetPixels(devSceneReadTarget, x, y, w, h, pixels);
+  if (opts.raw) return { width, height, pixels };
   const bytes = new Uint8Array(pixels.buffer);
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -3303,6 +3327,66 @@ function devReadScene(opts: { x?: number; y?: number; w?: number; h?: number } =
     },
     sceneTarget: { width: sceneTarget.width, height: sceneTarget.height, samples: sceneTarget.samples },
   };
+}
+
+/** The meshes the haze cache's readout hid, with what their materials wrote. */
+let hazeDiagHidden: Array<{ material: THREE.Material; colorWrite: boolean }> = [];
+
+/**
+ * The haze cache's development readout (app/hazeCache.ts): `'all'` draws every
+ * Earth surface as the code of the way its Sun in-scatter went, `'ground'` the
+ * same with the cloud deck left out, `'off'` the picture. Everything that is
+ * not an augmented surface — the shells, the night lights, the stars — writes
+ * no colour meanwhile, so the scene target holds the codes alone.
+ */
+function devHazeDiag(mode: 'off' | 'all' | 'ground'): void {
+  for (const { material, colorWrite } of hazeDiagHidden) material.colorWrite = colorWrite;
+  hazeDiagHidden = [];
+  hazeDiagUniform.value = mode === 'off' ? 0 : 1;
+  if (mode === 'off') return;
+  scene.traverse((o) => {
+    const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!m) return;
+    for (const material of Array.isArray(m) ? m : [m]) {
+      const args = surfaceShadingArgsOf(material);
+      if (args && !(mode === 'ground' && args.archetype === 'cloud')) continue;
+      hazeDiagHidden.push({ material, colorWrite: material.colorWrite });
+      material.colorWrite = false;
+    }
+  });
+}
+
+/** The share of the visible ground and deck on each way the Sun's in-scatter
+ *  went, from two readout frames (the ground with the deck left out, then
+ *  the deck over it). */
+async function devHazeCoverage(waitDraws: (n: number) => Promise<unknown>): Promise<unknown> {
+  const count = (layer: 'ground' | 'deck'): Record<string, number> | null => {
+    const read = devReadScene({ raw: true }) as { pixels: Float32Array } | null;
+    if (!read) return null;
+    const n = new Array<number>(HAZE_REASONS.length).fill(0);
+    const px = read.pixels;
+    for (let i = 0; i < px.length; i += 4) {
+      const v = layer === 'deck' ? px[i + 1] : (px[i + 1] > 0 ? 0 : px[i]);
+      if (!(v > 0)) continue;
+      const code = Math.round(v * 16 - 1);
+      if (code >= 0 && code < n.length) n[code]++;
+    }
+    const total = n.reduce((a, b) => a + b, 0);
+    const out: Record<string, number> = { pixels: total };
+    HAZE_REASONS.forEach((name, i) => { out[name] = total ? +(n[i] / total).toFixed(4) : 0; });
+    return out;
+  };
+  try {
+    devHazeDiag('ground');
+    await waitDraws(2);
+    const ground = count('ground');
+    devHazeDiag('all');
+    await waitDraws(2);
+    const deck = count('deck');
+    return { ground, deck };
+  } finally {
+    devHazeDiag('off');
+  }
 }
 
 function installDevHooks() {
@@ -3395,6 +3479,31 @@ function installDevHooks() {
     // The scene target's linear HDR pixels of the last frame, before the
     // lens, the bloom, the exposure and the tone curve (devReadScene).
     readScene: (opts?: { x?: number; y?: number; w?: number; h?: number }) => devReadScene(opts),
+    /**
+     * Earth's haze cache (app/hazeCache.ts): moves its knobs (`divisor`,
+     * `grazing`, `margin` — the Mie band's width in cache texels — `probe`,
+     * `layers`), switches the reason readout (`diag`: 'all' | 'ground' |
+     * 'off') and, with `coverage`, measures the share of the visible ground
+     * and deck on the cache and on each exact reason. Returns the state.
+     */
+    hazeCache: async (opts: {
+      divisor?: number; grazing?: number; margin?: number; probe?: HazeProbe; layers?: 'ground' | 'both';
+      diag?: 'off' | 'all' | 'ground'; coverage?: boolean;
+    } = {}) => {
+      const state = hazeCache.devSet(opts);
+      if (opts.diag) devHazeDiag(opts.diag);
+      const lens = planetariumCamera.userData.lens as { strength: number; designFovDeg: number; effectiveStrength?: number } | undefined;
+      const lensState = {
+        strength: lens ? (lens.effectiveStrength ?? lens.strength) : 0,
+        designFovDeg: lens?.designFovDeg ?? planetariumCamera.fov,
+        fov: planetariumCamera.fov,
+        aspect: planetariumCamera.aspect,
+      };
+      if (!opts.coverage) return { ...state, lens: lensState };
+      const waitDraws = (window as unknown as { __moon: { waitForDraw: (n: number) => Promise<unknown> } }).__moon.waitForDraw;
+      const coverage = await devHazeCoverage(waitDraws);
+      return { ...hazeCache.readout(), lens: lensState, coverage };
+    },
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (
@@ -3917,6 +4026,8 @@ function installDevHooks() {
               : pass === bloomPass ? 'Bloom'
               : pass instanceof FusedOutputPass ? 'Finishing'
               : pass instanceof GlassSourcePass ? 'Glass source'
+              : pass instanceof HazeCachePass ? 'Haze cache'
+              : pass instanceof HazeCacheEndPass ? 'Haze cache end'
               : pass === outputTargetPass ? 'OutputPass'
               : pass.constructor.name,
             pass: pass as unknown as { render: (...args: unknown[]) => void },

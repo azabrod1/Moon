@@ -24,6 +24,7 @@ import {
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
+import type { HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
@@ -39,7 +40,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, prebuildGeometryStep, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, wantsGeometryPrebuild, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { AIR_LOOKUP_RADIUS, MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
@@ -18458,6 +18459,30 @@ export class PlanetariumMode {
     // Auto-exposure settles on its own from the smoothed target (same as the
     // sibling dev pose helpers) — no manual snap flag exists on this path.
     return true;
+  }
+
+  /**
+   * The body the haze cache serves (app/hazeCache.ts) — Earth, while its
+   * tables are live on its surfaces and its globe is drawn — or null. Asked
+   * once a frame by the cache's pass, after this mode's update has placed
+   * everything; the deck is named only while it is drawn.
+   */
+  hazeCacheSubject(): HazeCacheSubject | null {
+    const earth = this.solarSystem?.planets.find((p) => p.data.name === 'Earth');
+    const air = earth?.fx?.air;
+    if (!earth || !air || !((air.uAirDensity.value as number) > 0)) return null;
+    const drawn = (o: THREE.Object3D | undefined): boolean => {
+      for (let n: THREE.Object3D | null | undefined = o; n; n = n.parent) if (!n.visible) return false;
+      return !!o;
+    };
+    if (!drawn(earth.mesh)) return null;
+    return {
+      air,
+      sunDirWorld: earth.fx!.uSunDirWorld,
+      globe: earth.mesh,
+      deck: drawn(earth.cloudsMesh) ? earth.cloudsMesh! : null,
+      deckRadius: AIR_LOOKUP_RADIUS.cloud,
+    };
   }
 
   /**

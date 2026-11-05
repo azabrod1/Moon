@@ -99,6 +99,15 @@
  * saving is outside the frame, in the compositor, so the sweep measures it
  * with the interface shown.
  *
+ * `haze-cache` is Earth's sunlit haze read from a per-frame screen-space
+ * cache instead of evaluated per fragment (app/hazeCache.ts). It is an
+ * approximation by design — a fragment's Sun in-scatter interpolated from
+ * values a few pixels away, held to the exact value wherever that could show
+ * — so it is never exact and never in the combined row. It flips live (a
+ * uniform and the pass's draw, no relink) and it ships with a door of its
+ * own: `?hazecache=0` on any build compiles the surfaces without the cache at
+ * all.
+ *
  * There is deliberately no key for the render resolution. The graphics-quality
  * levels are its A/B (`?quality=medium` is the picture as it was, and
  * `?upscale=<ratio>` pins any scene ratio for a measurement), and a key here
@@ -129,6 +138,7 @@ export type PerfSwitchKey =
   | 'cloud-shadow'
   | 'cloud-light'
   | 'engine-glass'
+  | 'haze-cache'
   | 'cloud-probe-smooth'
   | 'cloud-probe-detail'
   | 'cloud-probe-relief'
@@ -142,8 +152,9 @@ export type PerfSwitchKey =
  * on has its cheap path as the only path there, and one that defaults off has
  * neither path. The exception is a key whose old path is a kill switch reached
  * by a URL parameter of its own — `fused-final`, `fused-downsample`,
- * `ground-cull`, `cloud-shadow`, `cloud-light` — where both paths are in the
- * production bundle and only this registry's reading of them is DEV.
+ * `ground-cull`, `cloud-shadow`, `cloud-light`, `haze-cache` — where both
+ * paths are in the production bundle and only this registry's reading of them
+ * is DEV.
  */
 export const PERF_SWITCHES: ReadonlyArray<{
   key: PerfSwitchKey;
@@ -169,6 +180,7 @@ export const PERF_SWITCHES: ReadonlyArray<{
   { key: 'cloud-shadow', label: 'Cloud shadows on the ground', on: true, needsReload: true },
   { key: 'cloud-light', label: 'Cloud deck lit as a cloud', on: true, needsReload: true },
   { key: 'engine-glass', label: 'Interface glass blurred by the renderer', on: true },
+  { key: 'haze-cache', label: "Earth's sunlit haze from a screen-space cache", on: true },
   { key: 'cloud-probe-smooth', label: 'Cloud deck probe: smooth filter off', on: false },
   { key: 'cloud-probe-detail', label: 'Cloud deck probe: detail term off', on: false },
   { key: 'cloud-probe-relief', label: 'Cloud deck probe: relief map off', on: false },
@@ -195,6 +207,7 @@ const DEFAULT_ON: Record<PerfSwitchKey, boolean> = {
   'cloud-shadow': true,
   'cloud-light': true,
   'engine-glass': true,
+  'haze-cache': true,
   'cloud-probe-smooth': false,
   'cloud-probe-detail': false,
   'cloud-probe-relief': false,

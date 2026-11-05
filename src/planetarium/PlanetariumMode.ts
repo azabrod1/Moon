@@ -832,6 +832,12 @@ export interface HorizonViewPose {
   groundHitKm: number | null;
 }
 
+/** Whether an object and every ancestor are visible: drawn by the next render. */
+function drawnInScene(o: THREE.Object3D | undefined): boolean {
+  for (let n: THREE.Object3D | null | undefined = o; n; n = n.parent) if (!n.visible) return false;
+  return !!o;
+}
+
 export class PlanetariumMode {
   // The cruise rig (clearance pads, chase distance, occluder disc, zoom
   // floor) lives in cruiseView.ts as one derived chain.
@@ -18467,23 +18473,26 @@ export class PlanetariumMode {
    * once a frame by the cache's pass, after this mode's update has placed
    * everything; the deck is named only while it is drawn.
    */
+  private hazeSubject: HazeCacheSubject | null = null;
+
   hazeCacheSubject(): HazeCacheSubject | null {
-    const earth = this.solarSystem?.planets.find((p) => p.data.name === 'Earth');
+    const planets = this.solarSystem?.planets;
+    if (!planets) return null;
+    let earth: PlanetMesh | undefined;
+    for (const p of planets) if (p.data.name === 'Earth') { earth = p; break; }
     const air = earth?.fx?.air;
-    if (!earth || !air || !((air.uAirDensity.value as number) > 0)) return null;
-    const drawn = (o: THREE.Object3D | undefined): boolean => {
-      for (let n: THREE.Object3D | null | undefined = o; n; n = n.parent) if (!n.visible) return false;
-      return !!o;
-    };
-    if (!drawn(earth.mesh)) return null;
-    return {
-      air,
-      sunDirWorld: earth.fx!.uSunDirWorld,
-      globe: earth.mesh,
-      deck: drawn(earth.cloudsMesh) ? earth.cloudsMesh! : null,
+    if (!earth || !air || !((air.uAirDensity.value as number) > 0) || !drawnInScene(earth.mesh)) return null;
+    // One object, rewritten in place: the cache asks every frame.
+    const subject = (this.hazeSubject ??= {
+      air, sunDirWorld: earth.fx!.uSunDirWorld, globe: earth.mesh, deck: null,
       deckRadius: AIR_LOOKUP_RADIUS.cloud,
       moonDayLimitSin: Math.max(NIGHT_FILL.earth.termWidth, NIGHT_FILL.cloud.termWidth),
-    };
+    });
+    subject.air = air;
+    subject.sunDirWorld = earth.fx!.uSunDirWorld;
+    subject.globe = earth.mesh;
+    subject.deck = drawnInScene(earth.cloudsMesh) ? earth.cloudsMesh! : null;
+    return subject;
   }
 
   /**

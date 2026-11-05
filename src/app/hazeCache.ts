@@ -30,25 +30,41 @@
  * weight, the loading fade, the cloud shadow's share of the air, the eclipse,
  * the Moon's own weight and irradiance, and the bridge to the scene's Sun.
  * Earth's night-lights shell is its own material and stays exact. Earth only:
- * every other body with tables keeps its exact per-fragment haze, because
- * Earth is where the cost is and a body that is not cached cannot be moved by
- * the cache.
+ * Earth is where the cost is, and every other body with tables keeps its
+ * exact per-fragment haze — its uniforms never switch the cache on. Its
+ * program does carry the cache's read, the text being one for every body, and
+ * a longer program can round a lit term differently by one display step at a
+ * scattering of pixels; at the Moon and Mars poses it measured no change.
  *
  * **The atlas.** A surface material may bind one more sampler and no more
  * (the census holds the busiest program at 15 of 16 units), so each layer's
- * three quantities share one RGBA16F texture: three blocks of the cache's
- * width side by side, Sun's in-scatter with the alpha, then transmittance,
- * then the Moon's in-scatter, a guard column between blocks. A surface reads
- * each block with the same sampler at its own offset, its coordinate clamped
- * to that block's texel centres, so a bilinear footprint never reaches across
- * a block's edge — the guard is only a margin behind that clamp. The pass
- * draws one quad per layer over the whole atlas: each texel finds its block
- * from its column, evaluates its cell's segment once and only its own
- * block's quantity. The transmittance is evaluated in all three blocks,
- * because both in-scatters are near minus far carried back through it; that
- * is two 2D fetches each. The Moon's block is skipped while no moonlight is
- * bound, and in any cell whose ground point has the Sun too high for a
- * fragment near it to take moonlight (HAZE_MOON_MARGIN_SIN).
+ * three quantities share one RGBA16F texture: three blocks side by side, the
+ * Sun's in-scatter with the alpha, then the transmittance, then the Moon's
+ * in-scatter with an alpha of its own, a guard column between blocks. A
+ * surface reads each block with the same sampler at its own offset, its
+ * coordinate clamped a 256th of a texel inside that block's outer texel
+ * centres, so a bilinear footprint never takes weight from beyond the block's
+ * drawn cells — not even through a coordinate rounded the wrong way on
+ * hardware that snaps sub-texel weights; the guard is a margin behind that.
+ * The pass draws one quad per layer: each texel finds its block from its
+ * column, evaluates its cell's segment once and only its own block's
+ * quantity. The transmittance is evaluated in all three blocks, because both
+ * in-scatters are near minus far carried back through it; that is two 2D
+ * fetches each. The Moon's block is left empty while no moonlight is bound,
+ * and in any cell whose ground point has the Sun too high for a fragment near
+ * it to take moonlight (HAZE_MOON_MARGIN_SIN) — an empty Moon cell carries
+ * alpha 0, so a fragment that would read it is evaluated exactly instead.
+ *
+ * **Allocated once.** The atlas is sized from the ALLOCATED scene size
+ * (main.ts sceneRectsLive.alloc), not the drawn one: under Dynamic the frame
+ * is drawn into a sub-rectangle of a fixed allocation and the rectangle moves
+ * on every rung, and a cache that followed it would free and re-create both
+ * atlases in a frame that is already late. The blocks are laid out at the
+ * allocated width; each frame draws only the cells the active rectangle needs
+ * (through a viewport), and the surfaces read only those. The two atlases are
+ * held for the session: at High on a 1728 × 1117 window at a ratio of 2 (a
+ * 5184 × 3351 allocation) each is 3890 × 838 half-float texels, about 26 MB,
+ * 52 MB for the two; at Medium on the same window about 23 MB.
  *
  * **Where the cache is not trusted.** The cached value is a different segment
  * from the fragment's own: the mesh is a polyhedron and the cache ends on the
@@ -63,17 +79,26 @@
  *     grazing measure, at the segment's end): the limb, where the column
  *     changes fastest and a footprint of 8 or 16 pixels can reach across the
  *     silhouette;
- *   - its segment-entry Sun cosine — or, where the Moon lights it, the Moon's
- *     — lies within one cache texel's angle of the interval `0 … 0.01` over
+ *   - its own segment-entry Sun cosine — or, where the Moon lights it, the
+ *     Moon's — lies within `HAZE_MIE_EPS` of the interval `0 … 0.01` over
  *     which `aerialInscatter` switches single Mie off below the horizon, a cut
- *     0.57 degrees wide that interpolation would smear by a texel;
- *   - the footprint's alpha says so (below).
+ *     0.57 degrees wide that interpolation would smear;
+ *   - the footprint's alpha says so (below), which is also where the cut is
+ *     guarded at the scale of a cell: the pass knows the entry cosines of the
+ *     nine rays around each cell, and how fast they change across a cell
+ *     depends on how far the camera stands from where the ray enters the air
+ *     — a fortieth of the cut's width per cell from 1.05 R, several cuts' worth
+ *     per cell from 8 R — so no fixed margin on the fragment could be right at
+ *     every distance.
  *
  * **The alpha contract.** It lives in the Sun's block and decides all three
  * reads at that coordinate. Each texel's alpha is computed in the pass from
  * the geometry alone, no table fetch: the cell and its eight neighbours each
  * cast a ray through their centres, and the cell is trusted only if all nine
- * reach the ground. A trusted cell's alpha is its distance from the ground's
+ * reach the ground and the range of their nine segment-entry Sun cosines
+ * stays clear of the single-Mie cut (widened by `HAZE_MIE_EPS`); the Moon's
+ * block carries the same test on the Moon's cosines in its own alpha, which
+ * the surface reads where the Moon lights it. A trusted cell's alpha is its distance from the ground's
  * projected silhouette, in cache texels (the angle between its ray and the
  * body's centre against the silhouette cone `asin(R/|camera|)`, times the
  * scene camera's focal length in texels), mapped `(distance − 1) / 3` onto
@@ -97,11 +122,12 @@
  * for the surfaces; the second switches it off again. So the cache is in force
  * only for the one scene draw it was rendered for: a warm-up draw, a census
  * link, a resize, a mode change, a table rebind or a context restore between
- * frames always sees it off and draws the exact haze. Sized from the ACTIVE
- * scene draw rectangle (main.ts applySceneViewports), not the canvas and not
- * the allocated target: under Dynamic the frame is drawn into a sub-rectangle
- * of a larger allocation, and the rectangle moves on every rung. Linear data:
- * no tone curve, no blending, no depth, no mipmaps; the targets are linear,
+ * frames always sees it off and draws the exact haze; a pass that begins
+ * switches the last frame's layers off before anything else, so not even a
+ * scene draw that threw can leave them on. The cells are the ACTIVE scene
+ * draw rectangle's (main.ts applySceneViewports), not the canvas's: the rays
+ * and the surfaces' coordinates both run over that rectangle. Linear data: no
+ * tone curve, no blending, no depth, no mipmaps; the targets are linear,
  * clamped and filtered.
  *
  * **Doors.** `?hazecache=0` (any build) compiles the surfaces without the
@@ -109,7 +135,7 @@
  * from before the cache, character for character. The DEV switch `haze-cache`
  * (app/perfSwitches.ts) turns it off live, inside one compiled program, for an
  * A/B out of one page load. DEV `?hazecachediv=<n>` sets the divisor,
- * `?hazeexact=<grazing>,<margin scale>` the exact band, `?hazecache32f=1`
+ * `?hazeexact=<grazing>,<scale of HAZE_MIE_EPS>` the exact band, `?hazecache32f=1`
  * stores the cache in 32-bit float to separate storage error from spatial
  * error, `?hazeprobe=1` compiles the full-resolution probes and the reason
  * readout, and `__moon.hazeCache()` reads the state out (size, divisor, exact
@@ -139,14 +165,29 @@ export const HAZE_CACHE_DIVISOR = 4;
  *  darker in one channel in eight; at 0.7 that band is within the gate. */
 export const HAZE_EXACT_GRAZING = 0.7;
 /** How far past the surfaces' own moonlight limit (the subject's
- *  `moonDayLimitSin`) the pass still evaluates the Moon's block, in the Sun's
- *  elevation sine at the cell's ground point: about 6 degrees, more than the
- *  ground two cells span anywhere short of the grazing band, so a cell left
- *  empty is never weighted by a fragment that takes moonlight. */
+ *  `moonDayLimitSin`) the pass still fills the Moon's block, in the Sun's
+ *  elevation sine at the cell's ground point: about 6 degrees. A saving, not
+ *  the guarantee: the surfaces weight moonlight by the Sun over their own
+ *  (relief-perturbed) normal, and far out two cells near the grazing band can
+ *  span more than this, so an empty Moon cell carries alpha 0 and a fragment
+ *  whose footprint touches one is evaluated exactly. */
 export const HAZE_MOON_MARGIN_SIN = 0.1;
 /** The single-Mie cut-off `aerialInscatter` applies, as the segment-entry Sun
  *  cosine at which it is complete. Its start is 0. */
 export const HAZE_MIE_CUT = 0.01;
+/** How far either side of that cut a light's segment-entry cosine still
+ *  counts as inside it: a tenth of the cut's own width. The cell's test (the
+ *  range of its nine rays) brackets the cosine across the cell; this covers
+ *  what the bracket can miss — the cosine's curvature between ray centres,
+ *  and the fragment's own segment ending on the mesh rather than on the
+ *  sphere — and it is also the fragment's own margin, kept because a
+ *  fragment that sits in the cut is exact whatever its cells say. */
+export const HAZE_MIE_EPS = 0.001;
+/** What a bilinear alpha has to reach to count as one: 1 − 1/1024, so a
+ *  footprint whose weights round a hair under one still takes the cache. */
+export const HAZE_FULL = 1 - 1 / 1024;
+/** How far inside its outer texel centres a block is read, in texels. */
+export const HAZE_EDGE = 1 / 256;
 
 /** `?hazecache=0`, any build: the surfaces compile without the cache. */
 export function parseHazeCacheParam(search: string): boolean {
@@ -222,6 +263,106 @@ float hazeSphereHit(vec3 origin, vec3 dir, float radius) {
 }
 `;
 
+/** Where the cells sit in a layer's atlas. `cw × ch` cells are drawn this
+ *  frame (the active rectangle over the divisor); the blocks are laid out at
+ *  the allocation's width `cwAlloc`, `stride` texels apart, so a rung step
+ *  moves no memory. */
+export interface HazeAtlasLayout {
+  cw: number;
+  ch: number;
+  cwAlloc: number;
+  chAlloc: number;
+  stride: number;
+  atlasW: number;
+  atlasH: number;
+}
+
+/** The atlas for an active draw rectangle inside an allocation, both in
+ *  scene pixels. Its size depends on the allocation alone. */
+export function hazeAtlasLayout(
+  drawW: number, drawH: number, allocW: number, allocH: number, divisor: number,
+): HazeAtlasLayout {
+  const cw = Math.max(1, Math.ceil(drawW / divisor));
+  const ch = Math.max(1, Math.ceil(drawH / divisor));
+  const cwAlloc = Math.max(cw, Math.ceil(allocW / divisor));
+  const chAlloc = Math.max(ch, Math.ceil(allocH / divisor));
+  const stride = cwAlloc + 1;
+  return { cw, ch, cwAlloc, chAlloc, stride, atlasW: 2 * stride + cwAlloc, atlasH: chAlloc };
+}
+
+/** The pass's reading of an atlas column (its GLSL, in integers): which
+ *  block and which cell, or null for a column no cell is drawn into. */
+export function hazeAtlasCell(x: number, layout: HazeAtlasLayout): { block: number; local: number } | null {
+  const block = Math.floor(x / layout.stride);
+  const local = x - block * layout.stride;
+  return block > 2 || local >= layout.cw ? null : { block, local };
+}
+
+/** The surface's read of block `block` from the pixel centre (x, y) of a
+ *  drawW × drawH rectangle, in atlas texels, as its GLSL computes it in single
+ *  precision: the cell coordinate clamped HAZE_EDGE inside the outer cell
+ *  centres (a block one cell wide at its centre), then the block's offset. */
+export function hazeAtlasSample(
+  x: number, y: number, drawW: number, drawH: number, layout: HazeAtlasLayout, block: number,
+): [number, number] {
+  const f = Math.fround;
+  const clampCell = (v: number, n: number): number => {
+    const lo = Math.min(f(0.5 + HAZE_EDGE), f(0.5 * n));
+    const hi = Math.max(f(n - 0.5 - HAZE_EDGE), f(0.5 * n));
+    return Math.min(Math.max(v, lo), hi);
+  };
+  const cx = clampCell(f(f(x / drawW) * layout.cw), layout.cw);
+  const cy = clampCell(f(f(y / drawH) * layout.ch), layout.ch);
+  const u = f(f(cx * f(1 / layout.atlasW)) + f(block * f(layout.stride / layout.atlasW)));
+  const v = f(cy * f(1 / layout.atlasH));
+  return [u * layout.atlasW, v * layout.atlasH];
+}
+
+/** The projection's ray terms, (1/P00, 1/P11, P20/P00, P21/P11). */
+export function hazeRayTerms(projection: ArrayLike<number>, out: THREE.Vector4): THREE.Vector4 {
+  return out.set(1 / projection[0], 1 / projection[5], projection[8] / projection[0], projection[9] / projection[5]);
+}
+
+/** HAZE_RAY_GLSL's hazeRayDir on the CPU. */
+export function hazeRayDirCpu(
+  ndcX: number, ndcY: number, ray: THREE.Vector4, basis: THREE.Matrix3, out: THREE.Vector3,
+): THREE.Vector3 {
+  return out.set(ndcX * ray.x + ray.z, ndcY * ray.y + ray.w, -1).applyMatrix3(basis).normalize();
+}
+
+const _gvToCentre = new THREE.Vector3();
+const _gvAxis = new THREE.Vector3();
+const SIGNS = [-1, 1] as const;
+/**
+ * Whether a view can reach a sphere's ground at all: the angle from the
+ * view's axis to the sphere's centre against the sphere's silhouette cone
+ * plus the view's widest corner, the corners taken from the projection itself
+ * (its off-axis terms included) and a degree over. A camera close to the body
+ * is inside any bounding sphere wherever it looks — the Observatory looking
+ * straight up — so a frustum test alone draws the cache for a frame with no
+ * ground in it.
+ */
+export function hazeGroundInView(
+  camPos: THREE.Vector3, camMatrixWorld: THREE.Matrix4, projection: ArrayLike<number>,
+  centre: THREE.Vector3, groundRadius: number,
+): boolean {
+  _gvToCentre.subVectors(centre, camPos);
+  const dist = _gvToCentre.length();
+  if (!(dist > groundRadius)) return true;
+  const edge = Math.asin(groundRadius / dist);
+  _gvAxis.set(0, 0, -1).transformDirection(camMatrixWorld);
+  const axisAngle = _gvAxis.angleTo(_gvToCentre);
+  let corner = 0;
+  for (const sx of SIGNS) {
+    for (const sy of SIGNS) {
+      const vx = (sx + projection[8]) / projection[0];
+      const vy = (sy + projection[9]) / projection[5];
+      corner = Math.max(corner, Math.atan(Math.hypot(vx, vy)));
+    }
+  }
+  return axisAngle <= edge + corner + THREE.MathUtils.degToRad(1);
+}
+
 /**
  * What the surfaces add under `HAZE_CACHE`: the cache's uniforms and the
  * function that hands the aerial block its Sun in-scatter. Injected right
@@ -269,10 +410,13 @@ vec3 hazeProbeInscatter(AerialSegment seg, vec3 airT) {
 }
 #endif
 ` : '';
+  const full = HAZE_FULL.toFixed(10);
+  const edge = HAZE_EDGE.toFixed(8);
   const reason = dev
     ? `#ifdef HAZE_PROBE
     hazeReason = !seg.hitsGround ? 2.0 : hazeGrazing(seg) >= uHazeExact.x ? 3.0 : hazeMieBand(seg.muS) ? 4.0
-        : moonOn && hazeMieBand(hazeMoonMuS(seg)) ? 5.0 : sunA.a <= 0.0 ? 6.0 : sunA.a < 1.0 ? 7.0 : 8.0;
+        : moonOn && hazeMieBand(hazeMoonMuS(seg)) ? 5.0 : sunA.a <= 0.0 ? 6.0
+        : moonOn && moonA.a < ${full} ? 5.0 : sunA.a < ${full} ? 7.0 : 8.0;
 #endif
 `
     : '';
@@ -281,7 +425,8 @@ uniform sampler2D uHazeSun;
 uniform float uHazeOn;
 uniform vec4 uHazeViewport;
 uniform vec2 uHazeExact;
-uniform vec3 uHazeAtlas;
+uniform vec4 uHazeAtlas;
+uniform float uHazeStride;
 // The haze weight's own grazing measure, at the segment's end.
 float hazeGrazing(AerialSegment seg) {
   vec3 up = normalize(seg.origin + seg.view * seg.d);
@@ -314,30 +459,41 @@ HazeRead hazeRead(AerialSegment seg, bool moonOn) {
   HazeRead h = HazeRead(0.0, vec3(1.0), vec3(0.0), vec3(0.0), vec3(1.0));
 ${dev ? '#ifdef HAZE_PROBE\n  hazeReason = 1.0;\n#endif\n' : ''}  if (uHazeOn > 0.0) {
     vec2 uv = (gl_FragCoord.xy - uHazeViewport.xy) / uHazeViewport.zw;
-    // The three blocks of the atlas side by side, each read clamped to its own
-    // texel centres, so a footprint never reaches across a block's edge.
-    vec2 at = vec2(clamp(uv.x * uHazeAtlas.x, 0.5, uHazeAtlas.x - 0.5) / uHazeAtlas.y, uv.y);
+    // The drawn cells of the first block, clamped a 256th of a texel inside
+    // their outer centres (a block one cell wide is read at its centre); the
+    // other two blocks lie a stride further on.
+    vec2 lo = min(vec2(0.5 + ${edge}), 0.5 * uHazeAtlas.xy);
+    vec2 cell = clamp(uv * uHazeAtlas.xy, lo, max(uHazeAtlas.xy - 0.5 - ${edge}, 0.5 * uHazeAtlas.xy));
+    vec2 at = cell * uHazeAtlas.zw;
     vec4 sunA = textureLod(uHazeSun, at, 0.0);
-${reason}    h.a = hazeExactOnly(seg, moonOn) ? 0.0 : sunA.a;
+    vec4 moonA = vec4(0.0);
+    h.a = hazeExactOnly(seg, moonOn) ? 0.0 : sunA.a;
     if (h.a > 0.0) {
       h.sun = sunA.rgb;
-      h.t = textureLod(uHazeSun, at + vec2(uHazeAtlas.z, 0.0), 0.0).rgb;
-      if (moonOn) h.moon = textureLod(uHazeSun, at + vec2(2.0 * uHazeAtlas.z, 0.0), 0.0).rgb;
+      h.t = textureLod(uHazeSun, at + vec2(uHazeStride, 0.0), 0.0).rgb;
+      if (moonOn) {
+        // The Moon's own alpha: below one where a cell of the footprint was
+        // left empty or straddles the Moon's cut-off, and then every quantity
+        // is evaluated exactly.
+        moonA = textureLod(uHazeSun, at + vec2(2.0 * uHazeStride, 0.0), 0.0);
+        if (moonA.a < ${full}) h.a = 0.0;
+        else h.moon = moonA.rgb;
+      }
     }
-  }
-  if (h.a < 1.0) h.tExact = aerialTransmittance(uTransmittance, seg);
+${reason}  }
+  if (h.a < ${full}) h.tExact = aerialTransmittance(uTransmittance, seg);
   return h;
 }
 vec3 hazeTransmittance(HazeRead h) {
-  return h.a >= 1.0 ? h.t : h.a > 0.0 ? mix(h.tExact, h.t, h.a) : h.tExact;
+  return h.a >= ${full} ? h.t : h.a > 0.0 ? mix(h.tExact, h.t, h.a) : h.tExact;
 }
 vec3 hazeSunInscatter(HazeRead h, AerialSegment seg) {
-${dev ? '#ifdef HAZE_PROBE\n  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, h.tExact);\n#endif\n' : ''}  if (h.a >= 1.0) return h.sun;
+${dev ? '#ifdef HAZE_PROBE\n  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, h.tExact);\n#endif\n' : ''}  if (h.a >= ${full}) return h.sun;
   vec3 exact = aerialInscatter(uScattering, seg, h.tExact);
   return h.a > 0.0 ? mix(exact, h.sun, h.a) : exact;
 }
 vec3 hazeMoonInscatter(HazeRead h, AerialSegment seg) {
-  if (h.a >= 1.0) return h.moon;
+  if (h.a >= ${full}) return h.moon;
   vec3 exact = aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), h.tExact);
   return h.a > 0.0 ? mix(exact, h.moon, h.a) : exact;
 }
@@ -347,7 +503,7 @@ vec3 hazeMoonInscatter(HazeRead h, AerialSegment seg) {
 
 /** The reasons the development readout names, by the code the surface writes
  *  (`hazeReason`); 0 is a fragment with no air in front of it. */
-export const HAZE_REASONS = ['no air', 'cache off', 'misses the ground', 'grazing', 'Mie cut-off', 'Moon Mie cut-off', 'silhouette footprint', 'blend', 'cache'] as const;
+export const HAZE_REASONS = ['no air', 'cache off', 'misses the ground', 'grazing', 'Mie cut-off', 'Moon cut-off or empty Moon cell', 'silhouette or cut footprint', 'blend', 'cache'] as const;
 
 const PASS_VERTEX = /* glsl */ `
 void main() {
@@ -367,11 +523,13 @@ uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform float uHazeMoonOn;
 uniform float uHazeMoonSin;
+uniform float uHazeMieEps;
 uniform vec3 uHazeCam;
 uniform float uHazeLayerRadius;
 uniform vec4 uHazeRay;
 uniform mat3 uHazeBasis;
-uniform vec2 uHazeTexels;
+// x, y: the cells drawn this frame; z: the block stride in texels.
+uniform vec3 uHazeTexels;
 uniform float uHazeFocal;
 
 // Whether a ray from the camera reaches the ground sphere, from the geometry
@@ -382,29 +540,66 @@ bool hazeGroundRay(vec3 c, vec3 d) {
   return b < 0.0 && dot(perp, perp) <= uBottomRadius * uBottomRadius;
 }
 
+// The light's cosine at the point where a ray from the camera enters the air,
+// as aerialSegment derives the segment's own: the camera itself when it is
+// inside the top. A ray that misses the air has no entry; 2 keeps it out of
+// any band (its cell is untrusted anyway: it misses the ground).
+float hazeEntryMuS(vec3 c, vec3 d, vec3 l) {
+  float r = length(c);
+  if (r > uTopRadius) {
+    float rmu = dot(c, d);
+    float disc = rmu * rmu - r * r + uTopRadius * uTopRadius;
+    if (disc < 0.0) return 2.0;
+    c += d * (-rmu - sqrt(disc));
+    r = uTopRadius;
+  }
+  return clampCosine(dot(c, l) / r);
+}
+
+// Whether a light's entry cosine, over the cell and its eight neighbours,
+// comes within the margin of the single-Mie cut: the cut is then somewhere in
+// the cell's footprint, whatever the distance makes a cell's span of it.
+bool hazeCutInCell(vec3 c, vec2 ndc, vec2 texel, vec3 l) {
+  float lo = 2.0;
+  float hi = -2.0;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      float mu = hazeEntryMuS(c, hazeRayDir(ndc + vec2(float(i), float(j)) * texel, uHazeRay, uHazeBasis), l);
+      if (mu < 1.5) { lo = min(lo, mu); hi = max(hi, mu); }
+    }
+  }
+  return hi >= -uHazeMieEps && lo <= ${HAZE_MIE_CUT.toFixed(2)} + uHazeMieEps;
+}
+
 void main() {
   // Which block of the atlas this texel is in, and which cell of it: blocks
-  // of the cache's width, a guard column after the first two. In integers: a
-  // GPU's float division is not correctly rounded, and the first column of a
-  // block, an exact multiple of the stride, can divide to just under its
-  // block number and be taken for the guard before it.
+  // laid out at the allocation's width, a guard column after the first two,
+  // and only the first cw × ch cells of each drawn. In integers: a GPU's float
+  // division is not correctly rounded, and the first column of a block, an
+  // exact multiple of the stride, can divide to just under its block number.
   int cw = int(uHazeTexels.x + 0.5);
+  int stride = int(uHazeTexels.z + 0.5);
   int xi = int(gl_FragCoord.x);
-  int block = xi / (cw + 1);
-  int local = xi - block * (cw + 1);
+  int block = xi / stride;
+  int local = xi - block * stride;
   if (local >= cw) { gl_FragColor = vec4(0.0); return; }
   vec2 uv = vec2((float(local) + 0.5) / float(cw), gl_FragCoord.y / uHazeTexels.y);
   vec2 ndc = uv * 2.0 - 1.0;
+  vec2 texel = 2.0 / uHazeTexels.xy;
   vec3 c = uHazeCam;
   vec3 d = hazeRayDir(ndc, uHazeRay, uHazeBasis);
   float t = hazeSphereHit(c, d, uHazeLayerRadius);
   // A cell whose own ray misses the ground holds nothing: every footprint
   // that could weight it reads alpha 0 and is evaluated exactly.
   if (!(t > 0.0) || !hazeGroundRay(c, d)) { gl_FragColor = vec4(0.0); return; }
-  // The Moon's block is empty while no moonlight is bound, and wherever the
-  // Sun stands so high over the cell's ground point that no fragment of its
-  // footprint can take moonlight (uHazeMoonSin) — decided before any lookup.
-  if (block == 2 && !(uHazeMoonOn > 0.0 && dot(normalize(c + d * t), normalize(uSunDirWorld)) < uHazeMoonSin)) {
+  vec3 moonDir = normalize(uMoonDirWorld);
+  // The Moon's block is empty (alpha 0) while no moonlight is bound, wherever
+  // the Sun stands so high over the cell's ground point that no fragment near
+  // it can take moonlight (uHazeMoonSin), and where the Moon's own cut-off
+  // crosses the cell — all decided before any lookup.
+  if (block == 2 && !(uHazeMoonOn > 0.0
+      && dot(normalize(c + d * t), normalize(uSunDirWorld)) < uHazeMoonSin
+      && !hazeCutInCell(c, ndc, texel, moonDir))) {
     gl_FragColor = vec4(0.0);
     return;
   }
@@ -413,12 +608,11 @@ void main() {
   vec3 airT = aerialTransmittance(uTransmittance, seg);
   if (block == 2) {
     // The Moon's in-scatter at one unit of irradiance.
-    gl_FragColor = vec4(aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT), 1.0);
+    gl_FragColor = vec4(aerialInscatter(uScattering, aerialForLight(seg, moonDir), airT), 1.0);
     return;
   }
   if (block == 1) { gl_FragColor = vec4(airT, 1.0); return; }
   // The Sun's block carries the alpha that decides all three.
-  vec2 texel = 2.0 / uHazeTexels;
   bool trusted = true;
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
@@ -426,7 +620,7 @@ void main() {
     }
   }
   float alpha = 0.0;
-  if (trusted) {
+  if (trusted && !hazeCutInCell(c, ndc, texel, normalize(uSunDirWorld))) {
     vec3 toCentre = -normalize(c);
     float angle = atan(length(cross(d, toCentre)), dot(d, toCentre));
     float edge = asin(min(uBottomRadius / length(c), 1.0));
@@ -452,10 +646,12 @@ export function createHazeAirUniforms(dummy: THREE.Texture): Record<string, THRE
     uHazeSunDeck: { value: dummy },
     uHazeOnDeck: { value: 0 },
     uHazeViewport: { value: new THREE.Vector4(0, 0, 1, 1) },
-    uHazeExact: { value: new THREE.Vector2(HAZE_EXACT_GRAZING, 0) },
-    // The atlas's layout: the cache's width in texels, the atlas's, and one
-    // block's stride in texture coordinates.
-    uHazeAtlas: { value: new THREE.Vector3(1, 3, 1 / 3) },
+    uHazeExact: { value: new THREE.Vector2(HAZE_EXACT_GRAZING, HAZE_MIE_EPS) },
+    // The atlas's layout: the cells drawn this frame (x, y), one texel in
+    // texture coordinates (z, w), and one block's stride in texture
+    // coordinates.
+    uHazeAtlas: { value: new THREE.Vector4(1, 1, 1 / 3, 1) },
+    uHazeStride: { value: 1 / 3 },
   };
   if (import.meta.env.DEV) {
     u.uHazeProbe = { value: 0 };
@@ -469,7 +665,9 @@ export function createHazeAirUniforms(dummy: THREE.Texture): Record<string, THRE
 /** The development readout's switch, one object for every surface. */
 export const hazeDiagUniform = { value: 0 };
 
-/** What the cache is told about the body it serves, each frame. */
+/** What the cache is told about the body it serves, each frame. The
+ *  provider hands back one object, rewritten in place, rather than a new one
+ *  a frame. */
 export interface HazeCacheSubject {
   /** The body's air block (world/surfaceShading SurfaceAirFx). */
   air: Record<string, THREE.IUniform>;
@@ -486,8 +684,16 @@ export interface HazeCacheSubject {
   moonDayLimitSin: number;
 }
 
+/** The scene rectangles the cache is laid out from (main.ts sceneRectsLive). */
+export interface HazeSceneRects {
+  draw: { width: number; height: number };
+  alloc: { width: number; height: number };
+}
+
 export type HazeProbe = 'off' | 'endpoint-sphere' | 'endpoint-sphere-half' | 'endpoint-sphere-raw';
 
+/** The development readout (`__moon.hazeCache()`). The geometry fields are
+ *  written only in a development build. */
 export interface HazeCacheState {
   compiled: boolean;
   /** Whether the development probes and the readout are compiled (`?hazeprobe=1`). */
@@ -499,31 +705,38 @@ export interface HazeCacheState {
   marginScale: number;
   storage: '16f' | '32f';
   layers: 'ground' | 'both';
+  /** The cells drawn this frame. */
   size: [number, number] | null;
+  /** The active rectangle, and the atlas as allocated. */
   viewport: [number, number] | null;
+  atlas: [number, number] | null;
   drawn: { ground: boolean; deck: boolean };
   mieMargin: number;
   /** Whether moonlight is bound this frame, so the Moon's block was drawn. */
   moonLit: boolean;
   skipped: string | null;
-  /** The body-centred camera in radius units, the Sun's direction and the lens, for a probe that rebuilds the
-   *  frame's geometry on the CPU. */
+  /** The body-centred camera in radius units and the Sun's direction, for a
+   *  probe that rebuilds the frame's geometry on the CPU. */
   geometry: { camera: [number, number, number]; sun: [number, number, number]; radiusAU: number } | null;
 }
 
 const _camPos = new THREE.Vector3();
 const _bodyPos = new THREE.Vector3();
 const _layerPos = new THREE.Vector3();
-const _toCentre = new THREE.Vector3();
-const _axis = new THREE.Vector3();
 /** The table uniforms the pass reads off the body's air block each frame. */
 const LOOKUP_KEYS = Object.keys(atmosphereLookupUniforms());
 const _sphere = new THREE.Sphere();
 const _frustum = new THREE.Frustum();
 const _viewProj = new THREE.Matrix4();
 
+interface LayerDraw {
+  layer: 'ground' | 'deck';
+  mesh: THREE.Object3D | null;
+  radius: number;
+}
+
 /**
- * The cache's GPU side: the pass material and the two layer targets, kept for
+ * The cache's GPU side: the pass material and the two layer atlases, kept for
  * the session across composer rebuilds (a rebuild disposes its passes, never
  * this).
  */
@@ -535,10 +748,14 @@ export class HazeCache {
   private state: HazeCacheState;
   private readonly basis = new THREE.Matrix3();
   private readonly ray = new THREE.Vector4();
+  private readonly layerDraws: [LayerDraw, LayerDraw] = [
+    { layer: 'ground', mesh: null, radius: 1 },
+    { layer: 'deck', mesh: null, radius: 1 },
+  ];
 
   constructor(
     private readonly subject: () => HazeCacheSubject | null,
-    private readonly viewport: () => { width: number; height: number },
+    private readonly rects: () => HazeSceneRects,
     opts: { divisor: number; grazing: number; margin: number; f32: boolean },
   ) {
     this.state = {
@@ -553,8 +770,9 @@ export class HazeCache {
       layers: 'both',
       size: null,
       viewport: null,
+      atlas: null,
       drawn: { ground: false, deck: false },
-      mieMargin: 0,
+      mieMargin: HAZE_MIE_EPS * opts.margin,
       moonLit: false,
       skipped: null,
       geometry: null,
@@ -577,6 +795,11 @@ export class HazeCache {
     return { ...this.state, drawn: { ...this.state.drawn } };
   }
 
+  /** The layer's atlas, for a test or a readout; null before it exists. */
+  targetOf(layer: 'ground' | 'deck'): THREE.WebGLRenderTarget | null {
+    return this.targets[layer];
+  }
+
   private ensureMaterial(): THREE.ShaderMaterial {
     if (this.material) return this.material;
     const lookup = atmosphereLookupUniforms();
@@ -586,11 +809,12 @@ export class HazeCache {
       uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
       uHazeMoonOn: { value: 0 },
       uHazeMoonSin: { value: 1 },
+      uHazeMieEps: { value: HAZE_MIE_EPS },
       uHazeCam: { value: new THREE.Vector3() },
       uHazeLayerRadius: { value: 1 },
       uHazeRay: { value: new THREE.Vector4() },
       uHazeBasis: { value: new THREE.Matrix3() },
-      uHazeTexels: { value: new THREE.Vector2(1, 1) },
+      uHazeTexels: { value: new THREE.Vector3(1, 1, 2) },
       uHazeFocal: { value: 1 },
     };
     this.material = new THREE.ShaderMaterial({
@@ -608,6 +832,9 @@ export class HazeCache {
     return this.material;
   }
 
+  /** The layer's atlas at the allocation's size: made once, and sized again
+   *  only when the allocation itself moves (a resize, a level, a pin), never
+   *  on a rung step. */
   private ensureTarget(layer: 'ground' | 'deck', w: number, h: number): THREE.WebGLRenderTarget {
     let target = this.targets[layer];
     const type = this.state.storage === '32f' ? THREE.FloatType : THREE.HalfFloatType;
@@ -636,16 +863,17 @@ export class HazeCache {
     return target;
   }
 
-  /** Before the scene draw: the frame's geometry onto the subject's surfaces,
-   *  the layers drawn, and only then the layers switched on. */
+  /** Before the scene draw: last frame's layers off, the frame's geometry
+   *  onto the subject's surfaces, the layers drawn, and only then the layers
+   *  switched on. */
   begin(renderer: THREE.WebGLRenderer, camera: THREE.Camera): void {
+    this.end();
     this.state.drawn.ground = false;
     this.state.drawn.deck = false;
     this.state.skipped = null;
     this.state.compiled = hazeCacheCompiled();
     const on = this.state.compiled && (import.meta.env.DEV ? perfSwitchOn('haze-cache') : true);
     this.state.on = on;
-    this.live = null;
     if (!this.state.compiled) { this.state.skipped = 'not compiled'; return; }
     const subject = this.subject();
     if (!subject) { this.state.skipped = 'no body with live tables'; return; }
@@ -665,45 +893,38 @@ export class HazeCache {
     _frustum.setFromProjectionMatrix(_viewProj);
     _sphere.set(_bodyPos, radiusAU * Math.max(subject.deckRadius, 1) * 1.02);
     if (!subject.globe.visible || !_frustum.intersectsSphere(_sphere)) { this.state.skipped = 'body not in view'; return; }
-    // A camera close to the body is inside that sphere wherever it looks, so
-    // the frustum test passes looking straight up from the Observatory too:
-    // the ground is in view only if the view's cone (the axis and the far
-    // corner's angle, a degree over) reaches the ground's silhouette cone.
-    _toCentre.subVectors(_bodyPos, _camPos);
-    const centreDist = _toCentre.length();
-    const groundEdge = Math.asin(Math.min((air.uBottomRadius.value as number) * radiusAU / centreDist, 1));
-    _axis.set(0, 0, -1).transformDirection(cam.matrixWorld);
-    const axisAngle = _axis.angleTo(_toCentre);
-    const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
-    const corner = Math.atan(tanY * Math.hypot(1, cam.aspect)) + THREE.MathUtils.degToRad(1);
-    if (axisAngle > groundEdge + corner) { this.state.skipped = 'ground not in view'; return; }
-
-    const { width: W, height: H } = this.viewport();
-    const div = this.state.divisor;
-    const cw = Math.max(1, Math.ceil(W / div));
-    const ch = Math.max(1, Math.ceil(H / div));
-    this.state.viewport = [W, H];
-    this.state.size = [cw, ch];
     const p = cam.projectionMatrix.elements;
-    this.ray.set(1 / p[0], 1 / p[5], p[8] / p[0], p[9] / p[5]);
-    this.basis.setFromMatrix4(cam.matrixWorld);
-    const vfov = THREE.MathUtils.degToRad(cam.fov);
-    this.state.mieMargin = this.state.marginScale * div * (vfov / H);
+    if (!hazeGroundInView(_camPos, cam.matrixWorld, p, _bodyPos, (air.uBottomRadius.value as number) * radiusAU)) {
+      this.state.skipped = 'ground not in view';
+      return;
+    }
 
-    const atlasW = 3 * cw + 2;
+    const rects = this.rects();
+    const W = rects.draw.width;
+    const H = rects.draw.height;
+    const layout = hazeAtlasLayout(W, H, rects.alloc.width, rects.alloc.height, this.state.divisor);
+    const { cw, ch, stride, atlasW, atlasH } = layout;
+    hazeRayTerms(p, this.ray);
+    this.basis.setFromMatrix4(cam.matrixWorld);
+    this.state.mieMargin = HAZE_MIE_EPS * this.state.marginScale;
+
     (air.uHazeViewport.value as THREE.Vector4).set(0, 0, W, H);
-    (air.uHazeAtlas.value as THREE.Vector3).set(cw, atlasW, (cw + 1) / atlasW);
+    (air.uHazeAtlas.value as THREE.Vector4).set(cw, ch, 1 / atlasW, 1 / atlasH);
+    air.uHazeStride.value = stride / atlasW;
     (air.uHazeExact.value as THREE.Vector2).set(this.state.grazing, this.state.mieMargin);
+    const sun = subject.sunDirWorld.value as THREE.Vector3;
     if (import.meta.env.DEV) {
       (air.uHazeRay.value as THREE.Vector4).copy(this.ray);
       (air.uHazeBasis.value as THREE.Matrix3).copy(this.basis);
+      this.state.viewport = [W, H];
+      this.state.size = [cw, ch];
+      this.state.atlas = [atlasW, atlasH];
+      this.state.geometry = {
+        camera: [(_camPos.x - _bodyPos.x) / radiusAU, (_camPos.y - _bodyPos.y) / radiusAU, (_camPos.z - _bodyPos.z) / radiusAU],
+        sun: [sun.x, sun.y, sun.z],
+        radiusAU,
+      };
     }
-    const sun = subject.sunDirWorld.value as THREE.Vector3;
-    this.state.geometry = {
-      camera: [(_camPos.x - _bodyPos.x) / radiusAU, (_camPos.y - _bodyPos.y) / radiusAU, (_camPos.z - _bodyPos.z) / radiusAU],
-      sun: [sun.x, sun.y, sun.z],
-      radiusAU,
-    };
     this.live = subject;
     if (!on) { this.state.skipped = 'switched off'; return; }
     if (import.meta.env.DEV && this.state.probe !== 'off' && hazeProbeCompiled()) {
@@ -720,40 +941,46 @@ export class HazeCache {
     u.uHazeMoonOn.value = (air.uMoonIrradiance.value as THREE.Vector3).y > 0 ? 1 : 0;
     this.state.moonLit = u.uHazeMoonOn.value === 1;
     u.uHazeMoonSin.value = subject.moonDayLimitSin + HAZE_MOON_MARGIN_SIN;
+    u.uHazeMieEps.value = this.state.mieMargin;
     (u.uHazeRay.value as THREE.Vector4).copy(this.ray);
     (u.uHazeBasis.value as THREE.Matrix3).copy(this.basis);
-    (u.uHazeTexels.value as THREE.Vector2).set(cw, ch);
+    (u.uHazeTexels.value as THREE.Vector3).set(cw, ch, stride);
     // The vertical focal length, in cache texels.
     u.uHazeFocal.value = (ch / 2) * p[5];
+
+    const ground = this.layerDraws[0];
+    ground.mesh = subject.globe;
+    ground.radius = air.uBottomRadius.value as number;
+    const deck = this.layerDraws[1];
+    deck.mesh = subject.deck && this.state.layers === 'both' ? subject.deck : null;
+    deck.radius = subject.deckRadius;
 
     const previous = renderer.getRenderTarget();
     const oldAutoClear = renderer.autoClear;
     renderer.autoClear = false;
     try {
-      const layers: Array<{ layer: 'ground' | 'deck'; mesh: THREE.Object3D; radius: number }> = [
-        { layer: 'ground', mesh: subject.globe, radius: air.uBottomRadius.value as number },
-      ];
-      if (subject.deck && this.state.layers === 'both') {
-        subject.deck.updateWorldMatrix(true, false);
-        layers.push({ layer: 'deck', mesh: subject.deck, radius: subject.deckRadius });
-      }
-      for (const { layer, mesh, radius } of layers) {
-        const target = this.ensureTarget(layer, atlasW, ch);
+      for (const draw of this.layerDraws) {
+        if (!draw.mesh) continue;
+        const target = this.ensureTarget(draw.layer, atlasW, atlasH);
         // Each layer from its own mesh's centre, as its own vertex stage
         // derives `vAirCam`.
-        const centre = layer === 'ground' ? _bodyPos : _layerPos.setFromMatrixPosition(mesh.matrixWorld);
+        if (draw.layer === 'deck') draw.mesh.updateWorldMatrix(true, false);
+        const centre = draw.layer === 'ground' ? _bodyPos : _layerPos.setFromMatrixPosition(draw.mesh.matrixWorld);
         (u.uHazeCam.value as THREE.Vector3).set(
           (_camPos.x - centre.x) / radiusAU, (_camPos.y - centre.y) / radiusAU, (_camPos.z - centre.z) / radiusAU,
         );
-        u.uHazeLayerRadius.value = radius;
+        u.uHazeLayerRadius.value = draw.radius;
+        // Only the cells this frame draws: two strides and the third block's
+        // drawn width, the drawn rows; the rest of the allocation is never read.
+        target.viewport.set(0, 0, 2 * stride + cw, ch);
         renderer.setRenderTarget(target);
-        // Cleared first though the quad covers every texel: a clear that opens
-        // the pass is a tile GPU's cue not to load the old contents at all.
+        // Cleared first though the quad covers what is read: a clear that
+        // opens the pass is a tile GPU's cue not to load the old contents.
         renderer.clear(true, false, false);
         this.quad!.render(renderer);
-        if (layer === 'ground') air.uHazeSun.value = target.texture;
+        if (draw.layer === 'ground') air.uHazeSun.value = target.texture;
         else air.uHazeSunDeck.value = target.texture;
-        this.state.drawn[layer] = true;
+        this.state.drawn[draw.layer] = true;
       }
     } finally {
       renderer.setRenderTarget(previous);
@@ -764,7 +991,8 @@ export class HazeCache {
     air.uHazeOnDeck.value = this.state.drawn.deck ? 1 : 0;
   }
 
-  /** After the scene draw: nothing outside it may read this frame's cache. */
+  /** After the scene draw, and before the next one begins: nothing outside
+   *  the draw it was made for may read a frame's cache. */
   end(): void {
     const air = this.live?.air;
     if (!air) return;

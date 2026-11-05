@@ -1006,11 +1006,13 @@ let sceneAllocSize: TargetSize = { width: 0, height: 0 };
 let sceneRectsLive: SceneRects = sceneRects({ width: 1, height: 1 }, { width: 1, height: 1 });
 /** The last clamp reported, so a tripwire that stays tripped says so once. */
 let sceneRectClampSaid = '';
-/** Earth's sunlit haze cache (app/hazeCache.ts): its pass runs before the
- *  planetarium's scene draw, sized from the active draw rectangle. */
+/** Earth's haze cache (app/hazeCache.ts): its pass runs before the
+ *  planetarium's scene draw. */
 const hazeCache = new HazeCache(
   () => planetariumMode?.hazeCacheSubject() ?? null,
-  () => sceneRectsLive.draw,
+  // The active rectangle and the allocation it sits in: the atlas is sized
+  // from the allocation, so a Dynamic rung step moves no memory.
+  () => sceneRectsLive,
   {
     divisor: parseHazeDivisorParam(location.search, import.meta.env.DEV),
     ...parseHazeExactParam(location.search, import.meta.env.DEV),

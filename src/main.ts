@@ -101,7 +101,7 @@ import { GlassBackdrop, GlassSourcePass, parseGlassParam } from './app/glassBack
 import {
   HAZE_REASONS, HazeCache, HazeCacheEndPass, HazeCachePass, hazeDiagUniform, parseHaze32fParam, parseHazeCacheParam,
   parseHazeDivisorParam, parseHazeExactParam, parseHazeProbeParam, setHazeCacheCompiled, setHazeProbeCompiled,
-  type HazeProbe,
+  setSessionHazeCache, type HazeProbe,
 } from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
 import {
@@ -1019,6 +1019,8 @@ const hazeCache = new HazeCache(
     f32: parseHaze32fParam(location.search, import.meta.env.DEV),
   },
 );
+// Its atlases are counted in the planetarium's GPU memory envelope.
+setSessionHazeCache(hazeCache);
 /** The sub-rect uniforms of the two passes that read a scene-sized target and
  *  are not ours to declare: the lens pass and the bloom bright pass. The
  *  finishing pass carries its own (app/UpscalePass.ts). */

@@ -6,9 +6,11 @@ import {
   hazeAtlasCell,
   hazeAtlasLayout,
   hazeAtlasSample,
+  hazeCacheGpuBytes,
   hazeGroundInView,
   hazeRayDirCpu,
   hazeRayTerms,
+  setSessionHazeCache,
   type HazeCacheSubject,
   type HazeSceneRects,
 } from './hazeCache';
@@ -266,5 +268,28 @@ describe('the haze cache pass', () => {
     rects.draw = { width: 2400, height: 1600 };
     t.begin();
     expect([ground.width, ground.height]).toEqual([3 * 600 + 2, 400]);
+  });
+
+  it('counts its atlases in the memory envelope: width x height x 8 bytes each, from the targets that exist', () => {
+    const rects: HazeSceneRects = { draw: { width: 1200, height: 800 }, alloc: { width: 1800, height: 1200 } };
+    const t = setup(rects, true);
+    setSessionHazeCache(t.cache);
+    expect(hazeCacheGpuBytes()).toBe(0); // nothing made before the first frame that draws it
+    t.begin();
+    const each = (3 * 450 + 2) * 300 * 8;
+    expect(t.cache.gpuBytes()).toBe(2 * each);
+    expect(hazeCacheGpuBytes()).toBe(2 * each);
+    rects.draw = { width: 900, height: 600 }; // a rung step: the same memory
+    t.begin();
+    expect(hazeCacheGpuBytes()).toBe(2 * each);
+    rects.alloc = { width: 2400, height: 1600 };
+    rects.draw = { width: 2400, height: 1600 };
+    t.begin();
+    expect(hazeCacheGpuBytes()).toBe(2 * (3 * 600 + 2) * 400 * 8);
+    // About 3 bytes per allocated scene pixel.
+    expect(hazeCacheGpuBytes() / (2400 * 1600)).toBeCloseTo(3, 1);
+    t.cache.dispose();
+    expect(hazeCacheGpuBytes()).toBe(0);
+    setSessionHazeCache(null);
   });
 });

@@ -62,9 +62,13 @@
  * atlases in a frame that is already late. The blocks are laid out at the
  * allocated width; each frame draws only the cells the active rectangle needs
  * (through a viewport), and the surfaces read only those. The two atlases are
- * held for the session: at High on a 1728 × 1117 window at a ratio of 2 (a
- * 5184 × 3351 allocation) each is 3890 × 838 half-float texels, about 26 MB,
- * 52 MB for the two; at Medium on the same window about 23 MB.
+ * held for the session, about 3 bytes per allocated scene pixel: at High on a
+ * 1728 × 1117 window at a ratio of 2 (a 5184 × 3351 allocation) each is
+ * 3890 × 838 half-float texels, about 26 MB, 52 MB for the two; at Medium on
+ * the same window about 23 MB. They are counted in the device's GPU memory
+ * envelope beside the atmosphere tables (`hazeCacheGpuBytes`, read by
+ * PlanetariumMode.liveGlobalMapBytes), from the targets that exist, so a
+ * texture rung is admitted against what is really left.
  *
  * **Where the cache is not trusted.** The cached value is a different segment
  * from the fragment's own: the mesh is a polyhedron and the cache ends on the
@@ -720,6 +724,17 @@ export interface HazeCacheState {
   geometry: { camera: [number, number, number]; sun: [number, number, number]; radiusAU: number } | null;
 }
 
+let sessionCache: HazeCache | null = null;
+/** The session's cache: the one whose atlases the memory envelope counts. */
+export function setSessionHazeCache(cache: HazeCache | null): void {
+  sessionCache = cache;
+}
+/** GPU bytes the session's atlases hold right now; 0 before the first frame
+ *  that draws the cache, which is when they are made. */
+export function hazeCacheGpuBytes(): number {
+  return sessionCache?.gpuBytes() ?? 0;
+}
+
 const _camPos = new THREE.Vector3();
 const _bodyPos = new THREE.Vector3();
 const _layerPos = new THREE.Vector3();
@@ -793,6 +808,14 @@ export class HazeCache {
 
   readout(): HazeCacheState {
     return { ...this.state, drawn: { ...this.state.drawn } };
+  }
+
+  /** GPU bytes the atlases that exist hold: width × height × 8 for half
+   *  float (16 for the 32-bit diagnostic), each. */
+  gpuBytes(): number {
+    const held = (t: THREE.WebGLRenderTarget | null): number =>
+      (t ? t.width * t.height * (t.texture.type === THREE.FloatType ? 16 : 8) : 0);
+    return held(this.targets.ground) + held(this.targets.deck);
   }
 
   /** The layer's atlas, for a test or a readout; null before it exists. */

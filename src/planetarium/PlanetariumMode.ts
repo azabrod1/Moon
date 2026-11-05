@@ -24,7 +24,7 @@ import {
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
-import type { HazeCacheSubject } from '../app/hazeCache';
+import { hazeCacheGpuBytes, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
@@ -4234,10 +4234,14 @@ export class PlanetariumMode {
    * holds ~36 MiB for the minutes it runs — a rung admitted against the
    * resident 12 MiB while 36 are really allocated is a rung admitted
    * against memory that is not there. Unlike a map, the tables cannot be given
-   * back, so they act as a floor the ladder's own maps give way to.
+   * back, so they act as a floor the ladder's own maps give way to. Earth's
+   * haze cache (app/hazeCache.ts) is in it for the same reasons: its two
+   * atlases are made on the first frame that draws it, held for the session,
+   * and sized from the scene's allocation.
    */
   private liveGlobalMapBytes(): number {
     let bytes = this.atmosphereLut?.gpuBytes() ?? 0;
+    bytes += hazeCacheGpuBytes();
     this.forEachTextureUpgrade((up) => { bytes += appliedTierHeldBytes(up); });
     // The relief ladders spend the same envelope the colour ones do — a 4K
     // normal map is 42.7 MiB of the device's memory whether it holds elevation

@@ -29,9 +29,27 @@
  * format's enum — a different number from the one on texture.format, and on
  * S3TC from a different extension. Uploading a band with the wrong one is a
  * rejected call, an empty texture and a body drawing a blank map, so the
- * band's format is derived from the same two inputs three reads and the first
- * band is checked against the GL error queue; a rejected band abandons slicing
- * and hands the map back to three whole.
+ * band's format is derived from the same two inputs three reads.
+ *
+ * Whether the driver then takes bands of that format into the storage three
+ * allocated is asked ONCE per session for each pair of compressed format and
+ * colour-space transfer, by a probe that allocates a 16×16 texture the same
+ * way, uploads one band and reads the GL error queue once: at boot, under the
+ * loading cover, for the formats this device's containers transcode to, and
+ * at the first job of any other pair. A pair the driver refuses uploads whole
+ * from its first job on, and no band of it is ever attempted. No job reads the
+ * error queue. getError is a synchronous round trip: Chrome flushes the
+ * command buffer and waits for the GPU process to work through it, behind
+ * whatever upload the frame has just queued. Read twice per map, it held the
+ * main thread 1–7 ms a map on an M5 Max under Chrome as an approach to Earth
+ * streamed its 8K rungs, and up to 16 ms a read where the GPU was busiest.
+ * Reading it a frame later instead would not be exact either: the queue is
+ * global, so a deferred read could blame a band for an error some other call
+ * raised that frame, and hand an 8K map back to the one-shot upload this
+ * module exists to avoid. What that gives up: the probe asks about the
+ * format, at 16×16. A driver that took a small band of a format and refused a
+ * full-size one of the same format would now go unnoticed, where before the
+ * first band of each map would have caught it. No such driver is known.
  *
  * The no-half-loaded rule holds by construction. Nothing here assigns a map to
  * a material; the pump settles its 'warmed' callback only when the last band
@@ -40,11 +58,13 @@
  *
  * Refused, and left to the single-shot path, when any assumption below fails:
  * a flipped texture (UNPACK_FLIP_Y_WEBGL flips each band independently, which
- * would tile the image), a format whose GL enums we do not know exactly, or a
- * compressed format whose block size we do not know.
+ * would tile the image), a format whose GL enums we do not know exactly, a
+ * compressed format whose block size we do not know, or one whose bands the
+ * probe saw the driver refuse.
  */
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
+import { drainErrors } from '../../shared/three/glErrors';
 import { smoothTraceEvent } from '../smoothnessTrace';
 import {
   COMPRESSED_BLOCK_ROWS,
@@ -229,10 +249,6 @@ export interface SliceJob {
    *  three allocated the storage with, not the constant on texture.format. */
   glFormat: number;
   glType: number;
-  /** The first compressed band has been read back off the GL error queue. */
-  formatChecked: boolean;
-  /** The bands were abandoned and three uploaded the map whole instead. */
-  fellBack: boolean;
   /** The mip chain still has to be built (uncompressed only). */
   needsMipmap: boolean;
   bands: number;
@@ -311,6 +327,12 @@ export function beginSlicedUpload(
   if (!canSlice(renderer, texture)) return null;
   const gl = renderer.getContext() as WebGL2RenderingContext;
   const compressed = (texture as THREE.CompressedTexture).isCompressedTexture === true;
+  // A pair the driver refused uploads whole, before anything is allocated
+  // here. A pair that could not be asked (the context is lost) goes on as a
+  // job, whose first step reports the lost context exactly as any other job's.
+  if (compressed && probeCompressedBands(renderer, texture.format as unknown as number, texture.colorSpace) === false) {
+    return null;
+  }
   const mipmaps = (texture as THREE.CompressedTexture).mipmaps as CompressedLevel[] | undefined;
   const image = texture.image as { width: number; height: number };
   const width = compressed ? mipmaps![0].width : image.width;
@@ -376,8 +398,6 @@ export function beginSlicedUpload(
       : [],
     glFormat: enums.format,
     glType: enums.type,
-    formatChecked: !compressed,
-    fellBack: false,
     needsMipmap: !compressed,
     bands: 0,
     totalMs: 0,
@@ -435,8 +455,6 @@ function beginMutableSlice(
     tailLevels: [],
     glFormat: gl.RGBA,
     glType: gl.UNSIGNED_BYTE,
-    formatChecked: true,
-    fellBack: false,
     needsMipmap: true,
     bands: 0,
     totalMs: 0,
@@ -458,8 +476,7 @@ function beginMutableSlice(
 
 /** Bind through three's state cache, never raw: a raw bind desyncs the cache
  *  and a later draw silently samples whatever three thinks is bound. */
-function bindForUpload(job: SliceJob): WebGL2RenderingContext {
-  const renderer = job.renderer;
+function bindTextureForUpload(renderer: THREE.WebGLRenderer, texture: THREE.Texture): WebGL2RenderingContext {
   const gl = renderer.getContext() as WebGL2RenderingContext;
   const properties = (renderer as unknown as {
     properties: { get(t: THREE.Texture): { __webglTexture?: WebGLTexture } };
@@ -467,38 +484,144 @@ function bindForUpload(job: SliceJob): WebGL2RenderingContext {
   const state = (renderer as unknown as {
     state: { bindTexture(type: number, tex: WebGLTexture | null, slot?: number): void };
   }).state;
-  state.bindTexture(gl.TEXTURE_2D, properties.get(job.texture).__webglTexture ?? null, gl.TEXTURE0);
+  state.bindTexture(gl.TEXTURE_2D, properties.get(texture).__webglTexture ?? null, gl.TEXTURE0);
   return gl;
 }
 
-/** Empty the GL error queue, so the check after the first band can only be
- *  reading an error this job raised. Bounded because a lost context reports
- *  the same error on every call. */
-function drainGlErrors(gl: WebGL2RenderingContext): void {
-  for (let i = 0; i < 8; i++) if (gl.getError() === gl.NO_ERROR) return;
+function bindForUpload(job: SliceJob): WebGL2RenderingContext {
+  return bindTextureForUpload(job.renderer, job.texture);
+}
+
+/** The driver's answer for each (compressed format, colour-space transfer)
+ *  pair asked so far this session: true when it took the probe's band. A pair
+ *  missing here has not been asked, or could not be. Kept across a context
+ *  loss: what it records is which enum the driver accepts for which storage,
+ *  a fact about the device and not about any GL object a loss takes away. */
+const bandVerdicts = new Map<string, boolean>();
+
+function bandVerdictKey(format: number, colorSpace: string): string {
+  return `${format}:${hasSrgbTransfer(colorSpace) ? 'srgb' : 'linear'}`;
+}
+
+/** The probe texture: four blocks a side of every format this module takes,
+ *  and a band of two block rows across its whole width — the shape of a real
+ *  band at a size that costs nothing. */
+const PROBE_SIZE = 16;
+const PROBE_BAND_ROWS = 8;
+
+/**
+ * Ask the driver whether bands of this compressed format, in this colour
+ * space, are accepted into storage three allocated for it — at most once per
+ * session per pair, and cached. The probe allocates a 16×16 texture exactly as
+ * a job does (`Source.dataReady = false`, so three runs its texStorage2D and
+ * nothing else), uploads one band with the enum `compressedUploadFormat`
+ * derives, reads the error queue once (drained just before, so the read can
+ * only be the probe's) and frees the texture.
+ *
+ * True or false is the answer, recorded; null means it could not be asked —
+ * the format is not one this module slices, or the context is lost, in which
+ * case nothing is recorded and the next job of the pair asks again.
+ */
+export function probeCompressedBands(
+  renderer: THREE.WebGLRenderer,
+  format: number,
+  colorSpace: string,
+): boolean | null {
+  const key = bandVerdictKey(format, colorSpace);
+  const known = bandVerdicts.get(key);
+  if (known !== undefined) return known;
+  const gl = renderer.getContext() as WebGL2RenderingContext;
+  const entry = COMPRESSED_FORMATS[format];
+  const uploadFormat = compressedUploadFormat(gl, format, colorSpace);
+  if (!entry || uploadFormat === null || gl.isContextLost()) return null;
+  const blocksWide = PROBE_SIZE / COMPRESSED_BLOCK_ROWS;
+  const data = new Uint8Array(blocksWide * blocksWide * entry.blockBytes);
+  const texture = new THREE.CompressedTexture(
+    [{ data, width: PROBE_SIZE, height: PROBE_SIZE }] as unknown as ImageData[],
+    PROBE_SIZE, PROBE_SIZE,
+    format as unknown as THREE.CompressedPixelFormat,
+    THREE.UnsignedByteType,
+  );
+  texture.colorSpace = colorSpace;
+  texture.flipY = false;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  let accepted: boolean | null = null;
+  try {
+    // Emptied first, so the one read below can only be an error the probe
+    // raised.
+    drainErrors(gl);
+    texture.source.dataReady = false;
+    renderer.initTexture(texture);
+    texture.source.dataReady = true;
+    bindTextureForUpload(renderer, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+    gl.compressedTexSubImage2D(
+      gl.TEXTURE_2D, 0, 0, 0, PROBE_SIZE, PROBE_BAND_ROWS, uploadFormat,
+      data.subarray(0, (PROBE_BAND_ROWS / COMPRESSED_BLOCK_ROWS) * blocksWide * entry.blockBytes),
+    );
+    const error = gl.getError();
+    if (!gl.isContextLost()) accepted = error === gl.NO_ERROR;
+  } catch (err) {
+    debugWarn('Compressed band probe threw', { format, err: String(err) });
+    if (!gl.isContextLost()) accepted = false;
+  } finally {
+    texture.source.dataReady = true;
+    texture.dispose();
+  }
+  if (accepted === null) return null;
+  bandVerdicts.set(key, accepted);
+  if (!accepted) {
+    debugWarn('The driver refused a compressed band; every map of this format uploads whole', {
+      format, uploadFormat, srgb: hasSrgbTransfer(colorSpace),
+    });
+  }
+  return accepted;
 }
 
 /**
- * Abandon the bands and let three upload the whole map, after a band was
- * rejected. Nothing three owns is disposed: the storage it allocated is
- * correct and stays, and this only fills it. Bumping the source version is
- * what makes three fill it at all — the allocation pass stamped the texture
- * current, so without the bump three would consider the empty storage
- * finished and the body would draw an unfilled map.
- *
- * The cost is the single-frame upload slicing exists to avoid, which is the
- * right trade for a map that would otherwise never be right.
+ * The compressed formats this device's KTX2 containers transcode to, as
+ * three's KTX2Loader picks them: the first entry of its priority list whose
+ * extension the device exposes, for an opaque container (every one this app
+ * ships is opaque and sRGB; textureTiers.assets.test.ts pins each file). UASTC
+ * goes to ASTC 4×4, else BC7, else ETC2, else ETC1, else DXT1; ETC1S to ETC2,
+ * else ETC1, else BC7, else DXT1. Only formats this module slices are
+ * returned — ETC1 and PVRTC upload whole and need no probe. A copy of three's
+ * choice rather than a call into it: the choice is made inside the
+ * transcoder's worker. Getting it wrong costs timing and nothing else — a
+ * format this misses is probed at its own first job.
  */
-function fallBackToOneShot(job: SliceJob): 'done' | 'failed' {
-  job.fellBack = true;
-  try {
-    job.texture.needsUpdate = true;
-    job.renderer.initTexture(job.texture);
-    return 'done';
-  } catch (err) {
-    debugWarn('Sliced upload could not fall back to one shot', { err: String(err) });
-    return 'failed';
+export function ktx2TranscodeFormats(has: (extension: string) => boolean): number[] {
+  const astc = has('WEBGL_compressed_texture_astc');
+  const bptc = has('EXT_texture_compression_bptc');
+  const etc2 = has('WEBGL_compressed_texture_etc');
+  const etc1 = has('WEBGL_compressed_texture_etc1');
+  const dxt = has('WEBGL_compressed_texture_s3tc');
+  const uastc = astc ? THREE.RGBA_ASTC_4x4_Format
+    : bptc ? THREE.RGBA_BPTC_Format
+      : etc2 ? THREE.RGB_ETC2_Format
+        : etc1 ? null
+          : dxt ? THREE.RGBA_S3TC_DXT1_Format
+            : null;
+  const etc1s = etc2 ? THREE.RGB_ETC2_Format
+    : etc1 ? null
+      : bptc ? THREE.RGBA_BPTC_Format
+        : dxt ? THREE.RGBA_S3TC_DXT1_Format
+          : null;
+  const formats: number[] = [];
+  for (const format of [uastc, etc1s]) {
+    if (format !== null && COMPRESSED_FORMATS[format] && !formats.includes(format)) formats.push(format);
   }
+  return formats;
+}
+
+/** Test seam: forget every verdict, as a new session would. */
+export function resetCompressedBandProbesForTests(): void {
+  bandVerdicts.clear();
 }
 
 /**
@@ -524,7 +647,9 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha ? 1 : 0);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
-      if (!job.formatChecked) drainGlErrors(gl);
+      // Nothing in this loop reads anything back from the GPU process: the
+      // band format was settled by the probe before the job began, and
+      // isContextLost is a flag the client holds.
       while (job.rowsDone < job.height) {
         const spent = performance.now() - started;
         if (job.bands > 0 && spent >= budgetMs) break;
@@ -565,21 +690,6 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
         const bandMs = performance.now() - bandStart;
         job.totalMs += bandMs;
         job.msPerRow = updateRowRate(job.msPerRow, rows, bandMs);
-        // The derivation above says which enum three allocated with; this is
-        // the proof. A rejected first band means the two disagree, and every
-        // later band would be rejected the same way and leave the map empty.
-        if (!job.formatChecked) {
-          job.formatChecked = true;
-          if (gl.getError() !== gl.NO_ERROR) {
-            debugWarn('Sliced upload band rejected; uploading the map whole instead', {
-              format: job.glFormat,
-              size: `${job.width}x${job.height}`,
-            });
-            const outcome = fallBackToOneShot(job);
-            finished = outcome === 'done';
-            return outcome;
-          }
-        }
       }
       if (job.rowsDone < job.height) return 'more';
     }
@@ -615,8 +725,7 @@ export function stepSlicedUpload(job: SliceJob, budgetMs: number): 'more' | 'don
       smoothTraceEvent(
         'upload',
         `${job.texture.name || source || 'texture'} `
-        + `${job.width}x${job.height} sliced x${job.bands}`
-        + (job.fellBack ? ' → one shot' : ''),
+        + `${job.width}x${job.height} sliced x${job.bands}`,
         job.totalMs,
       );
     }

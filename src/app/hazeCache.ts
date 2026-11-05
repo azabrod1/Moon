@@ -90,10 +90,11 @@
  * A/B out of one page load. DEV `?hazecachediv=<n>` sets the divisor,
  * `?hazeexact=<grazing>,<margin scale>` the exact band, `?hazecache32f=1`
  * stores the cache in 32-bit float to separate storage error from spatial
- * error, and `__moon.hazeCache()` reads the state out (size, divisor, exact
- * band, the layers drawn, and with `{ coverage: true }` the share of the
- * visible surface on the cache and on each exact reason). The pass is the
- * "Haze cache" row of `__moon.gpuProfile`.
+ * error, `?hazeprobe=1` compiles the full-resolution probes and the reason
+ * readout, and `__moon.hazeCache()` reads the state out (size, divisor, exact
+ * band, the layers drawn, and — with the probes compiled — `{ coverage: true
+ * }`, the share of the visible surface on the cache and on each exact
+ * reason). The pass is the "Haze cache" row of `__moon.gpuProfile`.
  */
 import * as THREE from 'three';
 import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js';
@@ -140,6 +141,21 @@ export function parseHaze32fParam(search: string, dev: boolean): boolean {
   return dev && new URLSearchParams(search).get('hazecache32f') === '1';
 }
 
+/** DEV `?hazeprobe=1`: the surfaces also compile the full-resolution probes
+ *  and the reason readout (HAZE_PROBE), for a measurement session; without
+ *  it a development program has the shipping structure, so it can be timed. */
+export function parseHazeProbeParam(search: string, dev: boolean): boolean {
+  return dev && new URLSearchParams(search).get('hazeprobe') === '1';
+}
+let probeCompiled = false;
+export function setHazeProbeCompiled(on: boolean): void {
+  probeCompiled = import.meta.env.DEV && on;
+}
+/** Whether the surfaces compile the probes and the readout this session. */
+export function hazeProbeCompiled(): boolean {
+  return probeCompiled;
+}
+
 let compiled = true;
 /** Set once at boot from the URL, before any surface material exists. */
 export function setHazeCacheCompiled(on: boolean): void {
@@ -184,14 +200,17 @@ float hazeSphereHit(vec3 origin, vec3 dir, float radius) {
  *
  * The fetch is `textureLod` at level 0: it sits in a branch that is uniform
  * for the draw, but the exact branch below it diverges per fragment, and the
- * cache has no levels to choose between anyway. Development builds add the
- * full-resolution probes (`uHazeProbe`: the cache's own endpoint on the true
- * sphere, evaluated per fragment wherever the cache would be read, optionally
- * round-tripped through half float, or everywhere) and the reason readout
- * (`uHazeDiag`).
+ * cache has no levels to choose between anyway. Development builds can add,
+ * under HAZE_PROBE (`?hazeprobe=1`), the full-resolution probes (`uHazeProbe`:
+ * the cache's own endpoint on the true sphere, evaluated per fragment
+ * wherever the cache would be read, optionally round-tripped through half
+ * float, or everywhere) and the reason readout (`uHazeDiag`); left out by
+ * default, because each probe inlines the lookup again and a program that
+ * size does not time like the one that ships.
  */
 export function hazeSurfaceDeclsGlsl(dev: boolean): string {
-  const probe = dev ? `uniform float uHazeProbe;
+  const probe = dev ? `#ifdef HAZE_PROBE
+uniform float uHazeProbe;
 uniform vec4 uHazeRay;
 uniform mat3 uHazeBasis;
 uniform float uHazeDiag;
@@ -218,10 +237,17 @@ vec3 hazeProbeInscatter(AerialSegment seg, vec3 airT) {
   }
   return aerialInscatter(uScattering, seg, airT);
 }
+#endif
 ` : '';
+  const probeEntry = dev
+    ? '#ifdef HAZE_PROBE\n  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, airT);\n  hazeReason = 1.0;\n#endif\n'
+    : '';
   const reason = dev
-    ? `    hazeReason = !seg.hitsGround ? 2.0 : hazeGrazing(seg) >= uHazeExact.x ? 3.0 : hazeMieBand(seg) ? 4.0
-        : cached.a <= 0.0 ? 5.0 : cached.a < 1.0 ? 6.0 : 7.0;\n`
+    ? `#ifdef HAZE_PROBE
+    hazeReason = !seg.hitsGround ? 2.0 : hazeGrazing(seg) >= uHazeExact.x ? 3.0 : hazeMieBand(seg) ? 4.0
+        : cached.a <= 0.0 ? 5.0 : cached.a < 1.0 ? 6.0 : 7.0;
+#endif
+`
     : '';
   return `#ifdef HAZE_CACHE
 uniform sampler2D uHazeSun;
@@ -241,16 +267,20 @@ bool hazeMieBand(AerialSegment seg) {
 bool hazeExactOnly(AerialSegment seg) {
   return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg);
 }
-${probe}vec3 hazeSunInscatter(AerialSegment seg, vec3 airT) {
-${dev ? '  if (uHazeProbe > 0.5) return hazeProbeInscatter(seg, airT);\n  hazeReason = 1.0;\n' : ''}  if (uHazeOn > 0.0) {
+${probe}// The cache's share of this fragment's Sun in-scatter: 0 off or untrusted,
+// 1 the cache alone. One call site of the exact lookup, so the program holds
+// one copy of it.
+vec3 hazeSunInscatter(AerialSegment seg, vec3 airT) {
+${probeEntry}  vec4 cached = vec4(0.0);
+  float a = 0.0;
+  if (uHazeOn > 0.0) {
     vec2 uv = (gl_FragCoord.xy - uHazeViewport.xy) / uHazeViewport.zw;
-    vec4 cached = textureLod(uHazeSun, uv, 0.0);
-${reason}    float a = hazeExactOnly(seg) ? 0.0 : cached.a;
-    if (a >= 1.0) return cached.rgb;
-    vec3 exact = aerialInscatter(uScattering, seg, airT);
-    return a > 0.0 ? mix(exact, cached.rgb, a) : exact;
+    cached = textureLod(uHazeSun, uv, 0.0);
+${reason}    a = hazeExactOnly(seg) ? 0.0 : cached.a;
   }
-  return aerialInscatter(uScattering, seg, airT);
+  if (a >= 1.0) return cached.rgb;
+  vec3 exact = aerialInscatter(uScattering, seg, airT);
+  return a > 0.0 ? mix(exact, cached.rgb, a) : exact;
 }
 #endif
 `;
@@ -366,6 +396,8 @@ export type HazeProbe = 'off' | 'endpoint-sphere' | 'endpoint-sphere-half' | 'en
 
 export interface HazeCacheState {
   compiled: boolean;
+  /** Whether the development probes and the readout are compiled (`?hazeprobe=1`). */
+  probeCompiled: boolean;
   on: boolean;
   probe: HazeProbe;
   divisor: number;
@@ -413,6 +445,7 @@ export class HazeCache {
   ) {
     this.state = {
       compiled: hazeCacheCompiled(),
+      probeCompiled: hazeProbeCompiled(),
       on: false,
       probe: 'off',
       divisor: opts.divisor,
@@ -557,7 +590,7 @@ export class HazeCache {
     };
     this.live = subject;
     if (!on) { this.state.skipped = 'switched off'; return; }
-    if (import.meta.env.DEV && this.state.probe !== 'off') {
+    if (import.meta.env.DEV && this.state.probe !== 'off' && hazeProbeCompiled()) {
       air.uHazeProbe.value = { 'endpoint-sphere': 1, 'endpoint-sphere-half': 2, 'endpoint-sphere-raw': 3 }[this.state.probe];
       this.state.skipped = `probe ${this.state.probe}`;
       return;

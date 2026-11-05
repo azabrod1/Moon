@@ -191,7 +191,7 @@ import {
   surfaceDetailTexture,
 } from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
-import { createHazeAirUniforms, hazeCacheCompiled, hazeSurfaceDeclsGlsl } from '../../app/hazeCache';
+import { createHazeAirUniforms, hazeCacheCompiled, hazeProbeCompiled, hazeSurfaceDeclsGlsl } from '../../app/hazeCache';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
  *  own map states rather than a flat opacity (world/cloudDeck), it hazes and
@@ -2337,14 +2337,17 @@ const HAZE_SURFACE_DECLS = hazeSurfaceDeclsGlsl(import.meta.env.DEV);
 /** The haze cache's development readout: the fragment's colour replaced by the
  *  way its Sun in-scatter went (app/hazeCache.ts HAZE_REASONS), the ground's in
  *  red and the deck's in green with its cover in blue — the deck drawn opaque
- *  wherever it carries any, so its code is read back unblended. */
+ *  wherever it carries any, so its code is read back unblended. Compiled only
+ *  in a session that asked for the probes (HAZE_PROBE, `?hazeprobe=1`). */
 export const HAZE_DIAG_GLSL = import.meta.env.DEV ? `#ifdef HAZE_CACHE
+#ifdef HAZE_PROBE
   if (uHazeDiag > 0.5) {
     float hazeCode = (hazeReason + 1.0) / 16.0;
     outgoingLight = uAirLookupRadius > 0.0 ? vec3(0.0, hazeCode, diffuseColor.a) : vec3(hazeCode, 0.0, 0.0);
     seaGlint = vec3(0.0);
     if (uAirLookupRadius > 0.0) diffuseColor.a = diffuseColor.a > 0.02 ? 1.0 : 0.0;
   }
+#endif
 #endif
 ` : '';
 
@@ -4205,6 +4208,8 @@ export function augmentSurfaceMaterial(
     // The haze cache's read, for the session (app/hazeCache.ts; `?hazecache=0`
     // leaves it out and the program is the one from before the cache).
     ...(hazeCacheCompiled() ? { HAZE_CACHE: '' } : {}),
+    // Its development probes and readout, only in a session that asked.
+    ...(import.meta.env.DEV && hazeCacheCompiled() && hazeProbeCompiled() ? { HAZE_PROBE: '' } : {}),
   };
   // A sector re-augmented from a globe a deck stands over shares that globe's
   // fx, and takes the cloud shadow's define with it (setGroundUnderCloudDeck).

@@ -100,7 +100,8 @@ import { BloomChainPass, FusedOutputPass, parseFusedDownParam, parseFusedParam }
 import { GlassBackdrop, GlassSourcePass, parseGlassParam } from './app/glassBackdrop';
 import {
   HAZE_REASONS, HazeCache, HazeCacheEndPass, HazeCachePass, hazeDiagUniform, parseHaze32fParam, parseHazeCacheParam,
-  parseHazeDivisorParam, parseHazeExactParam, setHazeCacheCompiled, type HazeProbe,
+  parseHazeDivisorParam, parseHazeExactParam, parseHazeProbeParam, setHazeCacheCompiled, setHazeProbeCompiled,
+  type HazeProbe,
 } from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
 import {
@@ -382,6 +383,7 @@ setMieExactEnabled(parseMieExactParam(location.search));
 // surfaces compiled without the cache's read (app/hazeCache.ts). Set here,
 // before any surface is augmented; the picture as it was.
 setHazeCacheCompiled(parseHazeCacheParam(location.search));
+setHazeProbeCompiled(parseHazeProbeParam(location.search, import.meta.env.DEV));
 // `?seacolour=0`: the sea drawn in the day map's painted navy again instead
 // of clear ocean water's own colour (world/surfaceShading SEA_WATER_COLOUR).
 setSeaColourEnabled(parseSeaColourParam(location.search));

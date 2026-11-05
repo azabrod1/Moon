@@ -115,8 +115,8 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'cb99837bb43d989c610400ccb2934664abf8d47d4159c8793894fb4d32bd81b5';
-const PROD_FRAGMENT_HASH = 'b7fdbfbc4b241986d9ea6265c509ee24f55d1ed67f68a8f9578a08d0c156bf92';
+const DEV_FRAGMENT_HASH = '7871f4f79004caa0ccae17c3a384dcf86e58eb4ff5d8fe4f9288f19a74eef631';
+const PROD_FRAGMENT_HASH = '36da92c2b61392af389fe4f524c69a7bfe513ca3a139644513525202d87cad23';
 /** The same two texts with the haze cache's define OFF (`?hazecache=0`,
  *  app/hazeCache.ts), resolved as the preprocessor resolves it: the hashes the
  *  shipped texts carried before the cache existed, unchanged. Every pin below
@@ -249,7 +249,12 @@ describe('the injected surface shader', () => {
     expect(fn).toContain('textureLod(uHazeSun, uv, 0.0)');
     // The exact rules, on the fragment's own segment: the ground half of the
     // table, grazing, the single-Mie cut-off with its margin, and the alpha.
-    expect(fn).toContain('float a = hazeExactOnly(seg) ? 0.0 : cached.a;');
+    expect(fn).toContain('a = hazeExactOnly(seg) ? 0.0 : cached.a;');
+    // One call site of the exact lookup in the shipped text, so the program
+    // holds one copy of it; the development probes are their own define.
+    const shipped = resolveDefine(fn, 'HAZE_PROBE', false);
+    expect(shipped.match(/aerialInscatter\(/g)).toHaveLength(1);
+    expect(augmented('earth').defines?.HAZE_PROBE).toBeUndefined();
     expect(glsl).toContain('return !seg.hitsGround || hazeGrazing(seg) >= uHazeExact.x || hazeMieBand(seg);');
     expect(glsl).toContain('return seg.muS >= -uHazeExact.y && seg.muS <= 0.01 + uHazeExact.y;');
     expect(glsl).toContain('return 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);');

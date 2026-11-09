@@ -83,10 +83,10 @@
  * coarse sphere sags kilometres between its vertices. `AIR_LOOKUP_RADIUS` is
  * where each archetype's segment really ends.
  *
- * How much of that haze a DIRECT view shows is a body's own number
- * (SURFACE_HAZE_CLEAR_VIEW), and the weight it sets climbs to one at the
- * horizon whatever the number, because that is where the ground's haze has to
- * meet the shell's limb. The weight is one term of the shared air block, so
+ * How much of that haze a DIRECT view shows is a body's own pair of numbers
+ * (SURFACE_HAZE_CLEAR_VIEW looking straight down, SURFACE_HAZE_RIM where the
+ * view grazes the ground, where the haze meets the shell's limb), and the
+ * weight runs between them. The weight is one term of the shared air block, so
  * the globe, its sectors, the deck and the additive night lights are graded
  * together: a deck hazed harder than the ground under it would read as a
  * second, higher sky.
@@ -331,13 +331,13 @@ export const NIGHT_FLOOR_FRACTION = 1.0;
 export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
 
 /**
- * How much of the air's haze a DIRECT view of a body's surface shows, 0..1.
- * The weight the shaders derive from it (aerialHazeWeight, world/atmosphereLut)
- * is this number where the line of sight stands on the ground and one where it
- * grazes it, so the horizon always carries the whole column and the limb meets
- * the shell as baked. A presentation grade on the physical aerial perspective,
+ * How much of the air's haze a DIRECT view of a body's surface shows, 0..1,
+ * in two numbers: this one where the line of sight stands on the ground, and
+ * SURFACE_HAZE_RIM where it grazes it. The weight the shaders derive
+ * (aerialHazeWeight, world/atmosphereLut) runs between the two with the square
+ * of the grazing. A presentation grade on the physical aerial perspective,
  * never a change to the air: the tables, the sky shell and the limb are
- * untouched, and 1 is the physics.
+ * untouched, and 1 in both is the physics.
  *
  * Earth is the one body graded down. Its day map is atmosphere-corrected
  * surface reflectance, and the clear-sky column the tables put back over it is
@@ -347,25 +347,51 @@ export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
  * records, and it is not the crisp Earth the disc is expected to be. Mars
  * keeps its physics: a dusty haze IS the look of that planet.
  *
- * Live as `__moon.haze` and `?haze=<clear view>` in a development build, so
- * candidates are captured out of one page load rather than an edit each.
+ * Earth's pair is two fifths of the grade it carried before (0.35 below, the
+ * whole column at the rim), which read as a wash over the disc from far and
+ * over the clouds toward the horizon. Unprocessed frames from orbit do show
+ * that much air; the published ones, and the eye's idea of the planet, do not.
+ *
+ * Live as `__moon.haze` and `?haze=<clear view>[,<rim>]` in a development
+ * build, so candidates are captured out of one page load rather than an edit
+ * each.
  */
 export const SURFACE_HAZE_CLEAR_VIEW: Readonly<Record<string, number>> = {
-  Earth: 0.35,
+  Earth: 0.14,
+};
+
+/**
+ * The other end of the same grade: how much of the haze a view that GRAZES the
+ * ground shows, 0..1, for a body SURFACE_HAZE_CLEAR_VIEW names; 1, the whole
+ * column, for any other. Under 1 the ground at the limb is clearer than the
+ * shell's sky beside it, and near 0 a bare fringe of ground shows against the
+ * limb, so this end stays well above the clear view's.
+ */
+export const SURFACE_HAZE_RIM: Readonly<Record<string, number>> = {
+  Earth: 0.4,
 };
 
 let devSurfaceHaze: number | undefined;
+let devSurfaceHazeRim: number | undefined;
+const devHazeNumber = (now: number | undefined, next?: number | null): number | undefined => {
+  if (next === null) return undefined;
+  if (next !== undefined && Number.isFinite(next)) return Math.min(1, Math.max(0, next));
+  return now;
+};
 /** Haze every direct view at this strength from now on, on every body with
  *  tables (`__moon.haze`), held to 0..1 because past 1 the mix leaves the
  *  physics; null puts the authored numbers back. Reads back the override in
  *  force, undefined when the authored numbers stand. Development builds only. */
 export function setDevSurfaceHaze(clearView?: number | null): number | undefined {
   if (!import.meta.env.DEV) return undefined;
-  if (clearView === null) devSurfaceHaze = undefined;
-  else if (clearView !== undefined && Number.isFinite(clearView)) {
-    devSurfaceHaze = Math.min(1, Math.max(0, clearView));
-  }
+  devSurfaceHaze = devHazeNumber(devSurfaceHaze, clearView);
   return devSurfaceHaze;
+}
+/** The same pin on the grazing end of the grade (SURFACE_HAZE_RIM). */
+export function setDevSurfaceHazeRim(rim?: number | null): number | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  devSurfaceHazeRim = devHazeNumber(devSurfaceHazeRim, rim);
+  return devSurfaceHazeRim;
 }
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
@@ -2357,7 +2383,7 @@ uniform vec3 uMoonIrradiance;
 uniform float uNightExposure;
 uniform float uAirDensity;
 uniform float uAirBlend;
-uniform float uSurfaceHaze;
+uniform vec2 uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform float uSeaMix;
@@ -3816,7 +3842,8 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // curve advanceSurfaceAir writes, exactly 1 once settled. Every term the
     // tables bring is scaled by it, and the shell's crossfade reads it.
     uAirBlend: { value: 0 },
-    uSurfaceHaze: { value: 1 },
+    // The haze grade on a direct view: (straight down, grazing); (1, 1) is the physics.
+    uSurfaceHaze: { value: new THREE.Vector2(1, 1) },
     // The albedo's contrast grade (world/surfaceLook.ts): gain and pivot. A
     // fresh block is the map as it is; seatSurfaceLook writes a body's own.
     uAlbedoContrast: { value: new THREE.Vector2(1, DEFAULT_ALBEDO_PIVOT) },
@@ -3898,15 +3925,20 @@ export function bindSurfaceAir(
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
-  // The body's grade on its own haze (SURFACE_HAZE_CLEAR_VIEW). Its own
-  // uniform, apart from the loading fade: the fade also drives the shell's
-  // crossfade, and a grade folded into it would leave the shell stuck part
-  // way between its tiers.
+  // The body's grade on its own haze (SURFACE_HAZE_CLEAR_VIEW below,
+  // SURFACE_HAZE_RIM at grazing). Its own uniform, apart from the loading
+  // fade: the fade also drives the shell's crossfade, and a grade folded into
+  // it would leave the shell stuck part way between its tiers.
   // The DEV pin on every body first, then the body's own switch or table
-  // entry (world/surfaceLook.ts), then this file's grade, then the physics.
-  air.uSurfaceHaze.value = (import.meta.env.DEV ? devSurfaceHaze : undefined)
-    ?? surfaceLookOf(tables.body)?.haze
-    ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1;
+  // entry (world/surfaceLook.ts, the clear view only), then this file's
+  // grade, then the physics.
+  (air.uSurfaceHaze.value as THREE.Vector2).set(
+    (import.meta.env.DEV ? devSurfaceHaze : undefined)
+      ?? surfaceLookOf(tables.body)?.haze
+      ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1,
+    (import.meta.env.DEV ? devSurfaceHazeRim : undefined)
+      ?? SURFACE_HAZE_RIM[tables.body] ?? 1,
+  );
   // Switching on starts the fade; a rebind of live air leaves it where it is.
   if (air.uAirDensity.value === 0) {
     airFadeClock.set(air, 0);

@@ -7,7 +7,7 @@
  * material, which the streamed sectors mirror each frame (PlanetFactory
  * authors it; 0.5 is half the 2.4× the maps are baked at). How much of the
  * air's haze a direct view shows — surfaceShading's SURFACE_HAZE_CLEAR_VIEW
- * rule, where Earth is graded to 0.35 and Mars had no grade: a dusty haze is
+ * rule, where Earth is graded down and Mars had no grade: a dusty haze is
  * the look of that planet, but on top of a colour map with its shading
  * removed and a halved relief it is a third flattener. And a contrast gain on
  * the albedo, in log luminance about the body's own typical albedo with every
@@ -34,9 +34,9 @@
 export interface SurfaceLook {
   /** The relief's authored depth: the material's normalScale. */
   relief: number;
-  /** How much of the air's haze a direct view shows, 0..1, or null to leave
-   *  SURFACE_HAZE_CLEAR_VIEW's number (1, the physics, for a body it does not
-   *  name). */
+  /** How much of the air's haze a view straight down shows, 0..1, or null to
+   *  leave SURFACE_HAZE_CLEAR_VIEW's number (1, the physics, for a body it
+   *  does not name). The grazing end stays SURFACE_HAZE_RIM's. */
   haze: number | null;
   /** Contrast gain on the albedo in log luminance; 1 is the map as it is. */
   contrast: number;

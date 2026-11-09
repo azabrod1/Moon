@@ -1268,7 +1268,7 @@ export class PlanetariumMode {
   );
   private readonly highlightCtx: HighlightContext = {
     camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
-    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
+    airOn: false, airBlend: 0, hazeClearView: 1, hazeRim: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
     moonShadows: new Float64Array(MAX_MOON_SHADOWS * 4), moonShadowCount: 0, sunTan: 0, termWidth: 0,
     view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
     seaBeamOn: true, sunPathOn: true, windMapOn: false, seaAxisOn: true,
@@ -9858,7 +9858,9 @@ export class PlanetariumMode {
     const air = earth.fx?.air;
     ctx.airOn = !!air && (air.uAirDensity.value as number) > 0;
     ctx.airBlend = air ? (air.uAirBlend.value as number) : 0;
-    ctx.hazeClearView = air ? (air.uSurfaceHaze.value as number) : 1;
+    const haze = air ? (air.uSurfaceHaze.value as THREE.Vector2) : null;
+    ctx.hazeClearView = haze ? haze.x : 1;
+    ctx.hazeRim = haze ? haze.y : 1;
     const cloudArgs = earth.cloudsMesh ? surfaceShadingArgsOf(earth.cloudsMesh.material as THREE.Material) : undefined;
     ctx.cloudSpin = cloudArgs?.uFrameSpin.value ?? 0;
     ctx.cloudDrawn = !!earth.cloudsMesh?.visible && !this.devHiddenRoles?.clouds;
@@ -9983,7 +9985,7 @@ export class PlanetariumMode {
       look: surfaceLookOf(name),
       applied: {
         relief: material?.normalScale?.x ?? null,
-        haze: typeof air?.uSurfaceHaze?.value === 'number' ? air.uSurfaceHaze.value : null,
+        haze: (air?.uSurfaceHaze?.value as THREE.Vector2 | undefined)?.x ?? null,
         contrast: (air?.uAlbedoContrast?.value as THREE.Vector2 | undefined)?.x ?? null,
       },
     };

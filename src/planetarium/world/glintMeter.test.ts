@@ -35,7 +35,7 @@ function probePose(altitudeKm: number, sunElevDeg: number): GlintMeterPose {
 const OLD_LIGHT: GlintMeterLight = { intensity: 3, linear: [1, 0.9131, 0.7454], irradianceScale: solarIrradianceScale(1) };
 const sea: GlintMeterSea = {
   waterF0: SEA_WATER_F0,
-  knee: 3.5, cap: 7.0, hazeClearView: 0.35, airBlend: 1,
+  knee: 3.5, cap: 7.0, hazeClearView: 0.35, hazeRim: 1, airBlend: 1,
 };
 const openSea = (windMs: number, cloudKeep = 1): SurfaceSampler => (_x, _y, _z, out) => {
   out.windMs = windMs; out.water = 1; out.cloudKeep = cloudKeep;
@@ -44,7 +44,7 @@ const openSea = (windMs: number, cloudKeep = 1): SurfaceSampler => (_x, _y, _z, 
 /** The Sun and the beam's shoulder as the app has them now. */
 const LIGHT: GlintMeterLight = { intensity: SUN_LIGHT_INTENSITY, linear: SUN_LIGHT_LINEAR, irradianceScale: solarIrradianceScale(1) };
 const beamSea: GlintMeterSea = {
-  waterF0: SEA_WATER_F0, knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP, hazeClearView: 0.35, airBlend: 1,
+  waterF0: SEA_WATER_F0, knee: OCEAN_BEAM_KNEE, cap: OCEAN_BEAM_CAP, hazeClearView: 0.35, hazeRim: 1, airBlend: 1,
 };
 const drawnMaxOf = (rad: readonly number[], s: GlintMeterSea): number =>
   Math.max(shoulder(rad[0], s.knee, s.cap), shoulder(rad[1], s.knee, s.cap), shoulder(rad[2], s.knee, s.cap));

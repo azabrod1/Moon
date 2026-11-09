@@ -109,8 +109,10 @@ export interface GlintMeterSea {
   readonly waterF0: number;
   readonly knee: number;
   readonly cap: number;
-  /** The haze grade on a direct view (SURFACE_HAZE_CLEAR_VIEW for Earth). */
+  /** The haze grade on a direct view: straight down (SURFACE_HAZE_CLEAR_VIEW
+   *  for Earth) and where the view grazes the ground (SURFACE_HAZE_RIM). */
   readonly hazeClearView: number;
+  readonly hazeRim: number;
   /** The air's blend, 1 once the tables are in. */
   readonly airBlend: number;
   /** Whether the sea compiles its lobe along the wind's axis (the SEA_AXIS
@@ -643,7 +645,7 @@ export function beamRadianceAt(
   lookupTransmittance(table, nl, scratch.t);
   lookupTransmittance(table, 1, scratch.tz);
   const grazing = 1 - nv;
-  const airWeight = sea.airBlend * (sea.hazeClearView + (1 - sea.hazeClearView) * grazing * grazing);
+  const airWeight = sea.airBlend * (sea.hazeClearView + (sea.hazeRim - sea.hazeClearView) * grazing * grazing);
   scratch.sunVisible = bound ? 1 : sunVisibleAt(nx, ny, nz, lx, ly, lz, nl, pose);
   const irradiance = light.intensity * light.irradianceScale * nl * scratch.sunVisible;
   const common = irradiance * fresnel * lobe * s.water * s.cloudKeep;

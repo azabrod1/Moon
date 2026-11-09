@@ -94,13 +94,23 @@
  * the weight, the eclipse, the cloud shadow's share and Earth's night-lights
  * shell (its own material, transmittance only) stay per fragment and exact.
  *
- * How much of that haze a DIRECT view shows is a body's own number
- * (SURFACE_HAZE_CLEAR_VIEW), and the weight it sets climbs to one at the
- * horizon whatever the number, because that is where the ground's haze has to
- * meet the shell's limb. The weight is one term of the shared air block, so
+ * How much of that haze a DIRECT view shows is a body's own pair of numbers
+ * (SURFACE_HAZE_CLEAR_VIEW looking straight down, SURFACE_HAZE_RIM where the
+ * view grazes the ground, where the haze meets the shell's limb), and the
+ * weight runs between them. The weight is one term of the shared air block, so
  * the globe, its sectors, the deck and the additive night lights are graded
  * together: a deck hazed harder than the ground under it would read as a
  * second, higher sky.
+ *
+ * The tables land some seconds into a session, usually with the body already
+ * on screen, so everything they bring arrives on one eased curve, the air
+ * block's `uAirBlend` (SURFACE_AIR_FADE_S): the haze, the Sun's path, the
+ * sea's sky, the deck's sky light, the shadows' sky fill and the night side's
+ * ambient by a multiply in the text, the Moon by its irradiance uniform, and
+ * the shell past the limb by its tier crossfade. A term left on the density
+ * switch alone would land in the first frame while the rest were still on
+ * their way in. Settled, the blend is exactly 1 and every one of those
+ * multiplies hands back the value it was given.
  *
  * The injection has five points: the declarations at <common>; the deck's
  * smoothed colour fetch at <map_fragment>; the ocean's gloss remap at
@@ -193,6 +203,7 @@ import {
 } from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
 import { createHazeAirUniforms, hazeCacheCompiled, hazeProbeCompiled, hazeSurfaceDeclsGlsl } from '../../app/hazeCache';
+import { smootherstep } from '../../shared/math/smoothstep';
 
 /** The cloud deck is a surface class of its own: its alpha is the coverage its
  *  own map states rather than a flat opacity (world/cloudDeck), it hazes and
@@ -332,13 +343,13 @@ export const NIGHT_FLOOR_FRACTION = 1.0;
 export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
 
 /**
- * How much of the air's haze a DIRECT view of a body's surface shows, 0..1.
- * The weight the shaders derive from it (aerialHazeWeight, world/atmosphereLut)
- * is this number where the line of sight stands on the ground and one where it
- * grazes it, so the horizon always carries the whole column and the limb meets
- * the shell as baked. A presentation grade on the physical aerial perspective,
+ * How much of the air's haze a DIRECT view of a body's surface shows, 0..1,
+ * in two numbers: this one where the line of sight stands on the ground, and
+ * SURFACE_HAZE_RIM where it grazes it. The weight the shaders derive
+ * (aerialHazeWeight, world/atmosphereLut) runs between the two with the square
+ * of the grazing. A presentation grade on the physical aerial perspective,
  * never a change to the air: the tables, the sky shell and the limb are
- * untouched, and 1 is the physics.
+ * untouched, and 1 in both is the physics.
  *
  * Earth is the one body graded down. Its day map is atmosphere-corrected
  * surface reflectance, and the clear-sky column the tables put back over it is
@@ -348,25 +359,51 @@ export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
  * records, and it is not the crisp Earth the disc is expected to be. Mars
  * keeps its physics: a dusty haze IS the look of that planet.
  *
- * Live as `__moon.haze` and `?haze=<clear view>` in a development build, so
- * candidates are captured out of one page load rather than an edit each.
+ * Earth's pair is two fifths of the grade it carried before (0.35 below, the
+ * whole column at the rim), which read as a wash over the disc from far and
+ * over the clouds toward the horizon. Unprocessed frames from orbit do show
+ * that much air; the published ones, and the eye's idea of the planet, do not.
+ *
+ * Live as `__moon.haze` and `?haze=<clear view>[,<rim>]` in a development
+ * build, so candidates are captured out of one page load rather than an edit
+ * each.
  */
 export const SURFACE_HAZE_CLEAR_VIEW: Readonly<Record<string, number>> = {
-  Earth: 0.35,
+  Earth: 0.14,
+};
+
+/**
+ * The other end of the same grade: how much of the haze a view that GRAZES the
+ * ground shows, 0..1, for a body SURFACE_HAZE_CLEAR_VIEW names; 1, the whole
+ * column, for any other. Under 1 the ground at the limb is clearer than the
+ * shell's sky beside it, and near 0 a bare fringe of ground shows against the
+ * limb, so this end stays well above the clear view's.
+ */
+export const SURFACE_HAZE_RIM: Readonly<Record<string, number>> = {
+  Earth: 0.4,
 };
 
 let devSurfaceHaze: number | undefined;
+let devSurfaceHazeRim: number | undefined;
+const devHazeNumber = (now: number | undefined, next?: number | null): number | undefined => {
+  if (next === null) return undefined;
+  if (next !== undefined && Number.isFinite(next)) return Math.min(1, Math.max(0, next));
+  return now;
+};
 /** Haze every direct view at this strength from now on, on every body with
  *  tables (`__moon.haze`), held to 0..1 because past 1 the mix leaves the
  *  physics; null puts the authored numbers back. Reads back the override in
  *  force, undefined when the authored numbers stand. Development builds only. */
 export function setDevSurfaceHaze(clearView?: number | null): number | undefined {
   if (!import.meta.env.DEV) return undefined;
-  if (clearView === null) devSurfaceHaze = undefined;
-  else if (clearView !== undefined && Number.isFinite(clearView)) {
-    devSurfaceHaze = Math.min(1, Math.max(0, clearView));
-  }
+  devSurfaceHaze = devHazeNumber(devSurfaceHaze, clearView);
   return devSurfaceHaze;
+}
+/** The same pin on the grazing end of the grade (SURFACE_HAZE_RIM). */
+export function setDevSurfaceHazeRim(rim?: number | null): number | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  devSurfaceHazeRim = devHazeNumber(devSurfaceHazeRim, rim);
+  return devSurfaceHazeRim;
 }
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
@@ -2379,7 +2416,7 @@ uniform vec3 uMoonIrradiance;
 uniform float uNightExposure;
 uniform float uAirDensity;
 uniform float uAirBlend;
-uniform float uSurfaceHaze;
+uniform vec2 uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform float uSeaMix;
@@ -2793,7 +2830,9 @@ const CLOUD_SHADOW_AIR_SCALE = /* glsl */ `
  * The night weight's complement hands it over to that ambient where every
  * night source hands over, and the shade's own fade at the horizon already
  * takes it to nothing where the Sun meets the ground's horizon. Only where the
- * body's air tables are bound: with no tables there is no sky to read. A
+ * body's air tables are bound: with no tables there is no sky to read. It is
+ * the sky's light, so it arrives with the rest of the air on `uAirBlend`
+ * rather than all at once in the frame the tables bind. A
  * ground compiled with the cloud field fetches the table only where there is
  * a shade to fill, which over clear sky is exactly none: the same picture,
  * without the read.
@@ -2809,7 +2848,7 @@ const CLOUD_SHADOW_FILL = /* glsl */ `
     outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
         * (getIrradiance(uIrradiance, clampRadius(length(vAirFrag) / uPlanetRadius), fillMuS)
             * uAirlightScale * uSolarIrradiance)
-        * (cloudShade * ${CLOUD_SHADOW_SKY_FILL_GLSL} * (1.0 - nightWeight(fillMuS)));
+        * (cloudShade * ${CLOUD_SHADOW_SKY_FILL_GLSL} * (1.0 - nightWeight(fillMuS)) * uAirBlend);
   }
 #endif
 `;
@@ -2838,7 +2877,9 @@ const CLOUD_SHADOW_FILL = /* glsl */ `
  * night side's ambient both take it, weighted by the night weight's
  * complement so it hands over to that ambient along the same ramp and the two
  * sum to the table's irradiance through the terminator. Only where the body's
- * air tables are bound; on the tier without them the deck has no sky light.
+ * air tables are bound; on the tier without them the deck has no sky light,
+ * and when they bind it arrives on the air's own blend with everything else
+ * the tables bring.
  *
  * Placed after three's lighting and before the eclipse factor, the limb and
  * the air, so a moon's umbra dims both terms and the air sees them as light
@@ -2878,7 +2919,7 @@ const CLOUD_LIGHT_DECK = /* glsl */ `
       float skyR = clampRadius(uAirLookupRadius > 0.0 ? uAirLookupRadius : length(vAirFrag) / uPlanetRadius);
       outgoingLight += diffuseColor.rgb * RECIPROCAL_PI
           * (getIrradiance(uIrradiance, skyR, skyMuS) * uAirlightScale * uSolarIrradiance)
-          * (${CLOUD_LIGHT_SKY_GLSL} * (1.0 - nightWeight(skyMuS)));
+          * (${CLOUD_LIGHT_SKY_GLSL} * (1.0 - nightWeight(skyMuS)) * uAirBlend);
     }
   }
 #endif
@@ -3154,9 +3195,11 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
   // The Sun's elevation at THIS fragment: the quantity the sources the daylight
   // sky drowns are weighted by, so the airglow on the limb and the sky's own
   // ambient on the ground fade along one line rather than two. Zero where there
-  // is no air, which is where the authored floor below is the whole night side.
+  // is no air, which is where the authored floor below is the whole night side,
+  // and brought in on the air's blend when the tables bind, so the night side
+  // lifts off that floor with the haze rather than ahead of it.
   float airNight = uAirDensity > 0.0
-      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure * uAirBlend
       : 0.0;
   // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
   // whenever it stands above the fragment's horizon, and it arrives on a
@@ -3217,7 +3260,8 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
   // irradiance table read with the Moon as the source — which sky it is depends
   // only on where the source is. Behind a uniform branch as well as the weight,
   // so a body with no moon, a new Moon and every day fragment pay none of the
-  // six fetches in here.
+  // six fetches in here. Its arrival when the tables bind is in the irradiance
+  // uniform itself, which the mode scales by the air's blend.
   if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
     float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
     float muSMoon = clampCosine(dot(up, normalize(uMoonDirWorld)));
@@ -3342,9 +3386,9 @@ ${CLOUD_SHADOW_AIR_SCALE}      // The Moon lights the same column. One traversal
 #endif
             * uMoonIrradiance * moonNight;
       }
-      // The tables arrive a few seconds into a session, and the haze they
+      // The tables arrive some seconds into a session, and the haze they
       // bring would otherwise switch on across the whole ground in one frame:
-      // it fades in over a moment instead.
+      // it arrives on the air's blend (SURFACE_AIR_FADE_S) instead.
       float airWeight = uAirBlend * aerialHazeWeight(seg, uSurfaceHaze);
       outgoingLight = mix(outgoingLight, outgoingLight * airT + airS, airWeight);
       seaGlint = mix(seaGlint, seaGlint * airT, airWeight);
@@ -3837,9 +3881,12 @@ export function createSurfaceAirFx(): SurfaceAirFx {
   const air: SurfaceAirFx = {
     ...atmosphereLookupUniforms(),
     uAirDensity: { value: 0 },
-    // 0 → 1 over SURFACE_AIR_FADE_S after the tables bind; the haze is scaled by it.
+    // How far the air has arrived since its tables bound: 0 → 1 on the eased
+    // curve advanceSurfaceAir writes, exactly 1 once settled. Every term the
+    // tables bring is scaled by it, and the shell's crossfade reads it.
     uAirBlend: { value: 0 },
-    uSurfaceHaze: { value: 1 },
+    // The haze grade on a direct view: (straight down, grazing); (1, 1) is the physics.
+    uSurfaceHaze: { value: new THREE.Vector2(1, 1) },
     // The albedo's contrast grade (world/surfaceLook.ts): gain and pivot. A
     // fresh block is the map as it is; seatSurfaceLook writes a body's own.
     uAlbedoContrast: { value: new THREE.Vector2(1, DEFAULT_ALBEDO_PIVOT) },
@@ -3924,35 +3971,86 @@ export function bindSurfaceAir(
   air.uIrradiance.value = tables.irradiance;
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
-  // The body's grade on its own haze (SURFACE_HAZE_CLEAR_VIEW). Its own
-  // uniform, apart from the loading fade: the fade also drives the shell's
-  // crossfade, and a grade folded into it would leave the shell stuck part
-  // way between its tiers.
+  // The body's grade on its own haze (SURFACE_HAZE_CLEAR_VIEW below,
+  // SURFACE_HAZE_RIM at grazing). Its own uniform, apart from the loading
+  // fade: the fade also drives the shell's crossfade, and a grade folded into
+  // it would leave the shell stuck part way between its tiers.
   // The DEV pin on every body first, then the body's own switch or table
-  // entry (world/surfaceLook.ts), then this file's grade, then the physics.
-  air.uSurfaceHaze.value = (import.meta.env.DEV ? devSurfaceHaze : undefined)
-    ?? surfaceLookOf(tables.body)?.haze
-    ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1;
+  // entry (world/surfaceLook.ts, the clear view only), then this file's
+  // grade, then the physics.
+  (air.uSurfaceHaze.value as THREE.Vector2).set(
+    (import.meta.env.DEV ? devSurfaceHaze : undefined)
+      ?? surfaceLookOf(tables.body)?.haze
+      ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1,
+    (import.meta.env.DEV ? devSurfaceHazeRim : undefined)
+      ?? SURFACE_HAZE_RIM[tables.body] ?? 1,
+  );
   // Switching on starts the fade; a rebind of live air leaves it where it is.
-  if (air.uAirDensity.value === 0) air.uAirBlend.value = 0;
+  if (air.uAirDensity.value === 0) {
+    airFadeClock.set(air, 0);
+    air.uAirBlend.value = 0;
+  }
   air.uAirDensity.value = 1;
 }
 
-/** How long a body's haze takes to fade in once its tables bind. */
-export const SURFACE_AIR_FADE_S = 1.2;
+/**
+ * How long a body's air takes to arrive once its tables bind.
+ *
+ * The tables land some seconds into a session, often with the body already on
+ * screen, and they change the picture everywhere at once: the haze over the
+ * whole disc, the Sun's path reddening the terminator, the sea's sky, the
+ * deck's sky light, the blue fill in cloud shadows, the night side's ambient
+ * and the Moon's light. All of it arrives on ONE curve, `uAirBlend`, so no term
+ * leads or trails the rest. The curve is smootherstep of a linear clock (kept
+ * here, beside the uniform, never in it): zero rate at both ends, so the start
+ * and the finish do not read as a step in how fast the colour is moving, and
+ * long enough that the change reads as the air settling rather than a switch:
+ * at eight seconds the fastest moment is under one display step a second on a
+ * close view of Earth, half the rate of a four-second fade.
+ * Once settled the blend is exactly 1, and every term it scales is the value
+ * it would be with no fade at all.
+ */
+export const SURFACE_AIR_FADE_S = 8;
 
-/** Advance a body's haze fade by one frame; a no-op once the air is fully on
- *  or while it is off. */
-export function advanceSurfaceAir(air: SurfaceAirFx, dtS: number): void {
-  if (air.uAirDensity.value === 0 || air.uAirBlend.value >= 1) return;
-  air.uAirBlend.value = Math.min(1, air.uAirBlend.value + Math.max(0, dtS) / SURFACE_AIR_FADE_S);
+/** The linear half of the fade: 0 when a body's tables bind, 1 once
+ *  SURFACE_AIR_FADE_S has passed. `uAirBlend` is its eased image. */
+const airFadeClock = new WeakMap<SurfaceAirFx, number>();
+
+let devAirFadeS: number | undefined;
+/** Run every body's switch-on over this many seconds from now on (`?airfade=`),
+ *  0 to put all of it on in one frame; null puts SURFACE_AIR_FADE_S back.
+ *  Reads back the length in force. Development builds only. */
+export function setDevSurfaceAirFade(seconds?: number | null): number {
+  if (import.meta.env.DEV) {
+    if (seconds === null) devAirFadeS = undefined;
+    else if (seconds !== undefined && Number.isFinite(seconds)) devAirFadeS = Math.max(0, seconds);
+  }
+  return surfaceAirFadeSeconds();
 }
 
-/** Finish a body's haze fade at once. For the dev pin that flips the tier for
+function surfaceAirFadeSeconds(): number {
+  return (import.meta.env.DEV ? devAirFadeS : undefined) ?? SURFACE_AIR_FADE_S;
+}
+
+/** Advance a body's air fade by one frame: the clock by the frame's share of
+ *  the fade, the blend to its eased value. A no-op once the air is fully on or
+ *  while it is off. */
+export function advanceSurfaceAir(air: SurfaceAirFx, dtS: number): void {
+  if (air.uAirDensity.value === 0 || air.uAirBlend.value >= 1) return;
+  const fadeS = surfaceAirFadeSeconds();
+  const clock = fadeS > 0
+    ? Math.min(1, (airFadeClock.get(air) ?? 0) + Math.max(0, dtS) / fadeS)
+    : 1;
+  airFadeClock.set(air, clock);
+  air.uAirBlend.value = smootherstep(clock);
+}
+
+/** Finish a body's air fade at once. For the dev pin that flips the tier for
  *  an A/B: a golden pair wants the steady state of each tier, not a frame from
  *  the transition between them. */
 export function settleSurfaceAir(air: SurfaceAirFx): void {
   if (air.uAirDensity.value === 0) return;
+  airFadeClock.set(air, 1);
   air.uAirBlend.value = 1;
 }
 
@@ -3963,6 +4061,7 @@ export function clearSurfaceAir(air: SurfaceAirFx): void {
   if (air.uAirDensity.value === 0 && air.uScattering.value === dummies.map3D
     && air.uMieColour.value === dummies.map3D) return;
   air.uAirDensity.value = 0;
+  airFadeClock.set(air, 0);
   air.uAirBlend.value = 0;
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;

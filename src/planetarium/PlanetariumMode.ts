@@ -1275,7 +1275,7 @@ export class PlanetariumMode {
   );
   private readonly highlightCtx: HighlightContext = {
     camera: new THREE.Vector3(), sun: new THREE.Vector3(), lightIntensity: 0, lightLinear: [1, 1, 1],
-    airOn: false, airBlend: 0, hazeClearView: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
+    airOn: false, airBlend: 0, hazeClearView: 1, hazeRim: 1, cloudSpin: 0, cloudDrawn: false, cloudShadows: true, cloudHeightOverRadius: 0,
     moonShadows: new Float64Array(MAX_MOON_SHADOWS * 4), moonShadowCount: 0, sunTan: 0, termWidth: 0,
     view: new THREE.Vector3(0, 0, -1), viewUp: new THREE.Vector3(0, 1, 0), fovXDeg: 60, fovYDeg: 40,
     seaBeamOn: true, sunPathOn: true, windMapOn: false, seaAxisOn: true,
@@ -6738,10 +6738,11 @@ export class PlanetariumMode {
    *
    * The tables can land while the player is looking at the body, and the two
    * looks differ, so the LUT tier does not replace the analytic one in a
-   * single frame: it fades in on the same clock as the ground's haze (the air
-   * block's `uAirBlend`, advanced by syncSurfaceAir just before this), drawn
-   * on a sibling mesh under the shell while the analytic material fades out
-   * on the shell itself (world/atmosphereShell owns the sibling and the swap).
+   * single frame: it fades in on the same eased curve as everything else the
+   * tables bring to the ground (the air block's `uAirBlend`, advanced by
+   * syncSurfaceAir just before this), drawn on a sibling mesh under the shell
+   * while the analytic material fades out on the shell itself
+   * (world/atmosphereShell owns the sibling and the swap).
    * The weights are written with the distance fade, in applyShellAlpha. Once
    * the clock reaches one the mesh wears the LUT material alone and the
    * sibling goes. The way back — tables gone — is immediate: a lost context
@@ -6848,7 +6849,8 @@ export class PlanetariumMode {
       planet.data.radiusAU,
       wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
     );
-    // One frame of the haze fade; a hitch frame is capped so it cannot jump it.
+    // One frame of the air's fade; a hitch frame is capped so it cannot jump
+    // it. Before the Moon, which is scaled by the blend this leaves.
     advanceSurfaceAir(air, Math.min(this.lastFrameDtMs, 100) / 1000);
     this.syncMoonlight(planet);
   }
@@ -6863,9 +6865,11 @@ export class PlanetariumMode {
    * uniform rather than into the shader: the planet's own distance from the
    * Sun, the Moon's phase, and the Moon's own eclipse — a Moon inside the
    * planet's shadow lights nothing, which is the one night this term has to get
-   * right. The direction is treated as parallel across the disc: the Moon's
-   * bearing varies by 0.95 degrees from one side of Earth to the other, which
-   * moves the moonlit terminator by about 100 km on a body 12,742 km across.
+   * right — and how far the air has arrived since its tables bound, so the
+   * Moon comes in with the haze instead of in the first frame. The direction
+   * is treated as parallel across the disc: the Moon's bearing varies by 0.95
+   * degrees from one side of Earth to the other, which moves the moonlit
+   * terminator by about 100 km on a body 12,742 km across.
    */
   private syncMoonlight(planet: PlanetMesh): void {
     const air = planet.fx?.air;
@@ -6909,7 +6913,15 @@ export class PlanetariumMode {
       phaseDeg,
       this.moonlightShading.sunVisibleFraction,
     );
-    irradiance.set(value[0], value[1], value[2]);
+    // The Moon arrives with the rest of the air when the tables bind: scaled
+    // here, on the one uniform every reader shares, so the ground's beam and
+    // skylight, the haze's Moon column and the shell's moonlit air need no
+    // multiply of their own and are exactly this value once the blend is 1.
+    // The haze's column and the shell are also scaled by the blend they sit
+    // under (the haze weight, the tier crossfade), so while the fade runs those
+    // two rise as its square; the ground's own moonlight rises with it.
+    const blend = air.uAirBlend.value as number;
+    irradiance.set(value[0] * blend, value[1] * blend, value[2] * blend);
     this.moonlightPhase.set(planet.data.name, phaseDeg);
   }
 
@@ -9857,7 +9869,9 @@ export class PlanetariumMode {
     const air = earth.fx?.air;
     ctx.airOn = !!air && (air.uAirDensity.value as number) > 0;
     ctx.airBlend = air ? (air.uAirBlend.value as number) : 0;
-    ctx.hazeClearView = air ? (air.uSurfaceHaze.value as number) : 1;
+    const haze = air ? (air.uSurfaceHaze.value as THREE.Vector2) : null;
+    ctx.hazeClearView = haze ? haze.x : 1;
+    ctx.hazeRim = haze ? haze.y : 1;
     const cloudArgs = earth.cloudsMesh ? surfaceShadingArgsOf(earth.cloudsMesh.material as THREE.Material) : undefined;
     ctx.cloudSpin = cloudArgs?.uFrameSpin.value ?? 0;
     ctx.cloudDrawn = !!earth.cloudsMesh?.visible && !this.devHiddenRoles?.clouds;
@@ -9982,7 +9996,7 @@ export class PlanetariumMode {
       look: surfaceLookOf(name),
       applied: {
         relief: material?.normalScale?.x ?? null,
-        haze: typeof air?.uSurfaceHaze?.value === 'number' ? air.uSurfaceHaze.value : null,
+        haze: (air?.uSurfaceHaze?.value as THREE.Vector2 | undefined)?.x ?? null,
         contrast: (air?.uAlbedoContrast?.value as THREE.Vector2 | undefined)?.x ?? null,
       },
     };
@@ -18055,6 +18069,10 @@ export class PlanetariumMode {
       // harness that wants to watch the transition itself.
       this.syncSurfaceAir(planet);
       if (settle && planet.fx?.air) settleSurfaceAir(planet.fx.air);
+      // The Moon was just written at the blend syncSurfaceAir found; written
+      // again at the settled one, so the frame after a settling pin is the
+      // steady state for the Moon as well.
+      if (settle && (planet.fx?.air?.uAirDensity.value ?? 0) > 0) this.syncMoonlight(planet);
       this.syncAtmosphereShell(planet);
       const material = planet.atmosphere.material as THREE.ShaderMaterial;
       wearing[planet.data.name] = material === this.atmosphereShells.get(planet.data.name)?.lut

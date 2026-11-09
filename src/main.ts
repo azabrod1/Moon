@@ -69,8 +69,11 @@ import {
   devGlintUniforms,
   nightLiftUniform,
   setDevOceanRoughness,
+  setDevSurfaceAirFade,
   setDevSurfaceHaze,
+  setDevSurfaceHazeRim,
   SURFACE_HAZE_CLEAR_VIEW,
+  SURFACE_HAZE_RIM,
   rebindSeaWindMap,
   seaWindOn,
   setSeaWindEnabled,
@@ -3933,13 +3936,16 @@ function installDevHooks() {
       };
     },
     // The grade on a surface's haze, live: how much of the air's haze a direct
-    // view shows (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW; 1 is the
-    // physics, and the horizon carries the whole column whatever the number),
-    // on every body with tables from the next frame. Returns the override in
-    // force beside the authored numbers; a production build has no knob.
-    haze: (opts?: { clear?: number | null }) => ({
+    // view shows, straight down (`clear`) and where the view grazes the ground
+    // (`rim`) (world/surfaceShading SURFACE_HAZE_CLEAR_VIEW and
+    // SURFACE_HAZE_RIM; 1 is the physics), on every body with tables from the
+    // next frame. Returns the overrides in force beside the authored numbers;
+    // a production build has no knob.
+    haze: (opts?: { clear?: number | null; rim?: number | null }) => ({
       clear: setDevSurfaceHaze(opts?.clear),
+      rim: setDevSurfaceHazeRim(opts?.rim),
       authored: SURFACE_HAZE_CLEAR_VIEW,
+      authoredRim: SURFACE_HAZE_RIM,
     }),
     // Cloud shadows on the ground under Earth's deck (world/surfaceShading,
     // on unless `?cloudshadows=0`): `on` moves the switch and relinks the globe and its
@@ -4429,11 +4435,20 @@ function installDevHooks() {
       if (Number.isFinite(cap)) devGlintUniforms.uGlintCap.value = cap;
     }
     // `?haze=0.35` shows that much of the air's haze in every direct view of a
-    // surface for the session: the __moon.haze knob, reachable from a phone's
-    // address bar, so two strengths are two links to compare. DEV only.
-    // An empty value is a mistyped link, not a request for zero.
-    const haze = new URLSearchParams(location.search).get('haze');
+    // surface for the session, and `?haze=0.35,1` sets the grazing end beside
+    // it: the __moon.haze knob, reachable from a phone's address bar, so two
+    // strengths are two links to compare. DEV only. An empty value is a
+    // mistyped link, not a request for zero.
+    const [haze, hazeRim] = (new URLSearchParams(location.search).get('haze') ?? '').split(',');
     if (haze && Number.isFinite(Number(haze))) setDevSurfaceHaze(Number(haze));
+    if (hazeRim && Number.isFinite(Number(hazeRim))) setDevSurfaceHazeRim(Number(hazeRim));
+    // `?airfade=8` runs the air's arrival when a body's tables bind over that
+    // many seconds instead of SURFACE_AIR_FADE_S, and `?airfade=0` puts all of
+    // it on in one frame: the switch-on slowed down to watch, or with no fade
+    // to compare against. DEV only; an empty value is a mistyped link and
+    // changes nothing.
+    const airFade = new URLSearchParams(location.search).get('airfade');
+    if (airFade && Number.isFinite(Number(airFade))) setDevSurfaceAirFade(Number(airFade));
     // `?nightexposure=0.1,0.35` sets the night side's exposure curve for the
     // session, a third and a fourth number its speeds toward the day and back
     // toward the night, and a fifth its ceiling

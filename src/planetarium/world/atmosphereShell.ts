@@ -473,8 +473,9 @@ export function disposeAtmosphereShellMaterial(material: THREE.ShaderMaterial): 
  * are drawn — the analytic material on the shell, the incoming one on a
  * sibling mesh — and their weights sum to the distance fade alone: the limb's
  * total light neither dips nor doubles between the two looks. `blend` is the
- * ground's own haze-fade clock, so the sky past the limb and the air in front
- * of the surface arrive together.
+ * ground's own air blend — the eased value, not the linear clock behind it —
+ * so the sky past the limb and the air in front of the surface arrive on one
+ * curve.
  */
 export function shellTierAlphas(alpha: number, blend: number): { analytic: number; lut: number } {
   const b = Math.min(1, Math.max(0, blend));

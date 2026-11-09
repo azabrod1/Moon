@@ -598,7 +598,7 @@ describe('the camera’s exposure', () => {
     expect(surface).toContain('float nightKeep = 1.0 - uSilhouette;');
     expect(surface).toContain(
       'float airNight = uAirDensity > 0.0\n'
-        + '      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure\n'
+        + '      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep * uNightExposure * uAirBlend\n'
         + '      : 0.0;',
     );
     expect(surface).toContain(

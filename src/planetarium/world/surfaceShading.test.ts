@@ -941,7 +941,7 @@ describe('the haze fade and the glint cap', () => {
   });
 
   it('takes as long over the switch-on as it says, eased at both ends, frame by frame', () => {
-    expect(SURFACE_AIR_FADE_S).toBe(4);
+    expect(SURFACE_AIR_FADE_S).toBe(8);
     const air = createSurfaceAirFx();
     const tables = {
       transmittance: air.uTransmittance.value,
@@ -951,23 +951,24 @@ describe('the haze fade and the glint cap', () => {
     } as Parameters<typeof bindSurfaceAir>[1];
     bindSurfaceAir(air, tables, 1, 1);
     const dt = 1 / 120;
+    const frames = SURFACE_AIR_FADE_S * 120;
     const blends: number[] = [];
-    for (let i = 0; i < 4 * 120 + 5; i++) {
+    for (let i = 0; i < frames + 5; i++) {
       advanceSurfaceAir(air, dt);
       blends.push(air.uAirBlend.value as number);
     }
     // Monotone, and done exactly at the fade's length (to a frame's rounding).
     for (let i = 1; i < blends.length; i++) expect(blends[i]).toBeGreaterThanOrEqual(blends[i - 1]);
-    expect(blends[4 * 120 - 3]).toBeLessThan(1);
-    expect(blends[4 * 120 + 1]).toBe(1);
+    expect(blends[frames - 3]).toBeLessThan(1);
+    expect(blends[frames + 1]).toBe(1);
     // The first and the last frame of the fade move it by next to nothing —
     // no step in the colour where the fade starts or ends — and the middle
     // frame by the most.
     const steps = blends.slice(1).map((b, i) => b - blends[i]);
-    const middle = steps[2 * 120];
+    const middle = steps[frames / 2];
     expect(blends[0]).toBeLessThan(1e-5);
     expect(steps[0]).toBeLessThan(middle / 1000);
-    expect(steps[4 * 120 - 2]).toBeLessThan(middle / 1000);
+    expect(steps[frames - 2]).toBeLessThan(middle / 1000);
   });
 
   it.runIf(import.meta.env.DEV)('runs the switch-on over the DEV ?airfade length, and 0 is one frame', () => {

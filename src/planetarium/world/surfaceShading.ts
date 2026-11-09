@@ -3958,11 +3958,13 @@ export function bindSurfaceAir(
  * leads or trails the rest. The curve is smootherstep of a linear clock (kept
  * here, beside the uniform, never in it): zero rate at both ends, so the start
  * and the finish do not read as a step in how fast the colour is moving, and
- * long enough that the change reads as the air settling rather than a switch.
+ * long enough that the change reads as the air settling rather than a switch:
+ * at eight seconds the fastest moment is under one display step a second on a
+ * close view of Earth, half the rate of a four-second fade.
  * Once settled the blend is exactly 1, and every term it scales is the value
  * it would be with no fade at all.
  */
-export const SURFACE_AIR_FADE_S = 4;
+export const SURFACE_AIR_FADE_S = 8;
 
 /** The linear half of the fade: 0 when a body's tables bind, 1 once
  *  SURFACE_AIR_FADE_S has passed. `uAirBlend` is its eased image. */

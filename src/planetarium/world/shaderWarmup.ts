@@ -133,7 +133,9 @@ export interface ShaderWarmupOptions {
    *  same total work is paid either way. */
   resolvePerFrame?: number;
   onError?: (stage: 'compile' | 'resolve' | 'restore' | 'warm-draw', err: unknown) => void;
-  /** Test seam: the 1×1 target bound for the compile and the draw. */
+  /** The 1×1 target bound for the compile and the draw, a default
+   *  WebGLRenderTarget(1, 1) unless given: a test seam, and how a program that
+   *  draws into another format (the haze cache's half float) is warmed on it. */
   createTarget?: () => THREE.WebGLRenderTarget;
   /** Test seam: the frame the resolve phase yields between programs. */
   nextFrame?: () => Promise<void>;

@@ -24,7 +24,7 @@ import {
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
-import { hazeCacheGpuBytes, type HazeCacheSubject } from '../app/hazeCache';
+import { hazeCacheGpuBytes, sessionHazeCacheWarmup, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
@@ -3728,9 +3728,10 @@ export class PlanetariumMode {
    *  Nothing this tier needs is in the boot warm-up set: not the bake's own
    *  seven programs, not the capability probe (a 3D layer render and a
    *  synchronous pixel readback — a full pipeline flush), and not the shell's
-   *  own program. The warm-up compiles what the live path draws, under the load
-   *  screen, and none of this draws until the tables exist. All of it links out
-   *  here in the idle instead, where a cold-cache link costs nobody a frame;
+   *  own program or the haze cache's pass. The warm-up compiles what the live
+   *  path draws, under the load screen, and none of this draws until the
+   *  tables exist. All of it links out here in the idle instead, where a
+   *  cold-cache link costs nobody a frame;
    *  putting any of it in the warm set moves the cost onto the boot the warm-up
    *  exists to shorten. */
   private scheduleAtmosphereBake(): void {
@@ -3750,8 +3751,10 @@ export class PlanetariumMode {
 
   /** Bring the table tier up across the idle, one cost to a frame: probe,
    *  then the shell program's compile and its resolve phase (one program's
-   *  driver-side build per frame), then the bake, which spreads its own
-   *  programs one to a frame before its first layer draw. Each is a dropped
+   *  driver-side build per frame), then the haze cache pass's the same way
+   *  (app/hazeCache.ts, which first draws the frame the tables go live), then
+   *  the bake, which spreads its own programs one to a frame before its first
+   *  layer draw. Each is a dropped
    *  frame on its own, and the arming frame used to carry several together. */
   private async armAtmosphereTier(): Promise<void> {
     const lut = this.atmosphereLut;
@@ -3772,6 +3775,9 @@ export class PlanetariumMode {
     await nextFrame();
     if (!this.active) return;
     await this.warmAtmosphereShellProgram();
+    await nextFrame();
+    if (!this.active) return;
+    await this.warmHazeCacheProgram();
     await nextFrame();
     if (!this.active) return;
     await lut.bake('Earth');
@@ -3871,6 +3877,23 @@ export class PlanetariumMode {
       this.scene.remove(atmoProbes.group);
       atmoProbes.dispose();
     });
+  }
+
+  /** Link the haze cache's pass program (app/hazeCache.ts) here too, for the
+   *  same reason: the pass first draws on the frame the tables go live, and a
+   *  cold link there is a dropped frame. Its own mesh, camera and a target of
+   *  the atlases' format, so the program and pipeline built here are the ones
+   *  the pass asks for. Fail-open like the shell's. */
+  private async warmHazeCacheProgram(): Promise<void> {
+    const warm = sessionHazeCacheWarmup();
+    if (!warm) return;
+    const { resolved, warmDrawMs } = await warmUpSceneShaders(this.renderer, warm.root, warm.camera, {
+      drawsThroughComposer: true,
+      createTarget: warm.createTarget,
+      probeGroups: [],
+      onError: (stage, err) => debugError(`Haze cache warm-up ${stage} failed`, err),
+    });
+    logShaderResolve('Haze cache', resolved, warmDrawMs);
   }
 
   /** Wire the hero bodies' sector sets onto the meshes they draw over.

@@ -42,6 +42,7 @@ import {
   NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   SURFACE_HAZE_CLEAR_VIEW,
   SURFACE_HAZE_RIM,
+  SURFACE_HAZE_LIMB_SEAL,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
@@ -113,37 +114,37 @@ const hash = (glsl: string): string => createHash('sha256').update(glsl).digest(
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = 'ee740cfd7a07aa6b12d9a9d1223cb7060fc9832f4c9274f04a7db444d1975aef';
-const PROD_FRAGMENT_HASH = 'f4b452ddd9cf4790c1e46742fc1279eb16b873a49a922442bb83dd8030f245d8';
+const DEV_FRAGMENT_HASH = 'e54a75b2b229288d6e202dfba967efc0e8b506d657bfa4aff1f753618eb9bd7e';
+const PROD_FRAGMENT_HASH = '5607bfc937f00cad5adb41f6bd9aadb713302c2232136af86b4255a378b3588f';
 /** The same two texts with the lobe along the wind's define OFF
  *  (`?seaaxis=0`, world/surfaceShading SEA_AXIS), resolved as the
  *  preprocessor resolves it: the hashes the shipped texts carried before the
  *  lobe had an axis, unchanged. Every pin below is of a text with the define
  *  resolved off as well, so each holds the text it held before. */
-const SEA_AXIS_OFF_DEV_FRAGMENT_HASH = 'cb8b40effba558cd45554cbb6e2c255580df704cc4187646c762f566f7f06c5c';
-const SEA_AXIS_OFF_PROD_FRAGMENT_HASH = '493d1ad3afd64ca0762f277f6ed78e69ed7354cfb4e35646d8b83247be41601a';
-const PROD_NIGHT_FRAGMENT_HASH = 'a813343ccc77f951ee8622b5ecd2ba419021146a5ea7b9b94135e3f7d9738185';
+const SEA_AXIS_OFF_DEV_FRAGMENT_HASH = '404a82f81b5094965e08804044435523150bed45b5d3cea0e113972b7b0428af';
+const SEA_AXIS_OFF_PROD_FRAGMENT_HASH = '5cefee9bad3e56b8997225a57e0156a83c274105a5e77574a6293ceabcc7442a';
+const PROD_NIGHT_FRAGMENT_HASH = '0f73b60c2aab6988e89ed8a7f4f513d7c7f0bce8a780393574a1d5978c1fd389';
 /** The two texts with the cloud field's define OFF (world/cloudField),
  *  resolved as the preprocessor resolves it: each of the field's two chunks
  *  leaves the one blank line it opens with. */
-const FIELD_OFF_DEV_FRAGMENT_HASH = '20548b9f9523e9b87314b6fa12fc5dfe9ff5a2867f7ff13e3c124b43686ece95';
-const FIELD_OFF_PROD_FRAGMENT_HASH = '46478681aee20936c1137df8267f70f12c76787f59238523ca765d10aa2db3eb';
+const FIELD_OFF_DEV_FRAGMENT_HASH = '176a5cb2026263d2893e986d9c7c3d1e6496f7d64ac0c65a71790222caace24e';
+const FIELD_OFF_PROD_FRAGMENT_HASH = '347dd144633b7aee71f9663c3cf57e0943d6a28b4f2b6489981d05ef4456858d';
 /** The production text from before the field reached a production build:
  *  the shipped text with the field's two chunks deleted, newlines and all, and
  *  the later single-Mie colour's and lobe along the wind's defines resolved
  *  off. */
-const PRE_FIELD_PROD_FRAGMENT_HASH = '4665d31a4f6af4def647e58e9ab1cb06e517a8c58a6b54682ef9cbfa2eb5cd31';
+const PRE_FIELD_PROD_FRAGMENT_HASH = '7064f5d0dbaf19f34b9d4448b0b07b376c99cb6984faf3ff50e170f0d5c1a29b';
 /** The same two texts with the cloud shadow's, the cloud light's and the
  *  cloud field's defines all OFF, resolved as the preprocessor resolves them:
  *  the texts from before the switches existed, but for the field's two blank
  *  lines. */
-const OFF_DEV_FRAGMENT_HASH = '82df3bf8126aa55636bbb0dca7758432014a5af4ee502376a9972d13537db781';
-const OFF_PROD_FRAGMENT_HASH = '861dba10ef27b886ef7545143a766d5076044cbaa2d298847a7e0af5e49413fa';
+const OFF_DEV_FRAGMENT_HASH = 'f59f9dfb5ccccd43c79ec4f2514f1e75eba24d33af636add378c94a7314cc80c';
+const OFF_PROD_FRAGMENT_HASH = '4b24b36f02b829d8398bdfe16c4bcded64a7aa6fefb6ca8ad049542debb8f35c';
 /** The injected surface text and the LUT shell's with the single-Mie colour's
  *  define OFF (`?mieexact=0`), resolved as the preprocessor resolves it: the
  *  hashes these texts carried before the colour table existed, unchanged. */
-const MIE_OFF_DEV_FRAGMENT_HASH = '8191a9ae8eaca1a5711884c4229f62a0b6b816e43442ea14f7c872e54fd590ea';
-const MIE_OFF_PROD_FRAGMENT_HASH = '28feeca8910778b1c25c1713421dd43f70e2ce3489b6b83d02fb0e97d0b548af';
+const MIE_OFF_DEV_FRAGMENT_HASH = '722bedfa26a5840ed62253440b184e2d550a70bb81c83d0fbd6c2492e48e6fd6';
+const MIE_OFF_PROD_FRAGMENT_HASH = '7f006752481c5df07568647e637e6ae6b6634ff10e07e7c68dd7292f1cf09b75';
 const MIE_OFF_SHELL_FRAGMENT_HASH = 'e613114e0023b6b45b235dd92c7039cc5ea90113839778b234f4e249acc89b01';
 /** A skeleton that also carries the colour map's and the roughness map's
  *  chunks, so the sea's remap (WATER_GLOSS_GLSL, spliced at
@@ -154,14 +155,14 @@ const SEA_SKELETON = '#include <common>\nvoid main() {\n#include <map_fragment>\
 /** The text through SEA_SKELETON with the whitecaps' define OFF, resolved as
  *  the preprocessor resolves it: the hashes the same skeleton gave at
  *  2eac15ab, before the whitecaps existed, unchanged. */
-const WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH = '385ba1c1800058216b8a1dd74f7c7d13f3d12c80a2b899d4e72b989b767050f1';
-const WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH = 'fde9159481aaae398bea1c6af9fe05001b430deab670c3c77d82719e9c18bb38';
+const WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH = 'c621cc885ec9c16e41a1c5ed1297cd926d129199a529cf45929b948aded558e9';
+const WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH = '1b5731b7791dc54e3ce3ce1107fcf469276d83ca5e2e2d90e26802bfa7d84f9c';
 /** The same text with the whitecaps OFF and the lobe along the wind ON: the
  *  base plus the SEA_AXIS read of the wind's axis beside its speed, taken
  *  when the two merged (2026-10-09), so a later edit to the sea chunk is seen
  *  on the default build and not only on the base's. */
-const WHITECAPS_OFF_SEA_AXIS_ON_DEV_FRAGMENT_HASH = 'b0d2995ab8849cd0177e07bd8ecb2efb334bc21e49b0205cf34048e49aa34fe1';
-const WHITECAPS_OFF_SEA_AXIS_ON_PROD_FRAGMENT_HASH = '2a4949e409875044ab64a1cba4bcc7cebc18467ef716a29c947e01fdb1ac4a6e';
+const WHITECAPS_OFF_SEA_AXIS_ON_DEV_FRAGMENT_HASH = 'd8c730366fcef63645cf841be42a477ccc9f6c1daa124c97367fff8c30338949';
+const WHITECAPS_OFF_SEA_AXIS_ON_PROD_FRAGMENT_HASH = '922aafe6fd5dee419aad507fa41e1f84978b14d37fda85adea348e9b97e5858a';
 describe('the injected surface shader', () => {
   it('is one text for every body and both tiers', () => {
     // Earth with air, the Moon without, Mars with its own, and the cloud deck.
@@ -657,12 +658,14 @@ describe('the grade on a direct view', () => {
   // one where the line of sight stands on the ground, one where it grazes it.
   // A grade on the surface alone: the shell never reads it.
   it('is one weight, derived once in the shared text', () => {
-    expect(AERIAL_PERSPECTIVE_GLSL.match(/float aerialHazeWeight\(AerialSegment seg, vec2 strength\)/g))
+    expect(AERIAL_PERSPECTIVE_GLSL.match(/float aerialHazeWeight\(AerialSegment seg, vec3 strength\)/g))
       .toHaveLength(1);
     // Against the radial normal at the segment's END: the ground, the deck and
     // the lights must agree about one column, and only the geometry is common.
     expect(AERIAL_PERSPECTIVE_GLSL).toContain('vec3 up = normalize(seg.origin + seg.view * seg.d);');
-    expect(AERIAL_PERSPECTIVE_GLSL).toContain('return mix(strength.x, strength.y, grazing * grazing);');
+    expect(AERIAL_PERSPECTIVE_GLSL).toContain('float graded = mix(strength.x, strength.y, grazing * grazing);');
+    // Back up to the whole column in the last stretch before the limb.
+    expect(AERIAL_PERSPECTIVE_GLSL).toContain('return mix(graded, 1.0, smoothstep(strength.z, 1.0, grazing));');
   });
 
   it('reaches every layer over the surface, and the shell not at all', () => {
@@ -708,8 +711,9 @@ describe('the grade on a direct view', () => {
     // The rim end grades only a body the clear view names.
     expect(Object.keys(SURFACE_HAZE_RIM)).toEqual(Object.keys(SURFACE_HAZE_CLEAR_VIEW));
     const air = createSurfaceAirFx();
-    const grade = air.uSurfaceHaze.value as THREE.Vector2;
-    expect(grade.toArray()).toEqual([1, 1]);
+    const grade = air.uSurfaceHaze.value as THREE.Vector3;
+    const pair = (): number[] => [grade.x, grade.y];
+    expect(pair()).toEqual([1, 1]);
     bindSurfaceAir(air, fakeTables('Earth'), 4.2635e-5, 1);
     expect(SURFACE_HAZE_CLEAR_VIEW.Earth).toBeGreaterThan(0);
     // The grazing end stays above the view straight down, and under the physics.
@@ -717,22 +721,31 @@ describe('the grade on a direct view', () => {
     expect(SURFACE_HAZE_RIM.Earth).toBeLessThanOrEqual(1);
     // The same object the materials hold, written in place.
     expect(air.uSurfaceHaze.value).toBe(grade);
-    expect(grade.toArray()).toEqual([SURFACE_HAZE_CLEAR_VIEW.Earth, SURFACE_HAZE_RIM.Earth]);
+    expect(pair()).toEqual([SURFACE_HAZE_CLEAR_VIEW.Earth, SURFACE_HAZE_RIM.Earth]);
+    // The seal starts inside the last stretch before the limb, and only a graded body has one.
+    expect(Object.keys(SURFACE_HAZE_LIMB_SEAL)).toEqual(Object.keys(SURFACE_HAZE_RIM));
+    expect(grade.z).toBe(SURFACE_HAZE_LIMB_SEAL.Earth);
+    expect(grade.z).toBeGreaterThan(0.5);
+    expect(grade.z).toBeLessThan(1);
     // Mars keeps its physics: a dusty haze is the look of that planet.
     bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
-    expect(grade.toArray()).toEqual([1, 1]);
+    expect(pair()).toEqual([1, 1]);
+    // A body with no grade never reads its seal as anything but a blend from 1 to 1, with two distinct edges.
+    expect(grade.z).toBeLessThan(1);
     // Unless its look says otherwise (world/surfaceLook.ts: the `?marshaze=`
     // link, or the DEV pin), which stands between the DEV pin on every body
     // and this file's table.
     try {
       setSurfaceLookOverride('Mars', { haze: 0.5 });
       bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
-      expect(grade.toArray()).toEqual([0.5, 1]);
+      expect(pair()).toEqual([0.5, 1]);
     } finally {
       resetSurfaceLookForTests();
     }
     bindSurfaceAir(air, fakeTables('Mars'), 2.2e-5, 1);
-    expect(grade.toArray()).toEqual([1, 1]);
+    expect(pair()).toEqual([1, 1]);
+    // A body with no grade never reads its seal as anything but a blend from 1 to 1, with two distinct edges.
+    expect(grade.z).toBeLessThan(1);
     // Its own uniform, apart from the loading fade the shell's crossfade reads.
     expect(air.uAirBlend.value).toBe(0);
   });

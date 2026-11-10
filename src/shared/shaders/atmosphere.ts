@@ -266,7 +266,7 @@ uniform vec2 uUvRepeat;
 uniform vec3 sunDirection;
 uniform float uAirDensity;
 uniform float uAirBlend;
-uniform vec2 uSurfaceHaze;
+uniform vec3 uSurfaceHaze;
 uniform float uPlanetRadius;
 uniform float uAirLookupRadius;
 uniform sampler2D uTransmittance;

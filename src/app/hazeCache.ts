@@ -46,14 +46,16 @@
  * centres, so a bilinear footprint never takes weight from beyond the block's
  * drawn cells — not even through a coordinate rounded the wrong way on
  * hardware that snaps sub-texel weights; the guard is a margin behind that.
- * The pass draws one quad per layer: each texel finds its block from its
- * column, evaluates its cell's segment once and only its own block's
- * quantity. The transmittance is evaluated in all three blocks, because both
- * in-scatters are near minus far carried back through it; that is two 2D
- * fetches each. The Moon's block is left empty while no moonlight is bound,
- * and in any cell whose ground point has the Sun too high for a fragment near
- * it to take moonlight (HAZE_MOON_MARGIN_SIN) — an empty Moon cell carries
- * alpha 0, so a fragment that would read it is evaluated exactly instead.
+ * The pass draws each block of each layer over that layer's region (below):
+ * each texel finds its block from its column, evaluates its cell's segment
+ * once and only its own block's quantity. The transmittance is evaluated in
+ * all three blocks, because both in-scatters are near minus far carried back
+ * through it; that is two 2D fetches each. The Moon's block is not drawn while no moonlight is bound —
+ * the surfaces read it only where moonlight is bound, on the same uniform —
+ * and is left empty in any cell whose ground point has the Sun too high for a
+ * fragment near it to take moonlight (HAZE_MOON_MARGIN_SIN): an empty Moon
+ * cell carries alpha 0, so a fragment that would read it is evaluated exactly
+ * instead.
  *
  * **Allocated once.** The atlas is sized from the ALLOCATED scene size
  * (main.ts sceneRectsLive.alloc), not the drawn one: under Dynamic the frame
@@ -121,8 +123,8 @@
  * **The pass.** A composer pass right before the scene's RenderPass and one
  * right after it (main.ts buildComposer, the planetarium's composer only).
  * The first refreshes the camera's and the body's world matrices itself — the
- * scene render that would otherwise do it comes later — draws one quad per
- * layer into its own half-float target, and only then switches the layer on
+ * scene render that would otherwise do it comes later — draws each layer's
+ * region into its own half-float target, and only then switches the layer on
  * for the surfaces; the second switches it off again. So the cache is in force
  * only for the one scene draw it was rendered for: a warm-up draw, a census
  * link, a resize, a mode change, a table rebind or a context restore between
@@ -134,6 +136,68 @@
  * tone curve, no blending, no depth, no mipmaps; the targets are linear,
  * clamped and filtered.
  *
+ * **Drawn over the disc.** The pass's cost follows Earth's disc, not the
+ * screen: each frame each layer is drawn only over the cells its surfaces can
+ * read, one rectangle of them (hazeSphereCells) drawn in each block through a
+ * viewport. The rectangle is the screen bounds of the layer's sphere — the
+ * larger of its own radius and the ground's — under the scene camera's own
+ * projection, the one the scene draw uses, padded by HAZE_REGION_PAD_PX scene
+ * pixels, taken to cells and widened by HAZE_REGION_PAD_CELLS; a sphere the
+ * camera's plane cuts (the camera close in) has no finite bounds and gets
+ * every cell. A cell outside the rectangle holds whatever an earlier frame left
+ * there, and no fragment reads one:
+ *
+ *   - a fragment exists only inside its own mesh's silhouette. The globe and
+ *     its sectors have every vertex on the body's sphere and the deck on its
+ *     own, so their triangles lie inside those spheres and their pixels inside
+ *     the spheres' screen bounds — a pixel's centre, where it is shaded, within
+ *     0.71 px of them under multisampling. (A surface also uses an atlas value
+ *     only where its segment reaches the ground, hazeExactOnly; elsewhere what
+ *     it fetched is discarded by a select, whatever it was.)
+ *   - such a fragment reads at cell coordinate (n + 1)/2 × cw for its NDC n,
+ *     clamped inside the drawn cells, and its bilinear footprint is the texel at
+ *     floor(c − ½) and the one after it: at most one cell past the coordinate's
+ *     own cell, at any divisor;
+ *   - the rectangle reaches 2 px past the bounds and then 2 cells either way.
+ *
+ * So every texel any fragment's footprint touches — both texels on each axis,
+ * whatever their weights — was drawn this frame. The trust test is computed
+ * inside each drawn cell from its own nine rays and reads no other texel, so
+ * the alpha contract holds inside the rectangle exactly as it did over the
+ * whole grid. The guard columns are never drawn and keep the zero WebGL gives a
+ * new texture. `__moon.hazeCache({ poison: true })` clears every texel to an
+ * alpha-1 magenta before each frame's rectangle is drawn, so a read of an
+ * undrawn one would show as a glaring pixel (the test of all this in a
+ * browser). Nothing is cleared: a clear would only spend bandwidth on cells no
+ * fragment reads, and an out-of-region read would be as wrong from a cleared
+ * cell as from a stale one, so the guarantee is the rectangle, not the clear.
+ *
+ * **Skipped when small.** Inside a frame the pass costs about 0.02 ms however
+ * small its rectangle (its two render passes, one per layer) and about 2e-8
+ * ms per scene pixel of the ground's rectangle; the surfaces save about 8e-8
+ * ms per such pixel on a far disc and more close in. Below HAZE_MIN_REGION_PX
+ * the fixed part is not paid back, so the pass is not drawn, both layers stay
+ * off and the surfaces evaluate exactly — the path the fidelity gates already
+ * hold the cache to, so the crossing does not show. Measured on an M5 Max
+ * (headless Chromium, ANGLE/Metal, High at a ratio of 2, a 5184 × 3351 scene,
+ * on battery in Low Power Mode, which reads every cost about 2.6 times the
+ * mains figures): the pass's cost in a frame by drawing it 21 times a frame
+ * and reading the whole frame (0.021 ms at a 34 000-pixel rectangle, 0.11 ms at
+ * 4.4 million, 0.66 ms over the whole scene); the surfaces' saving from 170
+ * interleaved pairs at discs from 2.5 R to 12 R, fitted against the
+ * rectangle's size (0.07–0.09 ms per million pixels; a single pose's saving is
+ * below that run's resolution, about 0.2 ms). The break-even this brackets,
+ * 0.36–0.82 million pixels, is a pixel count rather than a share of the
+ * screen because the fixed part is: a smaller window or a lower Dynamic rung
+ * needs a larger share of its screen before the pass pays. Other GPUs are
+ * unmeasured; a wrong threshold costs a few hundredths of a millisecond near
+ * it, never a picture.
+ *
+ * **Linked in the idle.** The pass's program is linked where the atmosphere
+ * tier is armed (PlanetariumMode.warmHazeCacheProgram, inside the muted-link
+ * window, before the bake), with the pass's own mesh and camera and a 1 × 1
+ * target of the atlas format (`warmup`), so its first frame links nothing.
+ *
  * **Doors.** `?hazecache=0` (any build) compiles the surfaces without the
  * cache at all: the define is gone and every surface program is the program
  * from before the cache, character for character. The DEV switch `haze-cache`
@@ -143,12 +207,15 @@
  * stores the cache in 32-bit float to separate storage error from spatial
  * error, `?hazeprobe=1` compiles the full-resolution probes and the reason
  * readout, and `__moon.hazeCache()` reads the state out (size, divisor, exact
- * band, the layers drawn, and — with the probes compiled — `{ coverage: true
- * }`, the share of the visible surface on the cache and on each exact
- * reason). The pass is the "Haze cache" row of `__moon.gpuProfile`.
+ * band, the layers drawn, each layer's rectangle and the ground's size in
+ * pixels, why the pass was skipped, and — with the probes compiled — `{
+ * coverage: true }`, the share of the visible surface on the cache and on each
+ * exact reason); `__moon.hazeCache({ minRegionPx })` moves the skip threshold
+ * (0 draws at every size) and `{ poison: true }` poisons the undrawn texels.
+ * The pass is the "Haze cache" row of `__moon.gpuProfile`.
  */
 import * as THREE from 'three';
-import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js';
+import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import {
   AERIAL_PERSPECTIVE_GLSL,
   ATMOSPHERE_LOOKUP_GLSL,
@@ -192,6 +259,23 @@ export const HAZE_MIE_EPS = 0.001;
 export const HAZE_FULL = 1 - 1 / 1024;
 /** How far inside its outer texel centres a block is read, in texels. */
 export const HAZE_EDGE = 1 / 256;
+/** Scene pixels a layer's screen bounds are widened by before they become
+ *  cells. A multisampled pixel is shaded at its centre whenever any of its
+ *  samples is covered, so a fragment's centre can sit up to 0.71 px outside
+ *  the silhouette it was drawn for; the rest is margin. */
+export const HAZE_REGION_PAD_PX = 2;
+/** Cells a layer's drawn region reaches past those bounds on every side: one
+ *  for the bilinear footprint, whose second texel lies up to one cell beyond
+ *  the read coordinate's own, and one of margin. */
+export const HAZE_REGION_PAD_CELLS = 2;
+/** The smallest ground region, in scene pixels (cells × divisor²), the pass is
+ *  drawn for; below it the surfaces evaluate the haze exactly. Measured, as the
+ *  break-even of what the pass costs inside a frame against what the surfaces
+ *  save (header, "Skipped when small"): between about 0.36 and 0.82 million
+ *  region pixels on an M5 Max; half a million is the rectangle of a disc
+ *  seen from about 7 R in the 60-degree view on a 5184 × 3351 scene, and from
+ *  between 5.5 and 6 R on a 4320 × 2700 one (High, 1440 × 900 at 2×). */
+export const HAZE_MIN_REGION_PX = 500_000;
 
 /** `?hazecache=0`, any build: the surfaces compile without the cache. */
 export function parseHazeCacheParam(search: string): boolean {
@@ -365,6 +449,79 @@ export function hazeGroundInView(
     }
   }
   return axisAngle <= edge + corner + THREE.MathUtils.degToRad(1);
+}
+
+/** A rectangle of a layer's cells: `x0 ≤ x < x1`, `y0 ≤ y < y1`. */
+export interface HazeCellRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * The cells a surface fragment drawn inside a sphere can read this frame, in a
+ * grid of `cw × ch` cells over the scene draw rectangle; null when no pixel of
+ * the rectangle can hold such a fragment.
+ *
+ * The sphere's screen bounds are exact for a perspective projection, off-axis
+ * terms included: on the tangent plane (x/−z, y/−z), which the projection maps
+ * to NDC affinely, the extremes along x are the planes through the camera
+ * parallel to the view's y axis that touch the sphere — `(cx·d ± r·√(cx² + d²
+ * − r²)) / (d² − r²)` for a centre at view-space (cx, ·, −d) — and likewise
+ * along y. They are padded by HAZE_REGION_PAD_PX scene pixels, taken to cells
+ * (a fragment at NDC n reads cell coordinate (n + 1)/2 × cw), widened by
+ * HAZE_REGION_PAD_CELLS and clamped to the grid. A sphere not wholly in front
+ * of the camera's plane has unbounded screen bounds and gets every cell; one
+ * wholly behind it gets none. So does any projection that is not a
+ * perspective one this models: every cell.
+ */
+export function hazeSphereCells(
+  view: ArrayLike<number>, projection: ArrayLike<number>, centre: THREE.Vector3, radius: number,
+  cw: number, ch: number, drawW: number, drawH: number, out: HazeCellRect,
+): HazeCellRect | null {
+  out.x0 = 0;
+  out.y0 = 0;
+  out.x1 = cw;
+  out.y1 = ch;
+  const p = projection;
+  if (p[11] !== -1 || p[15] !== 0 || p[3] !== 0 || p[7] !== 0 || p[1] !== 0 || p[4] !== 0
+      || !(p[0] > 0) || !(p[5] > 0)) return out;
+  const v = view;
+  const cx = v[0] * centre.x + v[4] * centre.y + v[8] * centre.z + v[12];
+  const cy = v[1] * centre.x + v[5] * centre.y + v[9] * centre.z + v[13];
+  const cz = v[2] * centre.x + v[6] * centre.y + v[10] * centre.z + v[14];
+  // The view matrix's own scale, should it carry one, applies to the radius too.
+  const r = radius * Math.max(Math.hypot(v[0], v[1], v[2]), Math.hypot(v[4], v[5], v[6]), Math.hypot(v[8], v[9], v[10]));
+  const d = -cz;
+  if (!(d > r)) return cz >= r ? null : out;
+  const k = d * d - r * r;
+  const qx = r * Math.sqrt(cx * cx + k);
+  const qy = r * Math.sqrt(cy * cy + k);
+  const padX = (2 * HAZE_REGION_PAD_PX) / drawW;
+  const padY = (2 * HAZE_REGION_PAD_PX) / drawH;
+  // NDC from the tangent: n = P00·t − P20 (and P11, P21 along y).
+  const lx = (p[0] * ((cx * d - qx) / k) - p[8] - padX + 1) * 0.5 * cw;
+  const hx = (p[0] * ((cx * d + qx) / k) - p[8] + padX + 1) * 0.5 * cw;
+  const ly = (p[5] * ((cy * d - qy) / k) - p[9] - padY + 1) * 0.5 * ch;
+  const hy = (p[5] * ((cy * d + qy) / k) - p[9] + padY + 1) * 0.5 * ch;
+  if (!(hx >= 0 && lx <= cw && hy >= 0 && ly <= ch)) return null;
+  out.x0 = Math.max(0, Math.floor(lx) - HAZE_REGION_PAD_CELLS);
+  out.x1 = Math.min(cw, Math.ceil(hx) + HAZE_REGION_PAD_CELLS);
+  out.y0 = Math.max(0, Math.floor(ly) - HAZE_REGION_PAD_CELLS);
+  out.y1 = Math.min(ch, Math.ceil(hy) + HAZE_REGION_PAD_CELLS);
+  return out;
+}
+
+/** A region's size in scene pixels: its cells times the divisor squared. */
+export function hazeRegionPx(rect: HazeCellRect, divisor: number): number {
+  return (rect.x1 - rect.x0) * (rect.y1 - rect.y0) * divisor * divisor;
+}
+
+/** The skip rule: the pass is drawn only for a ground region of at least
+ *  `minPx` scene pixels (HAZE_MIN_REGION_PX). */
+export function hazeRegionWorthDrawing(rect: HazeCellRect | null, divisor: number, minPx: number): boolean {
+  return rect !== null && hazeRegionPx(rect, divisor) >= minPx;
 }
 
 /**
@@ -715,6 +872,16 @@ export interface HazeCacheState {
   viewport: [number, number] | null;
   atlas: [number, number] | null;
   drawn: { ground: boolean; deck: boolean };
+  /** The cells each layer was drawn over this frame, [x0, y0, x1, y1] (the
+   *  development build only). */
+  regions: { ground: [number, number, number, number] | null; deck: [number, number, number, number] | null };
+  /** The ground region's size in scene pixels, the skip rule's measure. */
+  regionPx: number | null;
+  /** The skip rule's threshold (HAZE_MIN_REGION_PX unless moved). */
+  minRegionPx: number;
+  /** Development: every undrawn texel cleared to an alpha-1 magenta before
+   *  each frame's cells are drawn, so a fragment that read one would show. */
+  poison: boolean;
   mieMargin: number;
   /** Whether moonlight is bound this frame, so the Moon's block was drawn. */
   moonLit: boolean;
@@ -734,6 +901,11 @@ export function setSessionHazeCache(cache: HazeCache | null): void {
 export function hazeCacheGpuBytes(): number {
   return sessionCache?.gpuBytes() ?? 0;
 }
+/** The session's pass program to link in the idle (HazeCache.warmup), or null
+ *  when there is none to link. */
+export function sessionHazeCacheWarmup(): ReturnType<HazeCache['warmup']> {
+  return sessionCache?.warmup() ?? null;
+}
 
 const _camPos = new THREE.Vector3();
 const _bodyPos = new THREE.Vector3();
@@ -744,10 +916,26 @@ const _sphere = new THREE.Sphere();
 const _frustum = new THREE.Frustum();
 const _viewProj = new THREE.Matrix4();
 
+const _clearColour = new THREE.Color();
+const POISON = new THREE.Color(1, 0, 1);
+
 interface LayerDraw {
   layer: 'ground' | 'deck';
   mesh: THREE.Object3D | null;
   radius: number;
+  /** The cells drawn this frame, or null for none. */
+  rect: HazeCellRect | null;
+  readonly cells: HazeCellRect;
+}
+
+/** The pass's one triangle over its viewport. Its own, not FullScreenQuad's:
+ *  the idle warm-up links the program for this mesh and this camera, the
+ *  objects the pass then draws with, so the two can never ask three for
+ *  different programs. */
+function passTriangle(): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute([-1, 3, 0, -1, -1, 0, 3, -1, 0], 3));
+  return geometry;
 }
 
 /**
@@ -757,15 +945,18 @@ interface LayerDraw {
  */
 export class HazeCache {
   private material: THREE.ShaderMaterial | null = null;
-  private quad: FullScreenQuad | null = null;
+  private mesh: THREE.Mesh | null = null;
+  /** The camera the pass's triangle is drawn with; its vertex stage ignores
+   *  it. A perspective one only because the idle warm-up takes one. */
+  private readonly passCamera = new THREE.PerspectiveCamera();
   private targets: { ground: THREE.WebGLRenderTarget | null; deck: THREE.WebGLRenderTarget | null } = { ground: null, deck: null };
   private live: HazeCacheSubject | null = null;
   private state: HazeCacheState;
   private readonly basis = new THREE.Matrix3();
   private readonly ray = new THREE.Vector4();
   private readonly layerDraws: [LayerDraw, LayerDraw] = [
-    { layer: 'ground', mesh: null, radius: 1 },
-    { layer: 'deck', mesh: null, radius: 1 },
+    { layer: 'ground', mesh: null, radius: 1, rect: null, cells: { x0: 0, y0: 0, x1: 0, y1: 0 } },
+    { layer: 'deck', mesh: null, radius: 1, rect: null, cells: { x0: 0, y0: 0, x1: 0, y1: 0 } },
   ];
 
   constructor(
@@ -787,6 +978,10 @@ export class HazeCache {
       viewport: null,
       atlas: null,
       drawn: { ground: false, deck: false },
+      regions: { ground: null, deck: null },
+      regionPx: null,
+      minRegionPx: HAZE_MIN_REGION_PX,
+      poison: false,
       mieMargin: HAZE_MIE_EPS * opts.margin,
       moonLit: false,
       skipped: null,
@@ -795,19 +990,24 @@ export class HazeCache {
   }
 
   /** Development: move the knobs live; reads the state back. */
-  devSet(opts: Partial<{ divisor: number; grazing: number; margin: number; probe: HazeProbe; layers: 'ground' | 'both' }>): HazeCacheState {
+  devSet(opts: Partial<{
+    divisor: number; grazing: number; margin: number; probe: HazeProbe; layers: 'ground' | 'both';
+    minRegionPx: number; poison: boolean;
+  }>): HazeCacheState {
     if (import.meta.env.DEV) {
       if (opts.divisor !== undefined && Number.isInteger(opts.divisor) && opts.divisor >= 1 && opts.divisor <= 16) this.state.divisor = opts.divisor;
       if (opts.grazing !== undefined && opts.grazing > 0 && opts.grazing <= 1) this.state.grazing = opts.grazing;
       if (opts.margin !== undefined && opts.margin >= 0) this.state.marginScale = opts.margin;
       if (opts.probe !== undefined) this.state.probe = opts.probe;
       if (opts.layers !== undefined) this.state.layers = opts.layers;
+      if (opts.minRegionPx !== undefined && opts.minRegionPx >= 0) this.state.minRegionPx = opts.minRegionPx;
+      if (opts.poison !== undefined) this.state.poison = opts.poison;
     }
     return this.readout();
   }
 
   readout(): HazeCacheState {
-    return { ...this.state, drawn: { ...this.state.drawn } };
+    return { ...this.state, drawn: { ...this.state.drawn }, regions: { ...this.state.regions } };
   }
 
   /** GPU bytes the atlases that exist hold: width × height × 8 for half
@@ -821,6 +1021,21 @@ export class HazeCache {
   /** The layer's atlas, for a test or a readout; null before it exists. */
   targetOf(layer: 'ground' | 'deck'): THREE.WebGLRenderTarget | null {
     return this.targets[layer];
+  }
+
+  /** What the idle warm-up links (PlanetariumMode.armAtmosphereTierSteps):
+   *  the pass's own mesh and camera, and a 1 × 1 target of the atlases' own
+   *  format to compile and draw it in — three keys a program on the target
+   *  being drawn into, and the pipeline behind it on the target's format.
+   *  Null in a session compiled without the cache, which never draws it. */
+  warmup(): { root: THREE.Object3D; camera: THREE.PerspectiveCamera; createTarget: () => THREE.WebGLRenderTarget } | null {
+    if (!hazeCacheCompiled()) return null;
+    this.ensureMaterial();
+    return {
+      root: this.mesh!,
+      camera: this.passCamera,
+      createTarget: () => new THREE.WebGLRenderTarget(1, 1, this.targetOptions()),
+    };
   }
 
   private ensureMaterial(): THREE.ShaderMaterial {
@@ -851,8 +1066,24 @@ export class HazeCache {
       blending: THREE.NoBlending,
       toneMapped: false,
     });
-    this.quad = new FullScreenQuad(this.material);
+    this.mesh = new THREE.Mesh(passTriangle(), this.material);
+    this.mesh.frustumCulled = false;
     return this.material;
+  }
+
+  private targetOptions(): THREE.RenderTargetOptions {
+    return {
+      type: this.state.storage === '32f' ? THREE.FloatType : THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      colorSpace: THREE.NoColorSpace,
+    };
   }
 
   /** The layer's atlas at the allocation's size: made once, and sized again
@@ -860,24 +1091,13 @@ export class HazeCache {
    *  on a rung step. */
   private ensureTarget(layer: 'ground' | 'deck', w: number, h: number): THREE.WebGLRenderTarget {
     let target = this.targets[layer];
-    const type = this.state.storage === '32f' ? THREE.FloatType : THREE.HalfFloatType;
-    if (target && target.texture.type !== type) {
+    const options = this.targetOptions();
+    if (target && target.texture.type !== options.type) {
       target.dispose();
       target = null;
     }
     if (!target) {
-      target = new THREE.WebGLRenderTarget(w, h, {
-        type,
-        format: THREE.RGBAFormat,
-        minFilter: THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        wrapS: THREE.ClampToEdgeWrapping,
-        wrapT: THREE.ClampToEdgeWrapping,
-        depthBuffer: false,
-        stencilBuffer: false,
-        generateMipmaps: false,
-        colorSpace: THREE.NoColorSpace,
-      });
+      target = new THREE.WebGLRenderTarget(w, h, options);
       target.texture.name = `HazeCache ${layer}`;
       this.targets[layer] = target;
     } else if (target.width !== w || target.height !== h) {
@@ -894,6 +1114,11 @@ export class HazeCache {
     this.state.drawn.ground = false;
     this.state.drawn.deck = false;
     this.state.skipped = null;
+    if (import.meta.env.DEV) {
+      this.state.regions.ground = null;
+      this.state.regions.deck = null;
+      this.state.regionPx = null;
+    }
     this.state.compiled = hazeCacheCompiled();
     const on = this.state.compiled && (import.meta.env.DEV ? perfSwitchOn('haze-cache') : true);
     this.state.on = on;
@@ -956,6 +1181,38 @@ export class HazeCache {
       return;
     }
 
+    // The cells each layer's surfaces can read this frame (the header's
+    // "Drawn over the disc"), each about its own mesh's centre; the ground's
+    // decides whether the pass is worth drawing at all.
+    const ground = this.layerDraws[0];
+    ground.mesh = subject.globe;
+    ground.radius = air.uBottomRadius.value as number;
+    const deck = this.layerDraws[1];
+    deck.mesh = subject.deck && this.state.layers === 'both' ? subject.deck : null;
+    deck.radius = subject.deckRadius;
+    if (deck.mesh) deck.mesh.updateWorldMatrix(true, false);
+    const view = cam.matrixWorldInverse.elements;
+    for (const draw of this.layerDraws) {
+      draw.rect = null;
+      if (!draw.mesh) continue;
+      const centre = draw.layer === 'ground' ? _bodyPos : _layerPos.setFromMatrixPosition(draw.mesh.matrixWorld);
+      // The larger of the layer's sphere and the ground's — a fragment reads
+      // only where its segment reaches the ground — and of the mesh's own
+      // world scale, should it carry one.
+      const reach = radiusAU * Math.max(1, draw.radius, air.uBottomRadius.value as number)
+          * Math.max(1, draw.mesh.matrixWorld.getMaxScaleOnAxis());
+      draw.rect = hazeSphereCells(view, p, centre, reach, cw, ch, W, H, draw.cells);
+      if (import.meta.env.DEV && draw.rect) {
+        this.state.regions[draw.layer] = [draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1];
+      }
+    }
+    if (ground.rect) this.state.regionPx = hazeRegionPx(ground.rect, this.state.divisor);
+    if (!ground.rect) { this.state.skipped = 'disc off screen'; return; }
+    if (!hazeRegionWorthDrawing(ground.rect, this.state.divisor, this.state.minRegionPx)) {
+      this.state.skipped = 'disc too small';
+      return;
+    }
+
     const material = this.ensureMaterial();
     const u = material.uniforms;
     for (const key of LOOKUP_KEYS) u[key].value = air[key].value;
@@ -970,37 +1227,41 @@ export class HazeCache {
     (u.uHazeTexels.value as THREE.Vector3).set(cw, ch, stride);
     // The vertical focal length, in cache texels.
     u.uHazeFocal.value = (ch / 2) * p[5];
-
-    const ground = this.layerDraws[0];
-    ground.mesh = subject.globe;
-    ground.radius = air.uBottomRadius.value as number;
-    const deck = this.layerDraws[1];
-    deck.mesh = subject.deck && this.state.layers === 'both' ? subject.deck : null;
-    deck.radius = subject.deckRadius;
+    // The Moon's block is read only where moonlight is bound (the surfaces'
+    // own test, on the same uniform), so it is not drawn while none is.
+    const blocks = this.state.moonLit ? 3 : 2;
 
     const previous = renderer.getRenderTarget();
     const oldAutoClear = renderer.autoClear;
+    const poison = import.meta.env.DEV && this.state.poison;
+    const oldClearAlpha = poison ? renderer.getClearAlpha() : 1;
+    if (poison) {
+      renderer.getClearColor(_clearColour);
+      renderer.setClearColor(POISON, 1);
+    }
     renderer.autoClear = false;
     try {
       for (const draw of this.layerDraws) {
-        if (!draw.mesh) continue;
+        const r = draw.rect;
+        if (!draw.mesh || !r) continue;
         const target = this.ensureTarget(draw.layer, atlasW, atlasH);
         // Each layer from its own mesh's centre, as its own vertex stage
         // derives `vAirCam`.
-        if (draw.layer === 'deck') draw.mesh.updateWorldMatrix(true, false);
         const centre = draw.layer === 'ground' ? _bodyPos : _layerPos.setFromMatrixPosition(draw.mesh.matrixWorld);
         (u.uHazeCam.value as THREE.Vector3).set(
           (_camPos.x - centre.x) / radiusAU, (_camPos.y - centre.y) / radiusAU, (_camPos.z - centre.z) / radiusAU,
         );
         u.uHazeLayerRadius.value = draw.radius;
-        // Only the cells this frame draws: two strides and the third block's
-        // drawn width, the drawn rows; the rest of the allocation is never read.
-        target.viewport.set(0, 0, 2 * stride + cw, ch);
-        renderer.setRenderTarget(target);
-        // Cleared first though the quad covers what is read: a clear that
-        // opens the pass is a tile GPU's cue not to load the old contents.
-        renderer.clear(true, false, false);
-        this.quad!.render(renderer);
+        // The region in each block: the triangle covers the viewport, and the
+        // texel finds its block and cell from its window coordinate. No clear:
+        // nothing outside the region is read ("Drawn over the disc"), so
+        // clearing it would only spend bandwidth on cells no one reads.
+        for (let block = 0; block < blocks; block++) {
+          target.viewport.set(block * stride + r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+          renderer.setRenderTarget(target);
+          if (poison && block === 0) renderer.clear(true, false, false);
+          renderer.render(this.mesh!, this.passCamera);
+        }
         if (draw.layer === 'ground') air.uHazeSun.value = target.texture;
         else air.uHazeSunDeck.value = target.texture;
         this.state.drawn[draw.layer] = true;
@@ -1008,6 +1269,7 @@ export class HazeCache {
     } finally {
       renderer.setRenderTarget(previous);
       renderer.autoClear = oldAutoClear;
+      if (poison) renderer.setClearColor(_clearColour, oldClearAlpha);
     }
     // Published only now that this frame's layers are drawn.
     air.uHazeOn.value = this.state.drawn.ground ? 1 : 0;
@@ -1029,9 +1291,9 @@ export class HazeCache {
     this.targets.ground?.dispose();
     this.targets.deck?.dispose();
     this.targets = { ground: null, deck: null };
-    this.quad?.dispose();
+    this.mesh?.geometry.dispose();
     this.material?.dispose();
-    this.quad = null;
+    this.mesh = null;
     this.material = null;
   }
 }

@@ -3502,6 +3502,7 @@ function installDevHooks() {
      */
     hazeCache: async (opts: {
       divisor?: number; grazing?: number; margin?: number; probe?: HazeProbe; layers?: 'ground' | 'both';
+      minRegionPx?: number; poison?: boolean;
       diag?: 'off' | 'all' | 'ground'; coverage?: boolean;
     } = {}) => {
       const state = hazeCache.devSet(opts);

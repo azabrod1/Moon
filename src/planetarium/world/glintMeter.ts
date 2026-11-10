@@ -110,9 +110,11 @@ export interface GlintMeterSea {
   readonly knee: number;
   readonly cap: number;
   /** The haze grade on a direct view: straight down (SURFACE_HAZE_CLEAR_VIEW
-   *  for Earth) and where the view grazes the ground (SURFACE_HAZE_RIM). */
+   *  for Earth), where the view grazes the ground (SURFACE_HAZE_RIM), and the
+   *  grazing past which it returns to the whole column (SURFACE_HAZE_LIMB_SEAL). */
   readonly hazeClearView: number;
   readonly hazeRim: number;
+  readonly hazeSeal: number;
   /** The air's blend, 1 once the tables are in. */
   readonly airBlend: number;
   /** Whether the sea compiles its lobe along the wind's axis (the SEA_AXIS
@@ -645,7 +647,10 @@ export function beamRadianceAt(
   lookupTransmittance(table, nl, scratch.t);
   lookupTransmittance(table, 1, scratch.tz);
   const grazing = 1 - nv;
-  const airWeight = sea.airBlend * (sea.hazeClearView + (sea.hazeRim - sea.hazeClearView) * grazing * grazing);
+  // aerialHazeWeight (world/atmosphereLut), term for term: the grade, then the limb's seal.
+  const graded = sea.hazeClearView + (sea.hazeRim - sea.hazeClearView) * grazing * grazing;
+  const sealT = sea.hazeSeal < 1 ? Math.min(1, Math.max(0, (grazing - sea.hazeSeal) / (1 - sea.hazeSeal))) : 0;
+  const airWeight = sea.airBlend * (graded + (1 - graded) * sealT * sealT * (3 - 2 * sealT));
   scratch.sunVisible = bound ? 1 : sunVisibleAt(nx, ny, nz, lx, ly, lz, nl, pose);
   const irradiance = light.intensity * light.irradianceScale * nl * scratch.sunVisible;
   const common = irradiance * fresnel * lobe * s.water * s.cloudKeep;

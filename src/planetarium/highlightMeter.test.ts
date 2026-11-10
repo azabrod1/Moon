@@ -44,7 +44,7 @@ function probeContext(altitudeKm = 400, sunElevDeg = 10, aimGroundAngleDeg = 10)
     sun: new THREE.Vector3(sunDist * Math.cos(sunElevDeg * DEG), 0, 1 + sunDist * Math.sin(sunElevDeg * DEG)),
     lightIntensity: SUN_LIGHT_INTENSITY,
     lightLinear: SUN_LIGHT_LINEAR,
-    airOn: true, airBlend: 1, hazeClearView: 0.35, hazeRim: 1,
+    airOn: true, airBlend: 1, hazeClearView: 0.35, hazeRim: 1, hazeSeal: 1,
     cloudSpin: 0, cloudDrawn: true, cloudShadows: true, cloudHeightOverRadius: CLOUD_TOP_KM / EARTH_KM,
     moonShadows: [], moonShadowCount: 0, sunTan: 0, termWidth: NIGHT_FILL.earth.termWidth,
     view, viewUp,

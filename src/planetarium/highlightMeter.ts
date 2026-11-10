@@ -87,6 +87,7 @@ export interface HighlightContext {
   airBlend: number;
   hazeClearView: number;
   hazeRim: number;
+  hazeSeal: number;
   /** The deck's drift this frame, and whether the deck is drawn at all. */
   cloudSpin: number;
   cloudDrawn: boolean;
@@ -177,8 +178,8 @@ export class HighlightMeter {
   private readonly light: { intensity: number; linear: RGB; irradianceScale: number } = {
     intensity: 0, linear: [1, 1, 1], irradianceScale: bodySolarIrradianceScale('Earth'),
   };
-  private readonly sea: { waterF0: number; knee: number; cap: number; hazeClearView: number; hazeRim: number; airBlend: number; axis: boolean } = {
-    waterF0: SEA_WATER_F0, knee: 0, cap: 0, hazeClearView: 1, hazeRim: 1, airBlend: 1, axis: true,
+  private readonly sea: { waterF0: number; knee: number; cap: number; hazeClearView: number; hazeRim: number; hazeSeal: number; airBlend: number; axis: boolean } = {
+    waterF0: SEA_WATER_F0, knee: 0, cap: 0, hazeClearView: 1, hazeRim: 1, hazeSeal: 1, airBlend: 1, axis: true,
   };
   private cloudSpin = 0;
   private cloudDrawn = true;
@@ -247,6 +248,7 @@ export class HighlightMeter {
     this.sea.knee = sh.knee; this.sea.cap = sh.cap;
     this.sea.hazeClearView = ctx.hazeClearView;
     this.sea.hazeRim = ctx.hazeRim;
+    this.sea.hazeSeal = ctx.hazeSeal;
     this.sea.airBlend = ctx.airBlend;
     this.sea.axis = ctx.seaAxisOn;
     this.cloudSpin = ctx.cloudSpin;

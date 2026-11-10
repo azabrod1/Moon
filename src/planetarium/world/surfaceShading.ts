@@ -96,8 +96,10 @@
  *
  * How much of that haze a DIRECT view shows is a body's own pair of numbers
  * (SURFACE_HAZE_CLEAR_VIEW looking straight down, SURFACE_HAZE_RIM where the
- * view grazes the ground, where the haze meets the shell's limb), and the
- * weight runs between them. The weight is one term of the shared air block, so
+ * view grazes the ground), and the weight runs between them, then back up to
+ * the whole column in the last stretch before the limb itself
+ * (SURFACE_HAZE_LIMB_SEAL), where the ground's haze has to meet the shell's
+ * sky. The weight is one term of the shared air block, so
  * the globe, its sectors, the deck and the additive night lights are graded
  * together: a deck hazed harder than the ground under it would read as a
  * second, higher sky.
@@ -383,8 +385,25 @@ export const SURFACE_HAZE_RIM: Readonly<Record<string, number>> = {
   Earth: 0.4,
 };
 
+/**
+ * Where a graded body's haze starts back up to the whole column: the grazing
+ * (one minus the cosine between the line of sight and the ground's normal,
+ * 0 straight down, 1 at the limb) past which the weight eases from the grade
+ * to 1. With the rim graded under 1 and no seal, ground at the very limb
+ * stands bare against the shell's sky: a tan strip of moonlit desert along
+ * Earth's night limb was the case that showed it. From 0.7 the strip is gone,
+ * and the day side reads the same, because the stretch is the outer twentieth
+ * of a far disc's radius and a few degrees under a near horizon. A body the
+ * grade does not name has nothing to seal; its number here is never read as
+ * anything but a place to start a blend from 1 to 1.
+ */
+export const SURFACE_HAZE_LIMB_SEAL: Readonly<Record<string, number>> = {
+  Earth: 0.7,
+};
+
 let devSurfaceHaze: number | undefined;
 let devSurfaceHazeRim: number | undefined;
+let devSurfaceHazeSeal: number | undefined;
 const devHazeNumber = (now: number | undefined, next?: number | null): number | undefined => {
   if (next === null) return undefined;
   if (next !== undefined && Number.isFinite(next)) return Math.min(1, Math.max(0, next));
@@ -405,6 +424,17 @@ export function setDevSurfaceHazeRim(rim?: number | null): number | undefined {
   devSurfaceHazeRim = devHazeNumber(devSurfaceHazeRim, rim);
   return devSurfaceHazeRim;
 }
+/** The same pin on where the limb's seal starts (SURFACE_HAZE_LIMB_SEAL); 1
+ *  is no seal at all. */
+export function setDevSurfaceHazeSeal(seal?: number | null): number | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  devSurfaceHazeSeal = devHazeNumber(devSurfaceHazeSeal, seal);
+  return devSurfaceHazeSeal;
+}
+
+/** The start of the limb's seal as the shader may read it: under 1 by a hair,
+ *  because a smoothstep between two equal edges is undefined in GLSL. */
+const SEAL_START_MAX = 0.999;
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
 // sight grazes the surface — the single biggest "reads as a real photo" cue for
@@ -2416,7 +2446,7 @@ uniform vec3 uMoonIrradiance;
 uniform float uNightExposure;
 uniform float uAirDensity;
 uniform float uAirBlend;
-uniform vec2 uSurfaceHaze;
+uniform vec3 uSurfaceHaze;
 uniform float uAirLookupRadius;
 uniform float uWaterGloss;
 uniform float uSeaMix;
@@ -3885,8 +3915,9 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // curve advanceSurfaceAir writes, exactly 1 once settled. Every term the
     // tables bring is scaled by it, and the shell's crossfade reads it.
     uAirBlend: { value: 0 },
-    // The haze grade on a direct view: (straight down, grazing); (1, 1) is the physics.
-    uSurfaceHaze: { value: new THREE.Vector2(1, 1) },
+    // The haze grade on a direct view: (straight down, grazing, where the limb's
+    // seal starts); (1, 1, any) is the physics.
+    uSurfaceHaze: { value: new THREE.Vector3(1, 1, SEAL_START_MAX) },
     // The albedo's contrast grade (world/surfaceLook.ts): gain and pivot. A
     // fresh block is the map as it is; seatSurfaceLook writes a body's own.
     uAlbedoContrast: { value: new THREE.Vector2(1, DEFAULT_ALBEDO_PIVOT) },
@@ -3972,18 +4003,21 @@ export function bindSurfaceAir(
   air.uPlanetRadius.value = planetRadius;
   air.uSolarIrradiance.value = solarIrradiance;
   // The body's grade on its own haze (SURFACE_HAZE_CLEAR_VIEW below,
-  // SURFACE_HAZE_RIM at grazing). Its own uniform, apart from the loading
+  // SURFACE_HAZE_RIM at grazing, SURFACE_HAZE_LIMB_SEAL where it returns to
+  // the whole column). Its own uniform, apart from the loading
   // fade: the fade also drives the shell's crossfade, and a grade folded into
   // it would leave the shell stuck part way between its tiers.
   // The DEV pin on every body first, then the body's own switch or table
   // entry (world/surfaceLook.ts, the clear view only), then this file's
   // grade, then the physics.
-  (air.uSurfaceHaze.value as THREE.Vector2).set(
+  (air.uSurfaceHaze.value as THREE.Vector3).set(
     (import.meta.env.DEV ? devSurfaceHaze : undefined)
       ?? surfaceLookOf(tables.body)?.haze
       ?? SURFACE_HAZE_CLEAR_VIEW[tables.body] ?? 1,
     (import.meta.env.DEV ? devSurfaceHazeRim : undefined)
       ?? SURFACE_HAZE_RIM[tables.body] ?? 1,
+    Math.min(SEAL_START_MAX, (import.meta.env.DEV ? devSurfaceHazeSeal : undefined)
+      ?? SURFACE_HAZE_LIMB_SEAL[tables.body] ?? SEAL_START_MAX),
   );
   // Switching on starts the fade; a rebind of live air leaves it where it is.
   if (air.uAirDensity.value === 0) {

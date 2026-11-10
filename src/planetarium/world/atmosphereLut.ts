@@ -915,16 +915,20 @@ AerialSegment aerialForLight(AerialSegment seg, vec3 lightDir) {
 
 // How much of the segment's haze a surface shows: strength.x where the line
 // of sight stands on the ground, strength.y where it grazes it, and the square
-// of the grazing between them. A presentation grade on the surface alone
-// (SURFACE_HAZE_CLEAR_VIEW and SURFACE_HAZE_RIM in world/surfaceShading); the
-// shell never reads it, and (1, 1) is the physics. The angle is taken against
-// the radial normal at the segment's END, never a relief-perturbed material
-// normal: the ground, the deck above it and the additive lights on it must
-// agree about one column, and only the geometry is common to all three.
-float aerialHazeWeight(AerialSegment seg, vec2 strength) {
+// of the grazing between them; then, past the grazing strength.z, back up to
+// the whole column at the limb itself, so the ground there meets the shell's
+// sky instead of standing bare against it. A presentation grade on the surface
+// alone (SURFACE_HAZE_CLEAR_VIEW, SURFACE_HAZE_RIM and SURFACE_HAZE_LIMB_SEAL
+// in world/surfaceShading); the shell never reads it, and (1, 1, any) is the
+// physics. The angle is taken against the radial normal at the segment's END,
+// never a relief-perturbed material normal: the ground, the deck above it and
+// the additive lights on it must agree about one column, and only the geometry
+// is common to all three.
+float aerialHazeWeight(AerialSegment seg, vec3 strength) {
   vec3 up = normalize(seg.origin + seg.view * seg.d);
   float grazing = 1.0 - clamp(dot(up, -seg.view), 0.0, 1.0);
-  return mix(strength.x, strength.y, grazing * grazing);
+  float graded = mix(strength.x, strength.y, grazing * grazing);
+  return mix(graded, 1.0, smoothstep(strength.z, 1.0, grazing));
 }
 
 /** What survives the segment: the fraction of the surface's own light that

@@ -205,6 +205,8 @@ describe('the haze cache pass', () => {
       log: [] as { target: THREE.WebGLRenderTarget | null; viewport: number[]; scene: unknown; camera: unknown }[],
       getRenderTarget: () => bound,
       setRenderTarget: (t: THREE.WebGLRenderTarget | null) => { bound = t; },
+      inits: [] as THREE.WebGLRenderTarget[],
+      initRenderTarget: (t: THREE.WebGLRenderTarget) => { renderer.inits.push(t); },
       clear: () => {},
       render: (scene: unknown, camera: unknown) => {
         renderer.draws++;
@@ -312,7 +314,8 @@ describe('the haze cache pass', () => {
     setSessionHazeCache(null);
   });
 
-  it('draws each layer only over the cells its disc can reach, and nothing for a disc too small to pay', () => {
+  // Through the development knobs and readout (devSet, regions), which a production build does not have.
+  it.runIf(import.meta.env.DEV)('draws each layer only over the cells its disc can reach, and nothing for a disc too small to pay', () => {
     const rects: HazeSceneRects = { draw: { width: 1600, height: 1000 }, alloc: { width: 1600, height: 1000 } };
     const t = setup(rects, true);
     // 30 R out, the body a little right of centre: a disc about 60 px across.
@@ -359,10 +362,22 @@ describe('the haze cache pass', () => {
     expect(t.cache.readout().skipped).toBe('disc too small');
     expect(t.cache.readout().regionPx).toBeLessThan(HAZE_MIN_REGION_PX);
     expect([t.air.uHazeOn.value, t.air.uHazeOnDeck.value, t.renderer.draws]).toEqual([0, 0, 0]);
+    // The atlases exist all the same, storage asked for once each, and are
+    // counted: a texture rung admitted while the disc is small is admitted
+    // against the memory an approach will not then take from under it.
+    expect(t.renderer.inits).toHaveLength(2);
+    expect(t.cache.gpuBytes()).toBeGreaterThan(0);
+    const held = t.cache.gpuBytes();
     t.subject.globe.position.set(0, 0, -1.05 * R);
     t.begin();
     expect([t.air.uHazeOn.value, t.air.uHazeOnDeck.value]).toEqual([1, 1]);
     expect(t.cache.readout().regionPx).toBe(2880 * 1800);
+    expect(t.renderer.inits).toHaveLength(2);
+    expect(t.cache.gpuBytes()).toBe(held);
+    // Each block's draw is scissored to its own viewport.
+    const last = t.cache.targetOf('deck')!;
+    expect(last.scissorTest).toBe(true);
+    expect(last.scissor.toArray()).toEqual(last.viewport.toArray());
   });
 
   it('hands the idle warm-up the mesh, camera and target format the pass draws with', () => {

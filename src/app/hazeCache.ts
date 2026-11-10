@@ -70,7 +70,9 @@
  * the same window about 23 MB. They are counted in the device's GPU memory
  * envelope beside the atmosphere tables (`hazeCacheGpuBytes`, read by
  * PlanetariumMode.liveGlobalMapBytes), from the targets that exist, so a
- * texture rung is admitted against what is really left.
+ * texture rung is admitted against what is really left. They are made, storage
+ * and all, on the first frame the tables are live and the ground is in view,
+ * whether or not the pass is drawn that frame.
  *
  * **Where the cache is not trusted.** The cached value is a different segment
  * from the fragment's own: the mesh is a polyhedron and the cache ends on the
@@ -165,7 +167,11 @@
  * inside each drawn cell from its own nine rays and reads no other texel, so
  * the alpha contract holds inside the rectangle exactly as it did over the
  * whole grid. The guard columns are never drawn and keep the zero WebGL gives a
- * new texture. `__moon.hazeCache({ poison: true })` clears every texel to an
+ * new texture; the columns past the drawn width on a lower Dynamic rung, like
+ * the rows past the drawn height, keep what a higher rung left, and the clamp
+ * on the read (HAZE_EDGE) stops a footprint short of them. Each block's draw is
+ * scissored to its viewport as well, for a tile GPU that takes the area it
+ * loads and stores from the scissor. `__moon.hazeCache({ poison: true })` clears every texel to an
  * alpha-1 magenta before each frame's rectangle is drawn, so a read of an
  * undrawn one would show as a glaring pixel (the test of all this in a
  * browser). Nothing is cleared: a clear would only spend bandwidth on cells no
@@ -897,7 +903,7 @@ export function setSessionHazeCache(cache: HazeCache | null): void {
   sessionCache = cache;
 }
 /** GPU bytes the session's atlases hold right now; 0 before the first frame
- *  that draws the cache, which is when they are made. */
+ *  with live tables and the ground in view, which is when they are made. */
 export function hazeCacheGpuBytes(): number {
   return sessionCache?.gpuBytes() ?? 0;
 }
@@ -1113,6 +1119,7 @@ export class HazeCache {
     this.end();
     this.state.drawn.ground = false;
     this.state.drawn.deck = false;
+    this.state.moonLit = false;
     this.state.skipped = null;
     if (import.meta.env.DEV) {
       this.state.regions.ground = null;
@@ -1206,6 +1213,18 @@ export class HazeCache {
         this.state.regions[draw.layer] = [draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1];
       }
     }
+    // The atlases exist, storage and all, from the first frame the tables are
+    // live and the ground is in view, however small the disc: the memory
+    // envelope counts the targets that exist, so a texture rung admitted while
+    // the disc is small is admitted against what the session will really hold,
+    // and the allocation's zero-fill lands here rather than in the frame of
+    // an approach that first draws the pass.
+    for (const draw of this.layerDraws) {
+      if (!draw.mesh) continue;
+      const fresh = !this.targets[draw.layer];
+      const target = this.ensureTarget(draw.layer, atlasW, atlasH);
+      if (fresh) renderer.initRenderTarget(target);
+    }
     if (ground.rect) this.state.regionPx = hazeRegionPx(ground.rect, this.state.divisor);
     if (!ground.rect) { this.state.skipped = 'disc off screen'; return; }
     if (!hazeRegionWorthDrawing(ground.rect, this.state.divisor, this.state.minRegionPx)) {
@@ -1255,11 +1274,21 @@ export class HazeCache {
         // The region in each block: the triangle covers the viewport, and the
         // texel finds its block and cell from its window coordinate. No clear:
         // nothing outside the region is read ("Drawn over the disc"), so
-        // clearing it would only spend bandwidth on cells no one reads.
+        // clearing it would only spend bandwidth on cells no one reads. The
+        // scissor is the viewport again, which changes no texel: it is there
+        // for a tile GPU that sizes the area it loads and stores from the
+        // scissor rather than the viewport, and would otherwise carry the
+        // whole atlas through every pass.
+        if (poison) {
+          target.scissorTest = false;
+          renderer.setRenderTarget(target);
+          renderer.clear(true, false, false);
+        }
+        target.scissorTest = true;
         for (let block = 0; block < blocks; block++) {
           target.viewport.set(block * stride + r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+          target.scissor.copy(target.viewport);
           renderer.setRenderTarget(target);
-          if (poison && block === 0) renderer.clear(true, false, false);
           renderer.render(this.mesh!, this.passCamera);
         }
         if (draw.layer === 'ground') air.uHazeSun.value = target.texture;

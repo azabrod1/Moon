@@ -41,7 +41,11 @@ const graphicsPage = panelMarkup.slice(
   panelMarkup.indexOf('data-page="graphics"'),
   panelMarkup.indexOf('data-page="display"'),
 );
-const displayPage = panelMarkup.slice(panelMarkup.indexOf('data-page="display"'));
+const displayPage = panelMarkup.slice(
+  panelMarkup.indexOf('data-page="display"'),
+  panelMarkup.indexOf('data-page="credits"'),
+);
+const creditsPage = panelMarkup.slice(panelMarkup.indexOf('data-page="credits"'));
 /** Every id the TypeScript asks a page for, by getElementById or setText. */
 const pageRead = idsIn(ts, /(?:getElementById|setText)\('(settings-[a-z0-9-]+|menu-page-[a-z0-9-]+)'/g);
 
@@ -177,6 +181,36 @@ describe('the Display page', () => {
     const value = row.match(/<span class="menu-tier-value">([^<]*)<\/span>/)?.[1];
     expect(value).toBe(nightSidesSummary(DEFAULT_NIGHT_SIDES));
     expect(mode).toContain("setTierValue('display', nightSidesSummary(mode))");
+  });
+});
+
+describe('the Credits page', () => {
+  it('lives inside the panel, behind a tier row that names it', () => {
+    expect(panelMarkup).toContain('class="menu-page" data-page="credits" hidden');
+    expect(rootPage).toContain('data-open="credits"');
+    expect(creditsPage).toContain('class="menu-back"');
+    expect(creditsPage).toContain('<h3>Credits</h3>');
+  });
+
+  it('is static text, with no id for the TypeScript to miss', () => {
+    expect([...idsIn(creditsPage, /id="([a-z0-9-]+)"/g)]).toEqual([]);
+  });
+
+  it('opens every link in a new tab, away from the journey', () => {
+    // A link followed in place would unload the app mid-journey.
+    const links = [...creditsPage.matchAll(/<a\s[^>]*>/g)].map((m) => m[0]);
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link, link).toMatch(/href="https:\/\/[^"]+"/);
+      expect(link, link).toContain('target="_blank"');
+      expect(link, link).toContain('rel="noopener"');
+    }
+  });
+
+  it('sits at the foot of the root page, above the build stamp', () => {
+    const credits = rootPage.indexOf('data-open="credits"');
+    expect(credits).toBeGreaterThan(rootPage.indexOf('id="settings-throttle-toggle"'));
+    expect(rootPage.indexOf('id="menu-build"')).toBeGreaterThan(credits);
   });
 });
 

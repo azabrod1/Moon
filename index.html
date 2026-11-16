@@ -881,6 +881,42 @@
       color: var(--t3);
       text-wrap: pretty;
     }
+    /* The Credits page: an eyebrow per group, then what each source made and
+       who made it, in the menu note's type a step brighter so a long page
+       stays readable. */
+    .credits-lede {
+      margin: 0 3px 14px;
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--t2);
+      text-wrap: pretty;
+    }
+    .credits-group { padding: 0 3px; }
+    .credits-group + .credits-group { margin-top: 16px; }
+    .credits-list { margin: 0; }
+    .credits-list dt {
+      margin-top: 9px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--t1);
+    }
+    .credits-list dt:first-child { margin-top: 0; }
+    .credits-list dd {
+      margin: 2px 0 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--t2);
+      text-wrap: pretty;
+    }
+    .credits-list dd + dd { margin-top: 5px; }
+    .credits-list a {
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-color: var(--t3);
+      text-underline-offset: 2px;
+    }
+    .credits-list a:hover { color: var(--t1); text-decoration-color: var(--t2); }
+    .credits-list a:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
     /* The segmented control, in the map scale's hairline track. */
     .menu-seg {
       display: flex;
@@ -4995,6 +5031,12 @@
               <span id="settings-throttle-label">On</span>
             </button>
           </div>
+          <div class="menu-divider"></div>
+          <button type="button" class="pk-row menu-tier" data-open="credits">
+            <b>Credits</b>
+            <span class="menu-tier-value"></span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
           <div class="menu-build" id="menu-build"></div>
         </div>
 
@@ -5050,6 +5092,90 @@
               <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="brightened" id="settings-night-sides-brightened">Brightened</button>
             </div>
             <div class="menu-note" id="settings-night-sides-note"></div>
+          </div>
+        </div>
+        <!-- Who the maps, models and data came from. Static text: nothing in the
+             TypeScript reads it, so it carries no ids. When a texture, model or
+             dataset changes source, change its line here too (each generator's
+             .sources.json carries the credit line its product asks for). -->
+        <div class="menu-page" data-page="credits" hidden>
+          <div class="menu-head">
+            <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
+            <h3>Credits</h3>
+          </div>
+          <p class="credits-lede">Moon is made from maps, measurements and models that their makers share freely. Thank you to all of them.</p>
+
+          <div class="credits-group">
+            <div class="menu-field-label">Planets</div>
+            <dl class="credits-list">
+              <dt>Earth</dt>
+              <dd>Blue Marble Next Generation and its cloud composite, NASA Earth Observatory (Reto Stöckli). Night lights from Black Marble 2016, NASA Earth Observatory with Suomi NPP VIIRS data (Miguel Román, NASA Goddard). Sea winds from the NOAA NCEI Blended Sea Surface Winds climatology (Saha &amp; Zhang, 2022).</dd>
+              <dt>The Moon</dt>
+              <dd>LRO colour (LROC WAC) and elevation (LOLA) from the <a href="https://svs.gsfc.nasa.gov/4720" target="_blank" rel="noopener">CGI Moon Kit</a>, NASA's Scientific Visualization Studio.</dd>
+              <dt>Mercury</dt>
+              <dd>MESSENGER MDIS global mosaic, NASA / Johns Hopkins APL / Carnegie Institution of Washington, published by the USGS Astrogeology Science Center.</dd>
+              <dt>Mars</dt>
+              <dd>Tianwen-1 MoRIC colour mosaic, data provided by China's Lunar and Planetary Data System (CLPDS, NAOC/GRAS), read through the HiPS and hips2fits services of <a href="https://cds.unistra.fr" target="_blank" rel="noopener">CDS</a>, Strasbourg.</dd>
+              <dd>Relief from the USGS MOLA–HRSC blended elevation model (Fergason, Hare &amp; Laura, 2018). MOLA: NASA / Goddard. HRSC: ESA / DLR / FU Berlin, <a href="https://creativecommons.org/licenses/by-sa/3.0/igo/" target="_blank" rel="noopener">CC BY-SA 3.0 IGO</a>.</dd>
+              <dt>Venus, Jupiter, Saturn, Uranus, Neptune</dt>
+              <dd><a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener">Solar System Scope</a>, based on NASA mission imagery, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Their Earth cloud map is the reference Earth's clouds are graded to.</dd>
+              <dt>Pluto</dt>
+              <dd>New Horizons LORRI and MVIC mosaic, NASA / Johns Hopkins APL / Southwest Research Institute / Lunar and Planetary Institute, published by the USGS Astrogeology Science Center.</dd>
+            </dl>
+          </div>
+
+          <div class="credits-group">
+            <div class="menu-field-label">Moons</div>
+            <dl class="credits-list">
+              <dt>Io, Europa, Ganymede, Callisto</dt>
+              <dd>Galileo SSI and Voyager global mosaics, <a href="https://astrogeology.usgs.gov" target="_blank" rel="noopener">USGS Astrogeology Science Center</a>; Io's from the Planetary Data System, Europa's by Archinal, Colvin, Davies, Gitlin, Kirk &amp; Weller.</dd>
+              <dt>Titan, Enceladus, Mimas, Tethys, Dione, Rhea, Iapetus</dt>
+              <dd>Cassini (and for Dione, Rhea and Iapetus, Voyager) global mosaics, NASA / JPL-Caltech / Space Science Institute, published by the USGS Astrogeology Science Center; Mimas's by NASA's Planetary Photojournal (PIA17214).</dd>
+              <dt>Miranda, Ariel</dt>
+              <dd>Voyager 2 mosaics, USGS (Tammy Becker) and JPL-Caltech, from NASA 3D Resources.</dd>
+              <dt>Charon</dt>
+              <dd>New Horizons LORRI and MVIC mosaic, NASA / Johns Hopkins APL / Southwest Research Institute / Lunar and Planetary Institute, published by the USGS Astrogeology Science Center.</dd>
+            </dl>
+          </div>
+
+          <div class="credits-group">
+            <div class="menu-field-label">Spacecraft</div>
+            <dl class="credits-list">
+              <dt>Cassini model</dt>
+              <dd>"Cassini Assembly", NASA / JPL-Caltech, from <a href="https://science.nasa.gov/3d-resources/" target="_blank" rel="noopener">NASA 3D Resources</a>.</dd>
+              <dt>Mission photographs</dt>
+              <dd>NASA, JPL-Caltech, Johns Hopkins APL, Southwest Research Institute, Space Science Institute, ESA, the University of Arizona and Malin Space Science Systems. Each is credited beside its photograph.</dd>
+            </dl>
+          </div>
+
+          <div class="credits-group">
+            <div class="menu-field-label">Sky and orbits</div>
+            <dl class="credits-list">
+              <dt>Stars</dt>
+              <dd><a href="https://github.com/astronexus/HYG-Database" target="_blank" rel="noopener">HYG Database</a> v3.7, David Nash, <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>.</dd>
+              <dt>Constellations</dt>
+              <dd>The modern sky culture of <a href="https://stellarium.org" target="_blank" rel="noopener">Stellarium</a>, the Stellarium team, <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>.</dd>
+              <dt>Planets</dt>
+              <dd>"Keplerian Elements for Approximate Positions of the Major Planets", E. M. Standish, JPL; and Jean Meeus, <i>Astronomical Algorithms</i>.</dd>
+              <dt>Moons</dt>
+              <dd>Mean orbital elements from <a href="https://ssd.jpl.nasa.gov" target="_blank" rel="noopener">JPL Solar System Dynamics</a>, checked against JPL Horizons.</dd>
+              <dt>Eclipses and time</dt>
+              <dd>Fred Espenak and Jean Meeus, <i>Five Millennium Canon of Solar Eclipses</i> (NASA), and Espenak's EclipseWise catalogs.</dd>
+              <dt>Rotation and physical data</dt>
+              <dd>The IAU Working Group on Cartographic Coordinates and Rotational Elements, and NASA's planetary fact sheets.</dd>
+              <dt>Inside the worlds</dt>
+              <dd>The published studies cited beside each layer in Look inside.</dd>
+            </dl>
+          </div>
+
+          <div class="credits-group">
+            <div class="menu-field-label">Software and type</div>
+            <dl class="credits-list">
+              <dd><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> (MIT), with Vite and TypeScript.</dd>
+              <dd>Basis Universal texture transcoder, Binomial (Apache 2.0).</dd>
+              <dd>FidelityFX Super Resolution 1, AMD (MIT).</dd>
+              <dd>Geist and Geist Mono, Vercel with basement.studio (SIL Open Font License 1.1).</dd>
+            </dl>
           </div>
         </div>
       </div>

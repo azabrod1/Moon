@@ -892,6 +892,9 @@
       text-wrap: pretty;
     }
     .credits-group { padding: 0 3px; }
+    /* The group names are headings, so a screen reader can jump between them,
+       drawn as the sub-pages' eyebrow. */
+    .credits-group h4 { margin: 0 0 6px; font-weight: 400; }
     .credits-group + .credits-group { margin-top: 16px; }
     .credits-list { margin: 0; }
     .credits-list dt {
@@ -4947,7 +4950,9 @@
           <button class="menu-action" id="planetarium-btn-tutorial">Take the tour</button>
           <button class="menu-action" id="planetarium-btn-map">System map</button>
           <!-- An action row in look, a tier in behaviour: .menu-tier is what the
-               panel's navigation opens a page from, and the chevron says so. -->
+               panel's navigation opens a page from, and the chevron says so.
+               The empty value span is the spacer that pushes the chevron to
+               the right edge, as it does on the tier rows below. -->
           <button type="button" class="menu-action menu-tier" data-open="credits">
             <span>Credits</span>
             <span class="menu-tier-value"></span>
@@ -5095,41 +5100,47 @@
             <div class="menu-note" id="settings-night-sides-note"></div>
           </div>
         </div>
-        <!-- Who the maps, models and data came from. Static text: nothing in the
-             TypeScript reads it, so it carries no ids. When a texture, model or
-             dataset changes source, change its line here too (each generator's
-             .sources.json carries the credit line its product asks for). -->
+        <!-- Who the maps, data and code came from. Static text: nothing in the
+             TypeScript reads it, so it carries no ids. When a texture, dataset
+             or borrowed piece of code changes source, change its line here too.
+             The credit lines come from tools/gen-moonmaps.sources.json
+             (`citation`), the `product` and `license` fields of
+             tools/gen-tiles.sources.json and tools/gen-seawind.sources.json, the
+             headers of gen-stars.mjs, gen-constellations.mjs and gen-moons.mjs,
+             world/textureLadder.ts, and the licence notes in the code they name. -->
         <div class="menu-page" data-page="credits" hidden>
           <div class="menu-head">
             <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
             <h3>Credits</h3>
           </div>
-          <p class="credits-lede">Moon is made from maps, measurements and models that their makers share freely. Thank you to all of them.</p>
+          <p class="credits-lede">This app is built from maps, measurements and code that their makers share freely; the maps are resampled, and many recoloured, to fit it. Thank you to all of them.</p>
 
           <div class="credits-group">
-            <div class="menu-field-label">Planets</div>
+            <h4 class="menu-field-label">Planets and Pluto</h4>
             <dl class="credits-list">
-              <dt>Earth</dt>
-              <dd>Blue Marble Next Generation and its cloud composite, NASA Earth Observatory (Reto Stöckli). Night lights from Black Marble 2016, NASA Earth Observatory with Suomi NPP VIIRS data (Miguel Román, NASA Goddard). Sea winds from the NOAA NCEI Blended Sea Surface Winds climatology (Saha &amp; Zhang, 2022).</dd>
-              <dt>The Moon</dt>
-              <dd>LRO colour (LROC WAC) and elevation (LOLA) from the <a href="https://svs.gsfc.nasa.gov/4720" target="_blank" rel="noopener">CGI Moon Kit</a>, NASA's Scientific Visualization Studio.</dd>
               <dt>Mercury</dt>
-              <dd>MESSENGER MDIS global mosaic, NASA / Johns Hopkins APL / Carnegie Institution of Washington, published by the USGS Astrogeology Science Center.</dd>
+              <dd>MESSENGER MDIS global mosaic, NASA / Johns Hopkins APL / Carnegie Institution of Washington, published by the <a href="https://astrogeology.usgs.gov" target="_blank" rel="noopener">USGS Astrogeology Science Center</a>.</dd>
+              <dt>Venus, Jupiter, Saturn, Uranus, Neptune</dt>
+              <dd><a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener">Solar System Scope</a>, based on NASA mission imagery, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.</dd>
+              <dt>Earth</dt>
+              <dd>Blue Marble Next Generation (August 2004), NASA Earth Observatory (Reto Stöckli), and the Blue Marble cloud composite, NASA. The clouds are graded to Solar System Scope's Earth cloud map (CC BY 4.0).</dd>
+              <dd>Night lights from Black Marble 2016, NASA Earth Observatory with Suomi NPP VIIRS data (Miguel Román, NASA Goddard).</dd>
+              <dd>Sea winds from the NOAA NCEI Blended Sea Surface Winds climatology, 1991–2020 (Saha &amp; Zhang, 2022).</dd>
               <dt>Mars</dt>
               <dd>Tianwen-1 MoRIC colour mosaic, data provided by China's Lunar and Planetary Data System (CLPDS, NAOC/GRAS), read through the HiPS and hips2fits services of <a href="https://cds.unistra.fr" target="_blank" rel="noopener">CDS</a>, Strasbourg.</dd>
-              <dd>Relief from the USGS MOLA–HRSC blended elevation model (Fergason, Hare &amp; Laura, 2018). MOLA: NASA / Goddard. HRSC: ESA / DLR / FU Berlin, <a href="https://creativecommons.org/licenses/by-sa/3.0/igo/" target="_blank" rel="noopener">CC BY-SA 3.0 IGO</a>.</dd>
-              <dt>Venus, Jupiter, Saturn, Uranus, Neptune</dt>
-              <dd><a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener">Solar System Scope</a>, based on NASA mission imagery, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Their Earth cloud map is the reference Earth's clouds are graded to.</dd>
+              <dd>Relief from the USGS MOLA–HRSC blended elevation model (Fergason, Hare &amp; Laura, 2018). MOLA: NASA. HRSC: ESA / DLR / FU Berlin, <a href="https://creativecommons.org/licenses/by-sa/3.0/igo/" target="_blank" rel="noopener">CC BY-SA 3.0 IGO</a>.</dd>
               <dt>Pluto</dt>
               <dd>New Horizons LORRI and MVIC mosaic, NASA / Johns Hopkins APL / Southwest Research Institute / Lunar and Planetary Institute, published by the USGS Astrogeology Science Center.</dd>
             </dl>
           </div>
 
           <div class="credits-group">
-            <div class="menu-field-label">Moons</div>
+            <h4 class="menu-field-label">Moons</h4>
             <dl class="credits-list">
+              <dt>The Moon</dt>
+              <dd>LRO colour (LROC WAC) and elevation (LOLA) from the <a href="https://svs.gsfc.nasa.gov/4720" target="_blank" rel="noopener">CGI Moon Kit</a>, NASA's Scientific Visualization Studio.</dd>
               <dt>Io, Europa, Ganymede, Callisto</dt>
-              <dd>Galileo SSI and Voyager global mosaics, <a href="https://astrogeology.usgs.gov" target="_blank" rel="noopener">USGS Astrogeology Science Center</a>; Io's from the Planetary Data System, Europa's by Archinal, Colvin, Davies, Gitlin, Kirk &amp; Weller.</dd>
+              <dd>Galileo SSI and Voyager global mosaics, USGS Astrogeology Science Center; Io's from the Planetary Data System, Europa's by Archinal, Colvin, Davies, Gitlin, Kirk &amp; Weller.</dd>
               <dt>Titan, Enceladus, Mimas, Tethys, Dione, Rhea, Iapetus</dt>
               <dd>Cassini (and for Dione, Rhea and Iapetus, Voyager) global mosaics, NASA / JPL-Caltech / Space Science Institute, published by the USGS Astrogeology Science Center; Mimas's by NASA's Planetary Photojournal (PIA17214).</dd>
               <dt>Miranda, Ariel</dt>
@@ -5140,41 +5151,45 @@
           </div>
 
           <div class="credits-group">
-            <div class="menu-field-label">Spacecraft</div>
+            <h4 class="menu-field-label">Missions</h4>
             <dl class="credits-list">
-              <dt>Cassini model</dt>
-              <dd>"Cassini Assembly", NASA / JPL-Caltech, from <a href="https://science.nasa.gov/3d-resources/" target="_blank" rel="noopener">NASA 3D Resources</a>.</dd>
-              <dt>Mission photographs</dt>
+              <dt>Photographs</dt>
               <dd>NASA, JPL-Caltech, Johns Hopkins APL, Southwest Research Institute, Space Science Institute, ESA, the University of Arizona and Malin Space Science Systems. Each is credited beside its photograph.</dd>
             </dl>
           </div>
 
           <div class="credits-group">
-            <div class="menu-field-label">Sky and orbits</div>
+            <h4 class="menu-field-label">Sky and orbits</h4>
             <dl class="credits-list">
               <dt>Stars</dt>
               <dd><a href="https://github.com/astronexus/HYG-Database" target="_blank" rel="noopener">HYG Database</a> v3.7, David Nash, <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>.</dd>
               <dt>Constellations</dt>
               <dd>The modern sky culture of <a href="https://stellarium.org" target="_blank" rel="noopener">Stellarium</a>, the Stellarium team, <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>.</dd>
-              <dt>Planets</dt>
-              <dd>"Keplerian Elements for Approximate Positions of the Major Planets", E. M. Standish, JPL; and Jean Meeus, <i>Astronomical Algorithms</i>.</dd>
-              <dt>Moons</dt>
-              <dd>Mean orbital elements from <a href="https://ssd.jpl.nasa.gov" target="_blank" rel="noopener">JPL Solar System Dynamics</a>, checked against JPL Horizons.</dd>
-              <dt>Eclipses and time</dt>
-              <dd>Fred Espenak and Jean Meeus, <i>Five Millennium Canon of Solar Eclipses</i> (NASA), and Espenak's EclipseWise catalogs.</dd>
-              <dt>Rotation and physical data</dt>
-              <dd>The IAU Working Group on Cartographic Coordinates and Rotational Elements, and NASA's planetary fact sheets.</dd>
+              <dt>Planet positions</dt>
+              <dd>"Keplerian Elements for Approximate Positions of the Major Planets", E. M. Standish, JPL; and Jean Meeus, <cite>Astronomical Algorithms</cite>.</dd>
+              <dt>Moon orbits</dt>
+              <dd>Mean orbital elements from <a href="https://ssd.jpl.nasa.gov" target="_blank" rel="noopener">JPL Solar System Dynamics</a>, anchored and fitted to JPL Horizons.</dd>
+              <dt>Time and eclipses</dt>
+              <dd>ΔT from Fred Espenak and Jean Meeus, <cite>Five Millennium Canon of Solar Eclipses</cite> (NASA). Eclipse predictions are checked against Espenak's EclipseWise catalogs.</dd>
+              <dt>Rotation and sizes</dt>
+              <dd>The IAU Working Group on Cartographic Coordinates and Rotational Elements, and JPL Solar System Dynamics' satellite physical parameters (Jacobson et al.).</dd>
               <dt>Inside the worlds</dt>
               <dd>The published studies cited beside each layer in Look inside.</dd>
             </dl>
           </div>
 
           <div class="credits-group">
-            <div class="menu-field-label">Software and type</div>
+            <h4 class="menu-field-label">Code and type</h4>
             <dl class="credits-list">
-              <dd><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> (MIT), with Vite and TypeScript.</dd>
-              <dd>Basis Universal texture transcoder, Binomial (Apache 2.0).</dd>
-              <dd>FidelityFX Super Resolution 1, AMD (MIT).</dd>
+              <dt>Rendering</dt>
+              <dd><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> (MIT), built with Vite and TypeScript.</dd>
+              <dt>Atmosphere</dt>
+              <dd>Ported from <a href="https://github.com/ebruneton/precomputed_atmospheric_scattering" target="_blank" rel="noopener">Precomputed Atmospheric Scattering</a>, ©&nbsp;2017 Eric Bruneton (BSD 3-Clause).</dd>
+              <dt>Upscaling</dt>
+              <dd>FidelityFX Super Resolution 1, ©&nbsp;2021 AMD (MIT).</dd>
+              <dt>Texture compression</dt>
+              <dd>Basis Universal transcoder, Binomial (Apache 2.0).</dd>
+              <dt>Fonts</dt>
               <dd>Geist and Geist Mono, Vercel with basement.studio (SIL Open Font License 1.1).</dd>
             </dl>
           </div>

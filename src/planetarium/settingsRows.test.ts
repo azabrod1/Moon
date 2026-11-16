@@ -219,6 +219,23 @@ describe('the Credits page', () => {
     );
     expect(between).not.toMatch(/<button|menu-divider|settings-row/);
     expect(rootPage).toContain('class="menu-action menu-tier" data-open="credits"');
+    // ...and the last of them: the divider before the tiers comes next.
+    const after = rootPage.slice(credits, rootPage.indexOf('menu-divider', credits));
+    expect(after).not.toMatch(/menu-action|<button/);
+  });
+
+  it('names each group with a heading under the page\'s own', () => {
+    expect(creditsPage).not.toMatch(/<h[1256][\s>]/);
+    expect([...creditsPage.matchAll(/<h3[\s>]/g)]).toHaveLength(1);
+    expect([...creditsPage.matchAll(/<h4 class="menu-field-label">/g)].length).toBeGreaterThan(1);
+  });
+
+  it('gives every description a term, as a description list must', () => {
+    // A <dl> is groups of one or more <dt> then one or more <dd>; a <dd> with
+    // no <dt> before it in its list is invalid and reads oddly aloud.
+    for (const list of creditsPage.matchAll(/<dl[^>]*>([\s\S]*?)<\/dl>/g)) {
+      expect(list[1].trim().startsWith('<dt>'), list[1].slice(0, 80)).toBe(true);
+    }
   });
 });
 

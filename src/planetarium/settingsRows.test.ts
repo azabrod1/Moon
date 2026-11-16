@@ -207,10 +207,18 @@ describe('the Credits page', () => {
     }
   });
 
-  it('sits at the foot of the root page, above the build stamp', () => {
+  it('sits straight under System map, as the last of the actions', () => {
+    const map = rootPage.indexOf('id="planetarium-btn-map"');
     const credits = rootPage.indexOf('data-open="credits"');
-    expect(credits).toBeGreaterThan(rootPage.indexOf('id="settings-throttle-toggle"'));
-    expect(rootPage.indexOf('id="menu-build"')).toBeGreaterThan(credits);
+    expect(credits).toBeGreaterThan(map);
+    expect(rootPage.indexOf('data-open="graphics"')).toBeGreaterThan(credits);
+    // Nothing between the two but the comment that explains the row.
+    const between = rootPage.slice(
+      rootPage.indexOf('</button>', map) + '</button>'.length,
+      rootPage.lastIndexOf('<button', credits),
+    );
+    expect(between).not.toMatch(/<button|menu-divider|settings-row/);
+    expect(rootPage).toContain('class="menu-action menu-tier" data-open="credits"');
   });
 });
 

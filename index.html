@@ -4946,6 +4946,13 @@
           <button class="menu-action" id="planetarium-btn-new">New Journey</button>
           <button class="menu-action" id="planetarium-btn-tutorial">Take the tour</button>
           <button class="menu-action" id="planetarium-btn-map">System map</button>
+          <!-- An action row in look, a tier in behaviour: .menu-tier is what the
+               panel's navigation opens a page from, and the chevron says so. -->
+          <button type="button" class="menu-action menu-tier" data-open="credits">
+            <span>Credits</span>
+            <span class="menu-tier-value"></span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
           <div class="menu-divider"></div>
           <button type="button" class="pk-row menu-tier" data-open="graphics">
             <b>Graphics</b>
@@ -5031,12 +5038,6 @@
               <span id="settings-throttle-label">On</span>
             </button>
           </div>
-          <div class="menu-divider"></div>
-          <button type="button" class="pk-row menu-tier" data-open="credits">
-            <b>Credits</b>
-            <span class="menu-tier-value"></span>
-            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
-          </button>
           <div class="menu-build" id="menu-build"></div>
         </div>
 

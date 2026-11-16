@@ -104,7 +104,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager picture of Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia01371-voyager-picture-of-jupiter/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
   {
     id: 'saturn',
@@ -176,7 +176,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager at Jupiter',
     imageSourceUrl: 'https://science.nasa.gov/gallery/voyager-at-jupiter/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
   {
     id: 'saturn',
@@ -296,7 +296,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL/University of Arizona',
     imageSourceLabel: 'Cassini Jupiter portrait',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia04866-cassini-jupiter-portrait/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
   {
     id: 'saturn-arrival',
@@ -379,7 +379,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/Johns Hopkins University Applied Physics Laboratory/Southwest Research Institute',
     imageSourceLabel: 'Full Jupiter mosaic',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/full-jupiter-mosaic/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
   {
     id: 'pluto',
@@ -467,7 +467,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Juno enters orbit around Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/news/juno-enters-orbit-around-jupiter/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
   {
     id: 'polar-passes',
@@ -483,7 +483,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech/SwRI/MSSS',
     imageSourceLabel: 'Close-ups of polar storms on Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia25730-nasas-juno-mission-captures-close-ups-of-polar-storms-on-jupiter/',
-    ...textureFallback('jupiter.webp', 'Jupiter'),
+    ...textureFallback('jupiter.v2.webp', 'Jupiter'),
   },
 ];
 

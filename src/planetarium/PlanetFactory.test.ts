@@ -2860,10 +2860,13 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.ktx2');
     expect(resolveTierFile('io', '8k')).toBe('io.v2.ktx2');
     expect(resolveTierFile('pluto', '4k')).toBe('pluto.v2.ktx2');
+    // Jupiter's 8K, which like Earth's day map exists only as a container.
+    expect(resolveTierFile('jupiter', '8k')).toBe('jupiter.v2.ktx2');
     // And the 4K rungs that keep their webp: no container ships for them at
     // all, so the file is the same one an unbound loader would ask for.
     expect(resolveTierFile('saturn', '4k')).toBe('saturn.webp');
     expect(resolveTierFile('venus', '4k')).toBe('venus.webp');
+    expect(resolveTierFile('jupiter', '4k')).toBe('jupiter.v2.webp');
     // Earth's globe has no 4K rung to override: it boots on that map.
     expect(resolveTierFile('earthDay', '4k')).toBe('earth-day.v2.webp');
   });
@@ -2879,10 +2882,15 @@ describe('the rungs that ship only as a compressed container', () => {
     // the 4096 map it boots with — not a 404 on an 8K webp that never
     // shipped, and not 171 MiB of the envelope charged for it.
     expect(makeTextureUpgrade('earthDay', new THREE.MeshStandardMaterial())).toBeUndefined();
+    // Jupiter keeps its 4K webp and stops there.
+    const jupiter = makeTextureUpgrade('jupiter', new THREE.MeshStandardMaterial())!;
+    expect(jupiter.tiers).toEqual(['4k']);
+    expect(jupiter.effectiveMaxTier).toBe('4k');
 
     bindKtx2TierLoader(() => {}, true);
     withMaxTextureSize(16384);
     expect(makeTextureUpgrade('earthNight', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k', '8k']);
+    expect(makeTextureUpgrade('jupiter', new THREE.MeshStandardMaterial())!.tiers).toEqual(['4k', '8k']);
     const day = makeTextureUpgrade('earthDay', new THREE.MeshStandardMaterial())!;
     expect(day.tiers).toEqual(['8k']);
     expect(day.effectiveMaxTier).toBe('8k');
@@ -2890,7 +2898,7 @@ describe('the rungs that ship only as a compressed container', () => {
 
   it('charges the blocks, never the phantom uncompressed map', () => {
     bindKtx2TierLoader(() => {}, true);
-    for (const key of ['moon', 'earthClouds', 'earthDay', 'earthNight']) {
+    for (const key of ['moon', 'earthClouds', 'earthDay', 'earthNight', 'jupiter']) {
       expect(mib(tierUploadBytes(key, '8k'))).toBeCloseTo(42.7, 1);
     }
     // And a quarter of a 4K rung's uncompressed 42.7, for every 4K rung that
@@ -2907,6 +2915,7 @@ describe('the rungs that ship only as a compressed container', () => {
     // admission test has to refuse rather than a case that never arises.
     bindKtx2TierLoader(() => {}, false);
     expect(mib(tierUploadBytes('earthDay', '8k'))).toBeCloseTo(170.7, 1);
+    expect(mib(tierUploadBytes('jupiter', '8k'))).toBeCloseTo(170.7, 1);
   });
 
   it('leaves Earth\'s globe rung to the approach rather than to an arrival', () => {
@@ -2926,6 +2935,75 @@ describe('the rungs that ship only as a compressed container', () => {
       const up = ladderHandle(key);
       expect(arrivalUpgradeTier(up)).toBe(firstUpgradeTier(up));
       expect(needsUpgradeCover(up)).toBe(true);
+    }
+  });
+
+  it('earns Jupiter\'s 8K at half the viewport and keeps its 4K the arrival\'s rung', () => {
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    expect(upgradeTriggerFraction('jupiter', '8k')).toBe(0.5);
+    expect(upgradeTriggerFraction('jupiter', '4k')).toBe(UPGRADE_TRIGGER_FRACTION['4k']);
+    const up = ladderHandle('jupiter');
+    expect(up.tiers).toEqual(['4k', '8k']);
+    expect(up.effectiveMaxTier).toBe('8k');
+    // The veil waits on the 4K, never the container.
+    expect(firstUpgradeTier(up)).toBe('4k');
+    expect(arrivalUpgradeTier(up)).toBe('4k');
+    expect(needsUpgradeCover(up)).toBe(true);
+    // A disc the 2K map still serves earns no 8K.
+    expect(earnedUpgradeTier(up, 0.3)).toBe('4k');
+    expect(earnedUpgradeTier(up, 0.55)).toBe('8k');
+  });
+
+  it('tops Jupiter out at its 4K webp when no KTX2 loader is bound, and asks for no 8K webp', () => {
+    withMaxTextureSize(16384);
+    const pending: string[] = [];
+    const previous = setUpgradeTextureLoader((url) => { pending.push(url); });
+    try {
+      const up = ladderHandle('jupiter');
+      expect(up.effectiveMaxTier).toBe('4k');
+      up.appliedTier = '4k';
+      expect(resolveUpgradeTier(up, '8k')).toBeNull();
+      upgradeTextureOnApproach(up, '8k', 0);
+      expect(armArrivalWarmGoal(up)).toBe(false);
+      expect(pending).toEqual([]);
+    } finally {
+      setUpgradeTextureLoader(previous);
+    }
+  });
+
+  it('keeps Jupiter\'s 4K when its 8K container fails, and the arrival goal stops asking', async () => {
+    withMaxTextureSize(16384);
+    const webp: Array<{ url: string; onLoad: (tex: THREE.Texture) => void }> = [];
+    const ktx2: Array<{ url: string; onError: (err: unknown) => void }> = [];
+    const previous = setUpgradeTextureLoader((url, onLoad) => { webp.push({ url, onLoad }); });
+    bindKtx2TierLoader((url, _onLoad, onError) => { ktx2.push({ url, onError }); }, true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = ladderHandle('jupiter');
+      expect(armArrivalWarmGoal(up)).toBe(true);
+      expect(up.warmGoal).toBe('8k');
+      pumpArrivalWarmGoal(up, 0);
+      expect(webp.map((p) => p.url)).toEqual([expect.stringMatching(/textures\/4k\/jupiter\.v2\.webp$/)]);
+      const fourK = mapTexture(4096);
+      webp[0].onLoad(fourK);
+      await settleRungUpload();
+      expect(up.appliedTier).toBe('4k');
+      pumpArrivalWarmGoal(up, 16);
+      expect(ktx2.map((p) => p.url)).toEqual([expect.stringMatching(/textures\/8k\/jupiter\.v2\.ktx2$/)]);
+      ktx2[0].onError(new Error('decode failed'));
+      await settleRungUpload();
+      // The 4K stays on the globe, and the goal is handed back to the
+      // on-screen trigger rather than re-fetching the container.
+      expect(up.appliedTier).toBe('4k');
+      expect(materialColorMap(up.material)).toBe(fourK);
+      expect(pumpArrivalWarmGoal(up, 10_000_000)).toBe(false);
+      expect(up.warmGoal).toBeUndefined();
+      expect(ktx2).toHaveLength(1);
+      expect(webp).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      setUpgradeTextureLoader(previous);
     }
   });
 });

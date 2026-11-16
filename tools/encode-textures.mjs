@@ -27,15 +27,17 @@ const clean = process.argv.includes('--clean');
 
 // The legacy source names, most of them long since replaced (see SCOPE
 // above). A missing file is skipped, so the list is safe to leave as it is.
+// Jupiter is not on it: its maps are cut by tools/gen-moonmaps.mjs, and a
+// legacy jupiter.jpg converted here would land under a name nothing loads.
 // Data maps (lossless) are the ones the shaders read as numbers; everything
 // else is a photo (q85).
 const FILES = [
   'mercury.jpg', 'venus.jpg', 'earth-day.jpg', 'earth-night.jpg', 'earth-clouds.jpg',
   'earth-bump.png', 'earth-roughness.png', 'earth-clouds-normal.v2.png',
-  'mars.jpg', 'mars-normal.png', 'jupiter.jpg',
+  'mars.jpg', 'mars-normal.png',
   'saturn.jpg', 'uranus.jpg', 'neptune.jpg', 'pluto.jpg', 'moon.jpg', 'moon-normal.png',
   'io.jpg', 'europa.jpg', 'ganymede.jpg', 'callisto.jpg', 'triton.jpg',
-  '4k/mars.jpg', '4k/jupiter.jpg', '4k/pluto.jpg', '4k/moon.jpg', '4k/earth-clouds.jpg',
+  '4k/mars.jpg', '4k/pluto.jpg', '4k/moon.jpg', '4k/earth-clouds.jpg',
   '4k/moon-normal.png', '8k/moon.jpg', '8k/earth-clouds.jpg',
 ];
 const isData = (f) => /normal|bump|roughness/.test(f);

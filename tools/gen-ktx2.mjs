@@ -141,11 +141,13 @@ const JOBS = {
   // itself large. Measured across the whole set at RDO lambda 1, 2 and 4
   // (and, for the nearest misses, a 64K RDO dictionary as well): Venus and
   // Saturn barely move at all — 2.30 to 2.29 MB and 1.96 to 1.95 — because
-  // they are already at that floor, and they sit at 17x their webp. Jupiter
-  // lands at 11x, Pluto at 5.05x. Every one of them was well inside the
-  // picture gate the whole way (worst |mean| 0.25 and RMS 2.09 against a
-  // limit of 2 and 6), so it is the wire that rules them out and nothing
-  // else. They keep their webp rung.
+  // they are already at that floor, and they sit at 17x their webp. Pluto
+  // landed at 5.05x. Jupiter's 4K, cut from the merged Cassini + Juno map
+  // and transcoded from its own webp (0.64 MB), comes to 6.31, 5.83 and 5.49
+  // MB at lambda 1, 2 and 4 — 8.6x at best. Every one of them was well
+  // inside the picture gate the whole way (worst |mean| 0.25 and RMS 2.09
+  // against a limit of 2 and 6), so it is the wire that rules them out and
+  // nothing else. They keep their webp rung.
   //
   // Mercury clears it at the default lambda. Mars used to, on the Viking
   // MDIM colour, at lambda 4 (4.53x at 1, 4.24x at 2, 3.81x at 4): that map
@@ -235,6 +237,16 @@ const JOBS = {
   ganymede8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },
   callisto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('callisto-8k'), out: '8k/callisto.v2.ktx2' },
   pluto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
+  // Jupiter's 8K, the one toured planet rung with a container, and UASTC
+  // like Earth's day map: a gas giant is slow gradients, and nothing else
+  // answers a 170.7 MiB upload. It ships alone, so its pixels come from the
+  // gen:moonmaps intermediate cut in the same run as the boot map and the 4K
+  // webp. Measured against that intermediate (level 0 unpacked, the baked
+  // flip undone): 26.8 MB at lambda 1 (RMS 1.79, mean +0.01), 22.7 at 2
+  // (2.27, -0.04), 20.4 at 4 (2.66, -0.07), all far inside the gate of
+  // |mean| 2 and RMS 6, so the largest lambda ships. A 64K RDO dictionary
+  // at lambda 4 bought nothing (20.5 MB, five times the encode time).
+  jupiter8k: { tier: '8k', rdo: 4.0, source: fromMoonmap('jupiter-8k'), out: '8k/jupiter.v2.ktx2' },
 };
 
 const args = process.argv.slice(2);

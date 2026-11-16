@@ -263,7 +263,7 @@ const PLUTO_CAP = [42, 38, 34];
  * name); `outputs` are the shipped maps; `rungs` are the widths written to the
  * cache as PNG for gen-ktx2 to encode.
  *
- * Every tier ABOVE a body's boot map is a rung, never an output, because every
+ * Every tier ABOVE a moon's boot map is a rung, never an output, because every
  * one of them ships GPU-compressed and alone: an ETC1S container of one of
  * these maps is about the size of its webp twin on the wire and a quarter of it
  * in VRAM, so a webp of the same tier beside it would be pure weight in the
@@ -272,6 +272,12 @@ const PLUTO_CAP = [42, 38, 34];
  * from the PNG written here rather than from a shipped file, which keeps the
  * rung a pure sharpen of the boot map under it: both come out of one resample
  * of one source in one run.
+ *
+ * Jupiter is the one exception, and only at 4K: a planet's 4K rung is toured,
+ * and a UASTC container of its map costs 8.6 times the webp on the wire at
+ * best (tools/gen-ktx2.mjs), so its 4K ships as a webp output (into the
+ * tier's folder, `4k/...`) and only its 8K is a rung. All three still come
+ * out of the one run.
  *
  * Widths are not free choices. A body's BOOT width is whatever the app
  * already fetches for it — re-basing a map is a change of product, not of the
@@ -462,6 +468,29 @@ const JOBS = {
     // measures, rather than one guessed amplitude, which on a map whose
     // albedo varies this much comes out as bright speckle at the poles.
     noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
+  },
+  jupiter: {
+    src: 'jupiter-bj/jupiter_map_css_plus_juno_bj.png',
+    // Björn Jónsson's merged map: Cassini's December 2000 colour frames with
+    // real Juno poles where the map it replaces painted haze. Its Cassini
+    // detail is native to about 21 px/deg, which an 8K map (22.8) holds and a
+    // 4K one (11.4) visibly does not, so 8K is the top of this ladder. The
+    // boot map, the 4K and the 8K are all cut here from this one source, so
+    // every step up is a pure sharpen.
+    outputs: [{ width: 2048, out: 'jupiter.v2.webp' }, { width: 4096, out: '4k/jupiter.v2.webp' }],
+    rungs: [{ width: 8192, name: 'jupiter-8k' }],
+    // A colour source with no colour pass: the map's own balance, paler and
+    // nearer true colour than the orange of the map it replaces.
+    //
+    // Held at the level the replaced 2K map measures in this tool's own
+    // metric (cos-latitude-weighted Rec. 709 mean of the sRGB counts, 168.7),
+    // because the exposure, the night side and the glow were tuned on that
+    // Jupiter. Same class of exception as Mercury's: Jupiter's published
+    // albedo is a disc's, not a map's, and the curve would put it elsewhere.
+    level: { mean: 168.7, why: 'the replaced map the exposure was tuned on' },
+    // Every pixel is a measurement (the darkest pixel's channel mean is 99),
+    // and a dark belt feature is cloud, not a gap, so nothing is masked.
+    noData: { below: 0 },
   },
   io: {
     src: 'Io_GalileoSSI-Voyager_Global_Mosaic_ClrMerge_1km.tif',

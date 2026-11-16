@@ -1,5 +1,5 @@
 {
-  "_": "Sources under .moon-data-cache/zoom/ for the photo maps of the moons that ship as procedural balls today, plus the sharper re-bases for the Galileans and Pluto. Same contract as gen-tiles.sources.json: the SHA-256 is what the shipped assets were cut from, and a re-downloaded product whose digest moved must not silently re-cut a map. Every product here is NASA or USGS and public domain; the citation field carries the credit line the product page asks for. Read `longitude` before writing any job. Every one of these rasters stores its columns EAST-increasing - the reading comes from the GeoTIFF's own geotransform (ModelTiepoint + ModelPixelScale, turned into degrees through the projection's central-meridian GeoKey and the sphere radius), which is the authority on where the pixels are. A PDS3 label's POSITIVE_LONGITUDE_DIRECTION is NOT: it says which direction the label's own numbers count in, and taking it as the column order says seven of these fifteen are mirrored, which they are not. Io settles it by measurement - Loki Patera and Pele land on their gazetteer longitudes in the east-increasing reading and nowhere near them in the mirrored one - and Pluto settles it a second time, because the map the app already ships was baked from this product with a 180 degree roll and no flip. So the only transform any of these needs is a longitude ROLL, and `leftEdgeLonDegEast` is the whole of it: eight sit at 180E and need nothing, five sit at 0E and need half a turn. `wire` is the measured cost of one representative 4096x2048 candidate encoded both ways, so a rung can be priced before it is cut.",
+  "_": "Sources under .moon-data-cache/zoom/ for the photo maps of the moons that ship as procedural balls today, plus the sharper re-bases for the Galileans and Pluto. Same contract as gen-tiles.sources.json: the SHA-256 is what the shipped assets were cut from, and a re-downloaded product whose digest moved must not silently re-cut a map. Every product here is NASA or USGS and public domain except Jupiter's merged Cassini + Juno map, which is CC BY 3.0 and carries its licence in its own entry; the citation field carries the credit line the product page asks for. Read `longitude` before writing any job. Every one of these rasters stores its columns EAST-increasing - the reading comes from the GeoTIFF's own geotransform (ModelTiepoint + ModelPixelScale, turned into degrees through the projection's central-meridian GeoKey and the sphere radius), which is the authority on where the pixels are. A PDS3 label's POSITIVE_LONGITUDE_DIRECTION is NOT: it says which direction the label's own numbers count in, and taking it as the column order says seven of these fifteen are mirrored, which they are not. Io settles it by measurement - Loki Patera and Pele land on their gazetteer longitudes in the east-increasing reading and nowhere near them in the mirrored one - and Pluto settles it a second time, because the map the app already ships was baked from this product with a 180 degree roll and no flip. So the only transform any of these needs is a longitude ROLL, and `leftEdgeLonDegEast` is the whole of it: eight sit at 180E and need nothing, five sit at 0E and need half a turn. `wire` is the measured cost of one representative 4096x2048 candidate encoded both ways, so a rung can be priced before it is cut.",
   "_gaps": "What this file does NOT know, stated once so it is not rediscovered as a bug. (1) Mimas, Miranda and Ariel ship no label and no geotransform. All three were settled by measurement in the A1 alignment pass and all three came out at left edge 180E like the labelled Cassini mosaics - Mimas on Herschel, Miranda on the Inverness Corona chevron, Ariel on the run of its named chasmata. (2) Miranda and Ariel are 1440x720 and cover the southern hemisphere only; a 4K rung for either would be pure upsampling, so 2K is their honest ceiling and the unimaged north is filled from the imaged half. (3) Titan is 4040 px because the only sharper USGS product is 1.5 GB and not global. (4) Ten of the fifteen are mono; keeping Io's and Ganymede's colour is free, everything else is coloured through a luminance ramp keyed to the body's published appearance. (5) Triton is not in this set, and NOT for want of a source. Triton_Voyager2_ClrMosaic_GlobalFill_600m.tif (USGS/Photojournal PIA18668, Schenk/LPI, public domain) is 14138x7069 in colour at 600 m/px, left edge 180E east-increasing like the Cassini mosaics, so an 8K rung would be a 1.73x downsample of real data. What stops it is the picture, not the pixels: 38.5 percent of it is no-data with everything north of about 14N empty (USGS's own completeness field says \"Large gap at the north pole\"; the \"GlobalFill\" in the name is seam patching, not the polar gap), it carries a strong green-magenta cast rather than Triton's real pinkish grey, and USGS's process note says the 30-degree graticule was painted out by hand and they would like to find a version without it. Cutting it is one job row once someone decides those three are acceptable. The file is cached beside the others.",
   "_albedo": {
     "_": "Published geometric albedos, one per body, and the single curve tools/gen-moonmaps.mjs puts every graded map's level on. A map is an sRGB-encoded albedo texture, so the quantity the albedo is a ratio of is the map's mean in LINEAR light, and the rule is linear mean = ALBEDO_LEVEL_SCALE x albedo, cos(latitude) weighted. Nothing in this block is a look decision: the look decision was to key levels to published photometry at all, and the two exceptions are named below.",
@@ -1070,6 +1070,55 @@
       "spanDegLat": 180,
       "topLatDeg": 90,
       "read_from": "GeoTIFF ModelTiepoint (33922) + ModelPixelScale (33550) + GeoKeys 2057 (semi-major 2439400 m, Mercury_2015 sphere) and 2061 (prime meridian 0) of the 166 m source; the 4x reduction changes the pixel count only"
+    }
+  },
+  "jupiter-bj/jupiter_map_css_plus_juno_bj.png": {
+    "body": "jupiter",
+    "url": "https://planetary.s3.amazonaws.com/assets/images/5-jupiter/2018/jupiter_map_css_plus_juno_bj.png",
+    "sha256": "76908726a37d46db5bcc7620b2fef688f44b6e15784773215d4e72cee37c2dc6",
+    "bytes": 99552458,
+    "width": 14400,
+    "height": 7200,
+    "format": "png, 8-bit, 3 bands (RGB)",
+    "color": "colour",
+    "product": "Merged Cassini and Juno global map of Jupiter by Björn Jónsson (2018): Cassini ISS colour frames from the December 2000 flyby (about 65 km/px, native detail about 21 px/deg, resampled to 40) with the polar caps from JunoCam and JIRAM. Simple cylindrical (equirectangular), 14400x7200, no unmeasured pixels (the darkest pixel's channel mean is 99).",
+    "product_page": "https://www.planetary.org/space-images/merged-cassini-and-juno",
+    "licence": "CC BY 3.0 Unported (https://creativecommons.org/licenses/by/3.0/). Not public domain like the rest of this file: the credit line below must be shown wherever the map is.",
+    "citation": "NASA / JPL-Caltech / SSI / SwRI / MSSS / ASI / INAF / JIRAM / Björn Jónsson. Licence CC BY 3.0 Unported.",
+    "label": null,
+    "longitude": {
+      "domain": "0-360 east",
+      "direction": "east-positive (the raster's column order): the Great Red Spot's turbulent wake trails to its left (west) in this map exactly as it does in the Solar System Scope map it replaces, so the two share a column order and no mirror is involved",
+      "leftEdgeLonDegEast": 6.37,
+      "eastLonIncreasesRightward": true,
+      "derivation": "A roll anchored on the Great Red Spot, because the clouds of a map made in 2000 have no true System III longitude today: the rule is that nothing on the planet moves when the map changes, so the Red Spot's centre lands at the longitude the replaced map (public/textures/jupiter.webp, Solar System Scope) drew it at. Both centroids measured the same way (planning-time script, both maps read at 3600x1800, the band 10-35 S searched, redness = R - B in sRGB counts thresholded at the window's 95th / 97th / 98.5th percentile, the connected blob holding the reddest 1-degree box, redness-weighted centroid): the replaced map at normalised x 0.36919 (2K) and 0.36893 (4K), latitude -20.91 / -20.84; this source at normalised x 0.85136, latitude -23.07 (97th percentile; the three thresholds span 0.36764-0.36987 and 0.85136-0.85168, about 0.8 degrees). The roll is target x minus source x = 0.36906 - 0.85136 = -0.48230 of a turn, i.e. the source moves 173.63 degrees to the LEFT (west). In the generator's terms u_target = u_source + 0.5 + leftEdgeLonDegEast / 360, so leftEdgeLonDegEast = (0.36906 - 0.85136 - 0.5 + 1) x 360 = 6.37: the source's left edge lands at 6.37 E, and the Red Spot's centre at (0.36906 - 0.5) x 360 = -47.1, i.e. 312.9 E, where the replaced map put it.",
+      "latitude": "The product page states no latitude convention. Measured against the replaced map, this source's latitudes run further from the equator by an amount that grows with latitude, about +2 to +4 degrees at 20 to 30 degrees in both hemispheres and about zero at the equator (block matching over both maps); the Red Spot's centre sits at -23.1 here against -20.9 there. That is the shape of planetographic against planetocentric latitude on Jupiter's flattening (centric 20 -> graphic 22.6, centric 30 -> graphic 33.4), so this map reads as planetographic and the replaced one as close to planetocentric. No latitude remap is applied: the Red Spot is drawn about 2 degrees further south than before."
+    },
+    "wire": {
+      "candidate": "4096x2048",
+      "webpBytes": 640030,
+      "ktx2Bytes": 6314852,
+      "ratio": 9.87,
+      "ratio_at_or_under_4x": false,
+      "note": "Unlike the other rows, the candidate is the shipped 4K webp itself (public/textures/4k/jupiter.v2.webp) and the container is tools/gen-ktx2.mjs transcoding exactly that file, since a 4K container would ship beside it as its twin. UASTC at lambda 1, 2 and 4: 6314852, 5828214 and 5487402 bytes (9.87x, 9.11x, 8.57x), RMS 1.39 / 1.70 / 2.07 against the webp, so the 4K ships as the webp alone.",
+      "ktx2BytesByLambda": { "1": 6314852, "2": 5828214, "4": 5487402 },
+      "rung8k": {
+        "file": "8k/jupiter.v2.ktx2",
+        "format": "UASTC, container only",
+        "bytesByLambda": { "1": 26787185, "2": 22685695, "4": 20376265 },
+        "rmsByLambda": { "1": 1.79, "2": 2.27, "4": 2.66 },
+        "meanByLambda": { "1": 0.01, "2": -0.04, "4": -0.07 },
+        "shipped": "lambda 4, default 8K RDO dictionary (a 64K one came to 20483195 bytes); measured against the graded, rolled jupiter-8k intermediate with mip level 0 unpacked to BC7 and the baked vertical flip undone"
+      }
+    },
+    "used_by": [
+      "gen-moonmaps jupiter"
+    ],
+    "raster": {
+      "spanDegLon": 360,
+      "spanDegLat": 180,
+      "topLatDeg": 90,
+      "read_from": "the PNG's own size: 14400 x 7200 is exactly 40 px/deg over 360 x 180, and the product page calls it a global equirectangular map"
     }
   }
 }

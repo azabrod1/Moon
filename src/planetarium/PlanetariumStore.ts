@@ -69,6 +69,20 @@ const clampRate = (rate: number) => Math.max(-MAX_TIME_RATE, Math.min(MAX_TIME_R
 const FALLBACK_DB_NAME = 'orbital-sim-storage';
 const FALLBACK_STORE_NAME = 'state';
 
+/** The positions a journey's ship was saved against. Bumped when the bodies
+ *  move under a saved ship (a new ephemeris); a save without it predates the
+ *  fitted ephemeris (saveAnchor.ts migrates those). */
+export const POSITION_MODEL = 'jpl-de441-v1';
+
+/** In cruise beside a body: that body, and where the ship was relative to it
+ *  (saveAnchor.ts). */
+export interface RideAnchor {
+  body: string;
+  /** Present when the body is a moon. */
+  parentPlanet?: string;
+  offsetAU: { x: number; y: number; z: number };
+}
+
 export type LandedTarget =
   | { type: 'planet'; name: string }
   | { type: 'moon'; name: string; parentPlanet: string }
@@ -137,10 +151,33 @@ export interface PlanetariumState {
    * a returning ship still points where it was left. Only the ANGLES change
    * basis — `positionAU` is frame-independent. */
   headingBasis?: 'ecliptic';
+  /** POSITION_MODEL when saved by a build that draws today's positions;
+   *  absent on saves from before the fitted ephemeris. */
+  positionModel?: string;
+  /** The body the ship rode with when saved in cruise, so a restore puts it
+   *  back beside that body wherever the body has moved to. */
+  rideAnchor?: RideAnchor;
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** A ride anchor only if every part of it is usable: a named body and a
+ *  finite offset within an AU (the widest ride band is a few hundredths). */
+function sanitizeRideAnchor(raw: unknown): RideAnchor | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const anchor = raw as Record<string, unknown>;
+  if (typeof anchor.body !== 'string' || anchor.body.length === 0 || anchor.body.length > 40) return undefined;
+  if (anchor.parentPlanet !== undefined && typeof anchor.parentPlanet !== 'string') return undefined;
+  const offset = anchor.offsetAU as Record<string, unknown> | undefined;
+  if (!offset || !isFiniteNumber(offset.x) || !isFiniteNumber(offset.y) || !isFiniteNumber(offset.z)) return undefined;
+  if (Math.hypot(offset.x, offset.y, offset.z) > 1) return undefined;
+  return {
+    body: anchor.body,
+    ...(typeof anchor.parentPlanet === 'string' ? { parentPlanet: anchor.parentPlanet } : {}),
+    offsetAU: { x: offset.x, y: offset.y, z: offset.z },
+  };
 }
 
 function sanitizeLandedOn(raw: unknown): LandedTarget {
@@ -252,6 +289,8 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     // apply-time conversion reads. Dropping the field here would re-convert
     // an already-converted save on every load and compound the rotation.
     headingBasis: record.headingBasis === 'ecliptic' ? 'ecliptic' : undefined,
+    positionModel: typeof record.positionModel === 'string' ? record.positionModel : undefined,
+    rideAnchor: sanitizeRideAnchor(record.rideAnchor),
   };
 }
 
@@ -301,6 +340,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     systemSlowdown: true,
     autopilotUserEngaged: false,
     headingBasis: 'ecliptic',
+    positionModel: POSITION_MODEL,
   };
 }
 

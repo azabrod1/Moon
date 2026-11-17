@@ -26,7 +26,8 @@ import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
 import { hazeCacheGpuBytes, sessionHazeCacheWarmup, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
-import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
+import { PlanetariumStore, POSITION_MODEL, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode, type RideAnchor } from './PlanetariumStore';
+import { anchoredShipPositionAU, migrateLegacyJourney, rideAnchorFor } from './saveAnchor';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
 import {
@@ -3526,10 +3527,13 @@ export class PlanetariumMode {
           this.openMap();
         }
       } else if (savedState && shouldPromptForResume) {
-        this.restoreState(savedState);
-        this.deferredResumePromptState = savedState;
+        // A save from before the fitted ephemeris moves with the body it was
+        // beside (saveAnchor.ts); the store's own copy is left as it is.
+        const journey = migrateLegacyJourney(savedState);
+        this.restoreState(journey);
+        this.deferredResumePromptState = journey;
       } else if (savedState) {
-        this.restoreState(savedState);
+        this.restoreState(migrateLegacyJourney(savedState));
       } else {
         this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
         // New users start already gliding, nose on Mercury — motion without a
@@ -22260,6 +22264,11 @@ export class PlanetariumMode {
       // here and back into restoreState, and an unlabeled one would be read
       // as legacy and re-rotate the ship on every tutorial exit or tool return.
       headingBasis: 'ecliptic',
+      // The same for the positions it was saved against, and in cruise the
+      // body the ship rides with (saveAnchor.ts): a restore puts the ship
+      // back beside that body wherever the positions have moved it.
+      positionModel: POSITION_MODEL,
+      rideAnchor: this.captureRideAnchor(),
     };
     return this.journeyForSave(journey);
   }
@@ -22355,6 +22364,21 @@ export class PlanetariumMode {
     if (!persistPreference(setting, value)) this.preferencesPersisted = false;
   }
 
+  /** The body the ship rides with in cruise and its offset from it, for a
+   *  save (saveAnchor.ts); none when landed or riding nothing. */
+  private captureRideAnchor(): RideAnchor | undefined {
+    if (this.landedOn) return undefined;
+    const body = this.ride.dominantKey;
+    if (!body) return undefined;
+    const parentPlanet = MOONS.find((moon) => moon.name === body)?.parentPlanet;
+    return rideAnchorFor(
+      body,
+      parentPlanet,
+      { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
+      this.timeState.currentUtcMs,
+    ) ?? undefined;
+  }
+
   private restoreState(saved: PlanetariumState) {
     // Clear + cut: a restore reposes the whole journey absolutely.
     clearArrivalLook(this.cruiseAim);
@@ -22368,6 +22392,13 @@ export class PlanetariumMode {
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
+    // Saved in cruise beside a body: back beside it, where it is now.
+    const anchoredAU = new THREE.Vector3();
+    if (!saved.landedOn && saved.rideAnchor && anchoredShipPositionAU(saved.rideAnchor, saved.astroTimeUtcMs, anchoredAU)) {
+      this.player.posX = anchoredAU.x;
+      this.player.posY = anchoredAU.y;
+      this.player.posZ = anchoredAU.z;
+    }
     // Saves written before the flight frame moved onto the ecliptic hold
     // scene-equatorial angles; convert at APPLY so the ship still aims at the
     // same world direction (unconverted, a saved close approach would miss

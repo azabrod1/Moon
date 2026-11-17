@@ -367,10 +367,10 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // exist in that form. The planet and Earth rungs that shipped as webps keep
 // their twins — a device with no transcoder must still be able to climb
 // them; an 8K rung cut where none existed (Earth's day map, Jupiter's) ships
-// as the container alone. Everything cut since ships as one file, because a second copy of
-// a map is disk and deploy weight that nothing with a working transcoder
-// fetches, and for the moons it would also be a copy nobody wants: the ETC1S
-// container is already the small one.
+// as the container alone. Everything cut since ships as one file, because a
+// second copy of a map is disk and deploy weight that nothing with a working
+// transcoder fetches, and for the moons it would also be a copy nobody
+// wants: the ETC1S container is already the small one.
 export interface CompressedRung {
   /** Filename under the tier's folder — resolveTextureUrl adds the rest. */
   file: string;
@@ -418,10 +418,11 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   // to target, three hands back RGBA and the rung is charged 170.7 MiB, which
   // the ladder's admission takes or refuses like any other map. Jupiter is a
   // toured planet, and a committed arrival arms its warm goal at the top tier
-  // a full-screen disc earns, so an ordinary arrival may fetch this container
-  // after the 4K, during the glide rather than under the veil — the 8K rung is
-  // approach work (see its trigger gate). That is download traffic the 8K
-  // rule above admits: every 8K UASTC rung is worth its bytes.
+  // a full-screen disc earns, so an ordinary arrival fetches this container
+  // after the 4K. The veil never waits for it — the 8K rung is approach work
+  // (see its trigger gate) — so on a fast link it may land under the veil and
+  // on a slow one during the glide. That is download traffic the 8K rule
+  // above admits: every 8K UASTC rung is worth its bytes.
   jupiter: { '8k': { file: 'jupiter.v2.ktx2', webp: false } },
   // Every photo-moon rung, at both tiers, ships as a container ALONE. These
   // maps encode as ETC1S rather than UASTC — a cratered icy moon is texture at

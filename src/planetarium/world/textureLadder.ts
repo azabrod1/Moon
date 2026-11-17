@@ -109,7 +109,8 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // the Solar System Scope map, which painted haze where the poles are and
   // ran out of real detail at 4K. Boot map and both rungs are cut from it in
   // one run (tools/gen-moonmaps.mjs), rolled so the Great Red Spot stays at
-  // the longitude the old map drew it at, and held at the old map's level.
+  // the longitude the old map drew it at, its own colours strengthened by 30
+  // per cent at unchanged luminance, and held at the old map's level.
   jupiter: 'jupiter.v2.webp',
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',

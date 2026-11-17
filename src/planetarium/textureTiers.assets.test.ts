@@ -111,8 +111,7 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  * each).
  *
  * UASTC for the maps built out of slow gradients — the Moon's maria, the cloud
- * deck's soft edges, Earth's night falloff, and the two planet rungs that
- * cleared the wire cap at that format.
+ * deck's soft edges, Earth's night falloff, and Jupiter's banded clouds.
  *
  * ETC1S for the photo moons, every one of which is cratered texture at every
  * scale, the codebook's best case: measured per body on a 4096x2048 candidate
@@ -131,6 +130,7 @@ const CONTAINER_COLOR_MODEL: Record<string, number> = {
   '8k/earth-day.v2.ktx2': DF_MODEL_UASTC,
   '4k/earth-night.v2.ktx2': DF_MODEL_UASTC,
   '8k/earth-night.v2.ktx2': DF_MODEL_UASTC,
+  '8k/jupiter.v2.ktx2': DF_MODEL_UASTC,
   '4k/enceladus.ktx2': DF_MODEL_ETC1S,
   '4k/mimas.ktx2': DF_MODEL_ETC1S,
   '4k/dione.ktx2': DF_MODEL_ETC1S,
@@ -194,7 +194,13 @@ describe('the files behind the colour ladder', () => {
     // a photo moon's, and its map is grey, so they are ETC1S like theirs. The
     // Moon, the cloud deck and Earth's night lights are the three the boot
     // warm uploads on every session, downloaded once per device rather than
-    // once per tour, and admitted on that basis.
+    // once per tour, and admitted on that basis. Jupiter's 8K is the one
+    // toured planet rung with a container, and the 8K rule is what admits it:
+    // its map is cut from a source whose real detail runs to 8K, and it exists
+    // at that size only as the container (no webp twin). An approach earns it
+    // at half the viewport height; a committed arrival warms it after the 4K,
+    // and the veil waits for the 4K alone. UASTC because a gas giant is slow
+    // gradients.
     //
     // The photo moons are ETC1S, and that bar does not apply to them at all:
     // the container is roughly the webp's size on the wire, so there is no
@@ -214,6 +220,7 @@ describe('the files behind the colour ladder', () => {
       'earthDay 8k: 8k/earth-day.v2.ktx2',
       'earthNight 4k: 4k/earth-night.v2.ktx2',
       'earthNight 8k: 8k/earth-night.v2.ktx2',
+      'jupiter 8k: 8k/jupiter.v2.ktx2',
       'enceladus 4k: 4k/enceladus.ktx2',
       'mimas 4k: 4k/mimas.ktx2',
       'dione 4k: 4k/dione.ktx2',

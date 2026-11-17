@@ -27,8 +27,10 @@
  * is in the ledger from the decode either way (pendingUpgradeBytes,
  * pendingReleaseBytes) — never the one where a body has no map.
  *
- * Then the arrival warm goals (banner: "Arrival warm goals") — the rung a
- * committed arrival is holding its veil for — and last the relief ladder
+ * Then the arrival warm goals (banner: "Arrival warm goals") — the top rung a
+ * committed arrival starts fetching at the jump, so the climb overlaps the
+ * veil and the glide; the veil itself waits only for the first rung — and
+ * last the relief ladder
  * (banner: "The relief ladder"), which is a NormalUpgrade of the same shape
  * with one step, no cover and no arrival semantics.
  *
@@ -105,7 +107,13 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // gen-relief.mjs), replacing the 16 px/deg MOLA grid. Boot map, 4K rung
   // and the 8K sector crops are one pass over one model.
   marsNormal: 'mars-normal.v3.webp',
-  jupiter: 'jupiter.webp',
+  // `.v2`: Björn Jónsson's merged Cassini + Juno map (CC BY 3.0) in place of
+  // the Solar System Scope map, which painted haze where the poles are and
+  // ran out of real detail at 4K. Boot map and both rungs are cut from it in
+  // one run (tools/gen-moonmaps.mjs), rolled so the Great Red Spot stays at
+  // the longitude the old map drew it at, its own colours strengthened by 30
+  // per cent at unchanged luminance, and held at the old map's level.
+  jupiter: 'jupiter.v2.webp',
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',
   neptune: 'neptune.webp',
@@ -247,9 +255,10 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // its grading differs) so the on-approach swap reads as a pure sharpen — no
 // brightness/contrast pop — and never double-counts relief against a normal
 // map. Mars's 4K is its 16K level's own resample (tools/gen-tiles.mjs writes
-// boot map, rung and every tile level from one render), and Jupiter's 4K is
-// the same Solar System Scope product as its boot map (needed no match). The
-// Moon's 4K and 8K
+// boot map, rung and every tile level from one render), and Jupiter's boot
+// map, 4K and 8K are one resample apart of the merged Cassini + Juno map,
+// whose Cassini detail is native to about 21 px/deg — what an 8K map holds and
+// a 4K one visibly does not, so 8K is its top. The Moon's 4K and 8K
 // are both the SVS CGI Moon Kit LROC WAC albedo, colour-matched to the shipped
 // grade via tools/colormatch.mjs — and its relief comes from a separate SVS
 // ldem_16 LOLA normal map, so the albedo carries no baked shading to fight.
@@ -279,7 +288,7 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k', '8k'],
   venus: ['4k'],
   mars: ['4k'],
-  jupiter: ['4k'],
+  jupiter: ['4k', '8k'],
   saturn: ['4k'],
   pluto: ['4k', '8k'],
   moon: ['4k', '8k'],
@@ -358,12 +367,13 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // ABSENT rather than merely expensive: the ladder's top drops to the rung
 // below (or the boot map) instead of fetching a URL that 404s, and the
 // memory arithmetic never charges an uncompressed map for one that does not
-// exist in that form. The planet and Earth rungs keep their twins — those
-// webps already ship and a device with no transcoder must still be able to
-// climb them. Everything cut since ships as one file, because a second copy of
-// a map is disk and deploy weight that nothing with a working transcoder
-// fetches, and for the moons it would also be a copy nobody wants: the ETC1S
-// container is already the small one.
+// exist in that form. The planet and Earth rungs that shipped as webps keep
+// their twins — a device with no transcoder must still be able to climb
+// them; an 8K rung cut where none existed (Earth's day map, Jupiter's) ships
+// as the container alone. Everything cut since ships as one file, because a
+// second copy of a map is disk and deploy weight that nothing with a working
+// transcoder fetches, and for the moons it would also be a copy nobody
+// wants: the ETC1S container is already the small one.
 export interface CompressedRung {
   /** Filename under the tier's folder — resolveTextureUrl adds the rest. */
   file: string;
@@ -404,6 +414,22 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
     '4k': { file: 'earth-night.v2.ktx2', webp: true },
     '8k': { file: 'earth-night.v2.ktx2', webp: false },
   },
+  // Jupiter's 8K exists only as a UASTC container, as Earth's day map does:
+  // nothing else answers a 170.7 MiB upload, and a gas giant is slow
+  // gradients, which ETC1S's shared codebook bands. With no transcoder the
+  // ladder tops out at the 4K webp; with a transcoder but no compressed format
+  // to target, three hands back RGBA and the rung is charged 170.7 MiB, which
+  // the ladder's admission takes or refuses like any other map. Jupiter is a
+  // toured planet, and a committed arrival arms its warm goal at the top tier
+  // a full-screen disc earns, so an ordinary arrival fetches this container
+  // after the 4K. The veil never waits for it — the 8K rung is approach work
+  // (see its trigger gate) — so on a fast link it may land under the veil and
+  // on a slow one during the glide. That is download traffic the 8K rule
+  // above admits: every 8K UASTC rung is worth its bytes. Given back while it
+  // is held compressed, it drops past the 4K webp to the boot map, since the
+  // webp would free nothing (releaseTargetTier); held as RGBA, it drops to
+  // the 4K like any other rung.
+  jupiter: { '8k': { file: 'jupiter.v2.ktx2', webp: false } },
   // Every photo-moon rung, at both tiers, ships as a container ALONE. These
   // maps encode as ETC1S rather than UASTC — a cratered icy moon is texture at
   // every scale, which is the shared codebook's best case, where a slow ramp
@@ -771,6 +797,13 @@ const UPGRADE_TRIGGER_FRACTION_BY_KEY: Record<string, Partial<Record<TextureTier
   io: { '8k': 0.5 },
   europa: { '8k': 0.5 },
   ganymede: { '8k': 0.5 },
+  // Jupiter's 8K, by the same arithmetic one tier up: its 4K map's texels
+  // reach a device pixel on a 2x display only once the disc stands about 0.6
+  // of the viewport tall, so 0.5 is that with fetch lead. At the tier's own
+  // 0.22 a disc the 2K map still serves would pull 42.7 MiB. Its 4K stays the
+  // first rung at the standard gate, so the 4K is still what an arrival's veil
+  // waits on and the 8K never is.
+  jupiter: { '8k': 0.5 },
 };
 
 /** The screen fraction at which `tier` earns its download for `key`. */
@@ -1244,17 +1277,30 @@ export function releaseDue(up: TextureUpgrade, nowMs: number): boolean {
   return nowMs - up.belowBandSinceMs >= releaseDwellMs(up.appliedTier, compressed);
 }
 
-/** The tier a release drops to: one rung down the ladder, or the boot map
- *  every device carries anyway — which is not a member of `tiers`, so the
- *  handle's appliedTier goes back to null and the climb starts from the
- *  bottom rung again. */
+/** The tier a release drops to: the highest rung below the one held whose
+ *  upload is charged at most half of the held rung's, or the boot map every
+ *  device carries anyway — which is not a member of `tiers`, so the handle's
+ *  appliedTier goes back to null and the climb starts from the bottom rung
+ *  again.
+ *
+ *  Within one format a rung costs a quarter of the one above, so this is one
+ *  rung down. Across formats it need not be: Jupiter's 8K is a container above
+ *  a 4K webp, and the webp holds as much as the container transcoded to a byte
+ *  a texel (ASTC, BC7) and twice as much as one transcoded to half a byte
+ *  (ETC2, BC1). A release to that 4K would be a download that frees nothing,
+ *  and planRelease, refusing a release with nothing to gain, would then never
+ *  give the 8K back at all. The charges (tierUploadBytes) are what the
+ *  ladder admitted the rungs on; they price a container at a byte a texel,
+ *  which sends both cases past the webp, and an 8K held as RGBA (no
+ *  compressed format to target) at four, which keeps its usual step. */
 export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
   if (!up.appliedTier) return null;
-  let below: TextureTier | null = null;
-  for (const tier of up.tiers) {
-    if (TIER_RANK[tier] < TIER_RANK[up.appliedTier]) below = tier; // ascending
+  const held = tierUploadBytes(up.key, up.appliedTier);
+  let below: TextureTier = BOOT_TIER;
+  for (const tier of up.tiers) { // ascending
+    if (TIER_RANK[tier] < TIER_RANK[up.appliedTier] && tierUploadBytes(up.key, tier) <= held / 2) below = tier;
   }
-  return below ?? BOOT_TIER;
+  return below;
 }
 
 /** The tier a body's first-paint map is fetched at. */

@@ -3,6 +3,7 @@
 Each generator's header has its steps and prerequisites. Several need `npm i --no-save sharp@0.35.4` first.
 
 - `npm run gen:moons` and `npm run gen:maps`: see CLAUDE.md.
+- `npm run gen:ephemeris`: the fitted ephemeris `public/ephemeris/ephemeris.v1.bin` (every planet and the Moon, 1900 to mid-2100, fitted to JPL Horizons) and its Horizons golden `src/astronomy/ephemeris.goldens.json`. It refuses to write a body that misses its accuracy target. A changed fit ships as `ephemeris.v2.bin`.
 - `npm run gen:stars`: the bright-star catalog `public/stardata/bright-stars.v1.bin` and its golden. `npm run gen:constellations`: `src/planetarium/data/constellations.ts`.
 - `npm run gen:moonmaps`: photo maps for the procedural moons (`tools/gen-moonmaps.mjs`).
 - `npm run gen:moon-relief -- [--width=8128 --tier=8k --exaggeration=1.39]`: the Moon's relief map in physical units from NASA's 64 px/deg LOLA grid (`.moon-data-cache/ldem_64_uint.tif`, fetched by hand from svs.gsfc.nasa.gov/4720), for gen-tiles' `moon-normal/8k` crop.

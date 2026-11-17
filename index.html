@@ -6164,6 +6164,12 @@
       var starRequest = fetch(starUrl);
       starRequest.catch(function () {});
       warm.set(starUrl, starRequest);
+      // Then the ephemeris (1.8MB): every body's position comes from it, and
+      // the solar-system build waits for it.
+      var ephemerisUrl = '%BASE_URL%ephemeris/ephemeris.v1.bin';
+      var ephemerisRequest = fetch(ephemerisUrl);
+      ephemerisRequest.catch(function () {});
+      warm.set(ephemerisUrl, ephemerisRequest);
       for (var i = 0; i < files.length; i++) {
         var url = '%BASE_URL%textures/' + files[i];
         var request = fetch(url);

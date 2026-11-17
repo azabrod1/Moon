@@ -125,6 +125,7 @@ import {
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
+import { loadFittedEphemeris } from './planetarium/world/ephemerisLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
 import { onFullscreenChange } from './app/fullscreen';
@@ -4509,6 +4510,9 @@ async function init() {
   // promise (and surfaces the real error — this kick must not double-report,
   // and an unguarded early rejection would leak as unhandled).
   loadBrightStarCatalog().catch(() => {});
+  // The ephemeris the same way: every position comes from it, and the
+  // solar-system build waits for it (its loader never rejects).
+  void loadFittedEphemeris();
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
   // days-old bundles while looking current). It rides with the debug overlay

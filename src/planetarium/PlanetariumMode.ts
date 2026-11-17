@@ -57,6 +57,7 @@ import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { parseGroundCullParam } from './world/groundCull';
 import { onPerfSwitch } from '../app/perfSwitches';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
+import { loadFittedEphemeris } from './world/ephemerisLoader';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -3376,6 +3377,11 @@ export class PlanetariumMode {
         if (this.cloudFieldStart) await this.cloudFieldStart;
         performance.mark('plm:solar-system:start');
         try {
+          // Every body's position comes from the fitted ephemeris, and the
+          // build below samples the orbit lines from those positions, so it
+          // waits for the file (main.ts kicked the load at init; the loader
+          // never rejects, falling back to the analytic models instead).
+          await loadFittedEphemeris();
           // The star catalog rides the same gate as the solar system: awaiting
           // it HERE (not later, next to the starfield build) keeps the star data
           // in place before anything draws with it. main.ts kicked the load at

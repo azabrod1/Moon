@@ -254,6 +254,11 @@ const PLUTO_RAMP = ramp([
 ]);
 const PLUTO_CAP = [42, 38, 34];
 
+/** Under this a pixel counts as unmeasured unless a job says otherwise. */
+const NO_DATA_BELOW = 12;
+/** What a job with no noData of its own gets — see runJob. */
+const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
+
 /**
  * The Cassini mosaics of Enceladus, Dione and Tethys mark NoData as exactly 0
  * (their GDAL_NODATA tag says so), and every value from 1 up is a sample.
@@ -279,11 +284,14 @@ const PLUTO_CAP = [42, 38, 34];
  * the `<body>-4k` ones the shipped .ktx2 files under the old names were cut
  * from, and gen-ktx2 on a branch without this rule still reproduces those.
  *
- * `levelSolveBelow` keeps the level solve on the pixels it always used: a
- * shadow is lighting, not albedo, and a gain solved with the shadows in it
- * would brighten every lit pixel to pay for them.
+ * `levelSolveBelow` keeps the level solve on the pixels it always used, the
+ * default rule's (NO_DATA_BELOW): a shadow is lighting, not albedo, and a gain
+ * solved with the shadows in it would brighten every lit pixel to pay for
+ * them.
  */
-const SHADOW_HOLES = { rimBelow: 60, levelSolveBelow: 12 };
+const SHADOW_HOLES = { rimBelow: 60, levelSolveBelow: NO_DATA_BELOW };
+/** The noData rule of the three: 0 alone is unmeasured, and shadow holes. */
+const SHADOW_NO_DATA = { ...DEFAULT_NO_DATA, below: 1, shadowHoles: SHADOW_HOLES };
 
 // ---------------------------------------------------------------------------
 // Jobs
@@ -365,7 +373,7 @@ const JOBS = {
     colour: gains([0.98, 0.99, 1.0], [1.0, 1.0, 1.0]),
     level: { albedo: 1.04 },
     // Shadows are measurements here: see SHADOW_HOLES.
-    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
+    noData: SHADOW_NO_DATA,
   },
   mimas: {
     src: 'PIA17214_Mimas_global_map_2017.tif',
@@ -380,7 +388,7 @@ const JOBS = {
     rungs: [{ width: 8192, name: 'dione-v2-8k' }, { width: 4096, name: 'dione-v2-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
     level: { albedo: 0.6 },
-    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
+    noData: SHADOW_NO_DATA,
   },
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
@@ -388,7 +396,7 @@ const JOBS = {
     rungs: [{ width: 8192, name: 'tethys-v2-8k' }, { width: 4096, name: 'tethys-v2-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
     level: { albedo: 0.8 },
-    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
+    noData: SHADOW_NO_DATA,
   },
   rhea: {
     src: 'Rhea_Cassini_Voyager_mosaic_global_417m.tif',
@@ -1139,26 +1147,34 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
  * the valid samples 4-adjacent to it. A blob is a shadow hole when the rim's
  * mean is under `spec.rimBelow` and it touches neither the first nor the last
  * row (SHADOW_HOLES); those are filled in `grey`, from their own rim by
- * inverse squared distance and never brighter than the rim's mean, and taken
- * out of `mask`. Everything else stays masked for the fill. Flood-filled over
- * the zeros alone, which are a fraction of a per cent of a map.
+ * inverse squared distance, and taken out of `mask`. Everything else stays
+ * masked for the fill. Flood-filled over the zeros alone, which are a
+ * fraction of a per cent of a map, marking `mask` itself as it goes (2 while
+ * a blob is flooded, 3 for a gap until the end) rather than a second array
+ * the map's size.
+ *
+ * A hole is never filled brighter than its rim's mean, and that is the whole
+ * of the guard: the cap is applied here, at source resolution, so nothing
+ * downstream has to hold a fill to its edges. A polar hole or a long seam is
+ * never a hole (it touches an edge row, or its rim is bright), so neither is
+ * ever capped; the terrain fill takes them.
  */
 function fillShadowHoles(grey, mask, W, H, spec) {
   const holes = [];
   const gaps = [];
+  const gapPx = [];
   const filled = [];
-  const seen = new Uint8Array(W * H);
   const stack = [];
   // A rim of a few thousand samples weighs no differently from a few hundred
   // of them evenly spread, and the fill is the rim's count times the hole's.
   const RIM_SAMPLES = 512;
   for (let s0 = 0; s0 < W * H; s0++) {
-    if (!mask[s0] || seen[s0]) continue;
+    if (mask[s0] !== 1) continue;
     const px = [];
     const rim = new Set();
     let edgeRow = false;
     let x0 = W, x1 = 0, y0 = H, y1 = 0;
-    seen[s0] = 1;
+    mask[s0] = 2;
     stack.push(s0);
     while (stack.length) {
       const i = stack.pop();
@@ -1174,7 +1190,7 @@ function fillShadowHoles(grey, mask, W, H, spec) {
           if (!dx && !dy) continue;
           const j = yy * W + ((x + dx + W) % W);
           if (mask[j]) {
-            if (!seen[j]) { seen[j] = 1; stack.push(j); }
+            if (mask[j] === 1) { mask[j] = 2; stack.push(j); }
           } else if (dx === 0 || dy === 0) {
             rim.add(j);
           }
@@ -1187,6 +1203,8 @@ function fillShadowHoles(grey, mask, W, H, spec) {
     const blob = { area: px.length, rim: rimMean, edgeRow, x0, x1, y0, y1 };
     if (edgeRow || !rim.size || rimMean >= spec.rimBelow) {
       gaps.push(blob);
+      for (const i of px) mask[i] = 3;
+      gapPx.push(px);
       continue;
     }
     holes.push(blob);
@@ -1219,6 +1237,7 @@ function fillShadowHoles(grey, mask, W, H, spec) {
       filled.push(i);
     }
   }
+  for (const px of gapPx) for (const i of px) mask[i] = 1;
   return { holes, gaps, filled };
 }
 
@@ -1586,36 +1605,6 @@ async function fillNoData(ras, mask, spec) {
     last = -1;
     for (let y = H - 1; y >= 0; y--) { if (!mask[y * W + x]) last = y; down[y * W + x] = last; }
   }
-  // Where shadows are measurements (SHADOW_HOLES), a guard on what is left to
-  // fill: the nearest valid column either side as well, wrapping in x, so a
-  // hole enclosed on all four sides within the seam can be held to the
-  // darkest of its four edges. The classification at source resolution does
-  // the work; this only stops a fill that a resample left enclosed by dark
-  // ground from coming out brighter than that ground. A polar hole has no
-  // edge on one side and a long seam none within reach along it, so neither
-  // is ever held.
-  let left = null;
-  let right = null;
-  if (spec.shadowHoles) {
-    left = new Int32Array(W * H);
-    right = new Int32Array(W * H);
-    for (let y = 0; y < H; y++) {
-      const row = y * W;
-      let last = -1;
-      for (let k = 0; k < 2 * W; k++) {
-        const x = k % W;
-        if (!mask[row + x]) last = x;
-        if (k >= W) left[row + x] = last;
-      }
-      last = -1;
-      for (let k = 2 * W - 1; k >= 0; k--) {
-        const x = k % W;
-        if (!mask[row + x]) last = x;
-        if (k < W) right[row + x] = last;
-      }
-    }
-  }
-  const lumAt = (j) => REC709[0] * ras.data[j * 3] + REC709[1] * ras.data[j * 3 + 1] + REC709[2] * ras.data[j * 3 + 2];
 
   // The row the reflection mirrors about, smoothed along longitude where a
   // body asks for it. Each column still reflects across its OWN data edge —
@@ -1730,7 +1719,6 @@ async function fillNoData(ras, mask, spec) {
   // half-imaged moons were cut and where they stay: at the full amplitude the
   // fill reads as a rougher surface than the one it continues from.
   const grainGain = spec.matchTexture ? 3.0 / NOISE_AMP_PER_SIGMA : 0.35;
-  let held = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
@@ -1738,19 +1726,6 @@ async function fillNoData(ras, mask, spec) {
       const t = seam > 0 ? Math.min(1, dist[i] / seam) : 1;
       const w = t * t * (3 - 2 * t);
       const grain = grainAt(x, y);
-      // The darkest of the four edges, when all four are within the seam.
-      let rimLum = Infinity;
-      if (left) {
-        const u = up[i];
-        const d = down[i];
-        const l = left[i];
-        const r = right[i];
-        const across = (a) => Math.min(Math.abs(x - a), W - Math.abs(x - a));
-        if (u >= 0 && d >= 0 && l >= 0 && r >= 0 && y - u <= seam && d - y <= seam
-          && across(l) <= seam && across(r) <= seam) {
-          rimLum = Math.min(lumAt(u * W + x), lumAt(d * W + x), lumAt(y * W + l), lumAt(y * W + r));
-        }
-      }
       for (let c = 0; c < 3; c++) {
         const sharpV = ras.data[i * 3 + c];
         const softV = soft[i * 3 + c];
@@ -1764,17 +1739,9 @@ async function fillNoData(ras, mask, spec) {
         const v = sharpV * (1 - w) + (softV * (1 - w) + far * w) * w;
         ras.data[i * 3 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
       }
-      if (rimLum < Infinity) {
-        const lum = lumAt(i);
-        if (lum > rimLum) {
-          const k = rimLum / lum;
-          for (let c = 0; c < 3; c++) ras.data[i * 3 + c] = Math.floor(ras.data[i * 3 + c] * k);
-          held++;
-        }
-      }
     }
   }
-  return { mean, std, octaves, held };
+  return { mean, std, octaves };
 }
 
 // ---------------------------------------------------------------------------
@@ -1800,6 +1767,30 @@ async function writeRung(ras, name) {
   console.log(`  ${path.relative(CACHE, out).padEnd(24)} ${ras.width}x${ras.height} ${(size / 1e6).toFixed(1)} MB (for gen-ktx2)`);
 }
 
+/**
+ * The passes before the level, in runJob's order: `colour`, `saturation`,
+ * `localContrast`. `report` says the saturation's clamp share and refuses one
+ * that would shift hues; the level solve's own copy of the picture runs them
+ * quietly.
+ */
+function preLevel(bare, job, report) {
+  const ras = colourise(bare, job);
+  if (job.saturation !== undefined) {
+    const { clampedShare } = saturate(ras, job.saturation);
+    if (report) {
+      console.log(`  saturation x${job.saturation}: ${(100 * clampedShare).toFixed(4)}% of channel values clamped`);
+      if (clampedShare > 0.001) {
+        throw new Error(`saturation x${job.saturation} clamps ${(100 * clampedShare).toFixed(3)}% of channel values, over the 0.1% that leaves hues alone`);
+      }
+    }
+  }
+  // Before the level, not after: an unsharp overshoots on a bright rim, and
+  // the level's shoulder is the thing in this pipeline that catches an
+  // overshoot without cutting it off.
+  if (job.localContrast) localContrast(ras, job.localContrast);
+  return ras;
+}
+
 async function runJob(name) {
   const job = JOBS[name];
   const t0 = Date.now();
@@ -1816,7 +1807,7 @@ async function runJob(name) {
   // and a black pixel on a lit globe reads as a hole. The default policy
   // reflects the neighbouring surface across the gap, which for a seam or a
   // polar sliver is invisible; the bodies with a hemisphere missing say so.
-  const nd = job.noData ?? { below: 12, mode: 'texture', seam: 0.03 };
+  const nd = job.noData ?? DEFAULT_NO_DATA;
   const src = await sourceRaster(file, entry, nd, job, left);
   console.log(`  left edge ${left} E`);
   const targets = [...(job.outputs ?? []).map((o) => ({ ...o, kind: 'map' })),
@@ -1832,28 +1823,16 @@ async function runJob(name) {
       // A source that keeps its shadows measured (noData.shadowHoles) still
       // solves its gain on the pixels every other job's would: the same
       // raster with the old mask, under which a shadow is not albedo. The
-      // pixels it then levels are its own.
+      // pixels it then levels are its own. Solved once, so the old-mask copy
+      // goes now rather than with the job (531 MB of it on Dione).
       const solved = splitAlpha(await resampleToTarget(src.levelSource, target.width, left));
-      const probe = colourise(solved.ras, job);
-      if (job.saturation !== undefined) saturate(probe, job.saturation);
-      if (job.localContrast) localContrast(probe, job.localContrast);
-      levelGain = applyLevel(probe, solved.mask, job.level).gain;
+      src.levelSource = undefined;
+      levelGain = applyLevel(preLevel(solved.ras, job, false), solved.mask, job.level).gain;
       console.log(`  level solved on the mask without the shadows: gain ${levelGain.toFixed(6)}`);
     }
     const resampled = await resampleToTarget(src, target.width, left);
     const { ras: bare, mask, fraction } = splitAlpha(resampled);
-    let ras = colourise(bare, job);
-    if (job.saturation !== undefined) {
-      const { clampedShare } = saturate(ras, job.saturation);
-      console.log(`  saturation x${job.saturation}: ${(100 * clampedShare).toFixed(4)}% of channel values clamped`);
-      if (clampedShare > 0.001) {
-        throw new Error(`saturation x${job.saturation} clamps ${(100 * clampedShare).toFixed(3)}% of channel values, over the 0.1% that leaves hues alone`);
-      }
-    }
-    // Before the level, not after: an unsharp overshoots on a bright rim, and
-    // the level's shoulder is the thing in this pipeline that catches an
-    // overshoot without cutting it off.
-    if (job.localContrast) localContrast(ras, job.localContrast);
+    let ras = preLevel(bare, job, true);
     if (job.level) {
       const lv = applyLevel(ras, mask, job.level, levelGain);
       levelGain = lv.gain;
@@ -1864,9 +1843,8 @@ async function runJob(name) {
         + `; gain ${lv.gain.toFixed(6)}, ${lv.shouldered === null ? 'plain (no shoulder)' : `shoulder from ${lv.shouldered}`}`);
     }
     if (fraction > 0) {
-      const { mean, std, octaves, held } = await fillNoData(ras, mask, nd);
-      console.log(`  ${(100 * fraction).toFixed(2)}% no data -> ${nd.mode} fill (measured mean ${mean.toFixed(1)} std ${std.toFixed(1)}, seam ${(100 * (nd.seam ?? 0)).toFixed(0)}% of height)`
-        + `${nd.shadowHoles ? `; ${held} filled px held to their darkest edge` : ''}`);
+      const { mean, std, octaves } = await fillNoData(ras, mask, nd);
+      console.log(`  ${(100 * fraction).toFixed(2)}% no data -> ${nd.mode} fill (measured mean ${mean.toFixed(1)} std ${std.toFixed(1)}, seam ${(100 * (nd.seam ?? 0)).toFixed(0)}% of height)`);
       if (octaves) {
         console.log(`  matched grain: ${octaves.map((o) => `${o.cell.toFixed(0)}px +-${(o.amp / 2).toFixed(1)}`).join(', ')}`);
       }

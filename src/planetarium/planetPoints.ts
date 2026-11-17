@@ -158,10 +158,12 @@ export function planetPointVisual(
  * The light a planet's point must show for the surface view to print its
  * name: vertex alpha (after the telescope gain and the Sun's glare mask)
  * times brightness. A name beside nothing reads as a bug: Neptune at
- * magnitude 7.8 is a one-pixel point of 0.10 in a 45° field and 0.18 at 10°,
- * and inside the Sun's veil it is gone.
+ * magnitude 7.8 is a one-pixel speck at the bottom of the star field (0.10
+ * in a 45° field, 0.18 at 10°) and goes unnamed; Uranus at 5.7 (about 0.29)
+ * keeps its name. A planet too faint to name is still in the Look-at menu,
+ * and the HUD names the one it tracks.
  */
-export const PLANET_LABEL_MIN_LIGHT = 0.15;
+export const PLANET_LABEL_MIN_LIGHT = 0.22;
 
 /** Rec.709 luminance of an RGB triple. */
 export function rec709Luminance(red: number, green: number, blue: number): number {

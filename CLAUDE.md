@@ -7,6 +7,7 @@
 ```bash
 npm run build              # type-check and build; unused variables fail the build
 npx vitest run --dir src   # run the tests (plain `npm test` also runs the copies in planning/ worktrees)
+npm run test:tools         # the map generators' own tests; CI runs them only when tools/ changes
 npm run gen:moons          # refresh moon orbits and test data from JPL
 npm run gen:maps           # rebuild the derived texture maps
 ```

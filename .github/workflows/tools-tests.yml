@@ -1,0 +1,48 @@
+name: Generator tests
+
+# tools/*.test.ts: the map generators' own tests. The code they check never
+# ships — tools/gen-moonmaps.mjs is the only importer of tools/surfaceGrain.mjs,
+# and the maps it writes are committed — and the suite takes most of a minute,
+# so it runs when that code changes, beside the deploy instead of in front of
+# it. A generator test that pins something the app reads stays in src/, where
+# the deploy runs it (see docs/testing.md).
+
+on:
+  push:
+    paths:
+      - 'tools/surfaceGrain.*'
+      - 'tools/gen-moonmaps.mjs'
+      - 'tools/*.test.ts'
+      - 'package-lock.json'
+      - '.github/workflows/tools-tests.yml'
+  pull_request:
+    paths:
+      - 'tools/surfaceGrain.*'
+      - 'tools/gen-moonmaps.mjs'
+      - 'tools/*.test.ts'
+      - 'package-lock.json'
+      - '.github/workflows/tools-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tools-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      # As in deploy.yml: no dependency's install script runs, and the one
+      # script this repo needs, its own patch, is applied by name.
+      - run: npm ci --ignore-scripts
+      - run: npx patch-package
+      - run: npx tsc
+      - run: npm run test:tools

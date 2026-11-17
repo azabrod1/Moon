@@ -11,15 +11,17 @@
  *    exactly fills its share would sit there refusing every new rung forever.
  *    The tiles' demand counts too, on a latch of its own: a set the streamer
  *    wants that does not fit what the maps leave it, but would fit if they
- *    left it everything (SectorStreamer.tilesShortFor). The ladder's share
- *    is the envelope less the tiles' FLOOR, so it can sit inside that share
- *    and still hold the tiles under their working set, with nothing else to
- *    give a map back for them. Kept apart from the ladder's own pressure for
- *    two reasons. It may take less: only a rung whose release lands on a
- *    compressed container (the caller's filter; why, at textureLadder's
- *    landsCompressed). And it stays out of `pressureSinceMs`, which is also
- *    what cuts a committed arrival's warm goals short: tiles short at Earth
- *    must not end Earth's own climb.
+ *    left it everything (SectorStreamer.tilesShortfallFor), and short by no
+ *    more than the releases it may ask for would free (tilesShortCovered),
+ *    since a set no release admits is not one to strip far maps for. The
+ *    ladder's share is the envelope less the tiles' FLOOR, so it can sit
+ *    inside that share and still hold the tiles under their working set, with
+ *    nothing else to give a map back for them. Kept apart from the ladder's
+ *    own pressure for two reasons. It may take less: only a rung whose
+ *    release lands on a compressed container (the caller's filter; why, at
+ *    textureLadder's landsCompressed). And it stays out of `pressureSinceMs`,
+ *    which is also what cuts a committed arrival's warm goals short: tiles
+ *    short at Earth must not end Earth's own climb.
  *
  *    The tiles' latch has three rules of its own, because the tiles answer
  *    once a frame, after this pass has run. A "short" is acted on only while
@@ -63,10 +65,11 @@ export interface LadderPressureState {
   swapInFlight: boolean;
   /** A rung is waiting to fetch back the map a lost context took. */
   restoreQueued: boolean;
-  /** The tiles want a set the maps leave no room for and an empty ladder
-   *  would (SectorStreamer.tilesShortFor), or null when that answer was taken
-   *  against other globe-map bytes than the ladder holds now — a swap landed,
-   *  a rung applied — and says nothing about this ledger. */
+  /** The tiles want a set the maps leave no room for, an empty ladder would,
+   *  and the releases they may ask for would cover (tilesShortCovered); or
+   *  null when the streamer's answer was taken against another envelope than
+   *  now — a swap landed, a rung applied, the floor or the fixed reservations
+   *  moved — and says nothing about this one. */
   tilesShort: boolean | null;
   /** When the tiles first came up short, or null while they are not. */
   tilesShortSinceMs: number | null;
@@ -118,4 +121,30 @@ export function planLadderPressure(state: LadderPressureState): LadderPressurePl
     tilesShortSinceMs,
     tilesReleaseDue: tilesServed && !state.swapInFlight && !releaseDue,
   };
+}
+
+/**
+ * Whether the tiles are short in a way a release can answer: `shortfallBytes`
+ * is what the smallest set they want is short of (SectorStreamer
+ * .tilesShortfallFor: 0 when not short, null when that answer was taken
+ * against another ledger), and `releasableBytes` what every release the tiles
+ * may ask for would free between them. A tiles-only release takes containers
+ * only, 32 MiB a far 8K at most and 16 on a half-byte format, so a set bigger
+ * than all of that together is one no release admits: stripping every far
+ * map for it would buy the tiles nothing.
+ */
+export function tilesShortCovered(shortfallBytes: number | null, releasableBytes: number): boolean | null {
+  if (shortfallBytes === null) return null;
+  return shortfallBytes > 0 && releasableBytes >= shortfallBytes;
+}
+
+/**
+ * Whether any rung a body is earning is blocked by the ledger. Asked only
+ * when the ladder is within its share: over it, the pass is under pressure
+ * already, and each ask walks the whole ladder.
+ */
+export function anyDemandBlocked<T>(overShare: boolean, wants: readonly T[], blocked: (want: T) => boolean): boolean {
+  if (overShare) return false;
+  for (const want of wants) if (blocked(want)) return true;
+  return false;
 }

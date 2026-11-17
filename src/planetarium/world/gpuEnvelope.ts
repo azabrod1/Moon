@@ -467,8 +467,8 @@ export function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
 //
 // Above the floor the maps come first and the tiles take what is left, which
 // after a long tour can be less than the tiles' working set. What gives it
-// back is the ladder's release pass: the streamer says when the maps are what
-// it is short of (SectorStreamer.tilesShortFor), and the pass hands back far
+// back is the ladder's release pass: the streamer says how much the maps leave
+// it short of (SectorStreamer.tilesShortfallFor), and the pass hands back far
 // rungs whose release lands on a compressed container, farthest first, until
 // the tiles hold their working set or nothing is left that may go
 // (world/ladderPressure).
@@ -665,16 +665,32 @@ export interface ReleaseCandidate {
  */
 export function planRelease(
   candidates: readonly ReleaseCandidate[],
-  ctx: { ladderBytes: number; envelopeBytes: number; containersOnly?: boolean },
+  ctx: ReleaseContext,
 ): ReleaseCandidate | null {
   let best: ReleaseCandidate | null = null;
   for (const c of candidates) {
-    if (ctx.containersOnly && !c.lowIsContainer) continue;
-    if (c.heldBytes <= c.lowBytes) continue; // nothing to gain
-    if (ctx.ladderBytes + c.lowBytes > ctx.envelopeBytes) continue;
+    if (!releaseFits(c, ctx)) continue;
     if (!best || c.distance > best.distance) best = c;
   }
   return best;
+}
+
+/** What a release is planned against: the ladder's bytes now, the envelope
+ *  less its fixed reservations, and whether only a container may be taken. */
+export interface ReleaseContext {
+  ladderBytes: number;
+  envelopeBytes: number;
+  containersOnly?: boolean;
+}
+
+/** Whether this candidate may be released at all, whichever one is chosen:
+ *  it drops to a container where only those may go, it frees something, and
+ *  the transient of both maps fits the envelope. The planner's filter, and
+ *  the one a restore entry's hand-back passes too. */
+export function releaseFits(c: ReleaseCandidate, ctx: ReleaseContext): boolean {
+  if (ctx.containersOnly && !c.lowIsContainer) return false;
+  if (c.heldBytes <= c.lowBytes) return false; // nothing to gain
+  return ctx.ladderBytes + c.lowBytes <= ctx.envelopeBytes;
 }
 
 /** Software rasterisers, which deserve the smallest of everything. Matched

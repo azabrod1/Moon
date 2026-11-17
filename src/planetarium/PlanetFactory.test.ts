@@ -63,7 +63,10 @@ import {
   releaseCandidate,
   releaseOffer,
   SwapSlot,
+  RELEASE_ABANDON_MARGIN,
+  abandonDiscretionaryRelease,
   abandonReleaseWithoutReason,
+  handBackFor,
   releaseTargetTier,
   releaseUpgradeSource,
   startTierRelease,
@@ -94,7 +97,7 @@ import {
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
-import { ladderCeilingBytes, planRelease, sectorBudgetBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { ladderCeilingBytes, planRelease, sectorBudgetBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE, type ReleaseCandidate } from './world/gpuEnvelope';
 import { cloudFieldPoolBytes } from './world/cloudField';
 import { GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
@@ -2853,10 +2856,10 @@ describe('what a release puts on the material', () => {
     trackReleaseBand(up, 0, 0);
     expect(startTierRelease(up, 1_000)).toBe(true);
     // Far and unguarded, the reason it was started still holds.
-    expect(abandonReleaseWithoutReason(up, false)).toBe(false);
+    expect(abandonReleaseWithoutReason(up, false, 0)).toBe(false);
     expect(up.release).toBeDefined();
     // Then the autopilot picks it, or the ship commits to it.
-    expect(abandonReleaseWithoutReason(up, true)).toBe(true);
+    expect(abandonReleaseWithoutReason(up, true, 0)).toBe(true);
     expect(up.release).toBeUndefined();
     pending[0].onLoad(new THREE.Texture());
     await settleRungUpload();
@@ -2870,7 +2873,7 @@ describe('what a release puts on the material', () => {
     trackReleaseBand(up, 0, 0);
     startTierRelease(up, 1_000);
     trackReleaseBand(up, 1, 2_000); // the approach brings it back to fill the view
-    expect(abandonReleaseWithoutReason(up, false)).toBe(true);
+    expect(abandonReleaseWithoutReason(up, false, 1)).toBe(true);
     pending[0].onLoad(new THREE.Texture());
     await settleRungUpload();
     expect(up.material.map).toBe(high);
@@ -2886,7 +2889,7 @@ describe('what a release puts on the material', () => {
     const wasDisposed = watchDispose(low);
     pending[0].onLoad(low); // decoded, and waiting in the warm queue for its upload
     expect(up.pendingReleaseBytes).toBeGreaterThan(0);
-    expect(abandonReleaseWithoutReason(up, true)).toBe(true);
+    expect(abandonReleaseWithoutReason(up, true, 0)).toBe(true);
     expect(wasDisposed()).toBe(true);
     expect(up.pendingReleaseBytes).toBeUndefined();
     await settleRungUpload();
@@ -2935,7 +2938,7 @@ describe('what a release puts on the material', () => {
       slot.start(up, 'tiles', 3_000);
       let before = ledger;
       trackReleaseBand(up, 1, 3_100);
-      expect(abandonReleaseWithoutReason(up, false)).toBe(true);
+      expect(abandonReleaseWithoutReason(up, false, 1)).toBe(true);
       expect(slot.inFlight).toBeNull();
       expect(slot.takeEnded()).toBe(true);
       expect(ledger).toBe(before + 1);
@@ -2973,7 +2976,7 @@ describe('what a release puts on the material', () => {
       expect(slot.takeEnded()).toBe(false);
       // The next one is necessary whatever the view does...
       expect(slot.startRestore(undefined, 1_000)).toBe(true);
-      expect(abandonReleaseWithoutReason(b.up, true)).toBe(false);
+      expect(abandonReleaseWithoutReason(b.up, true, 0)).toBe(false);
       // ...but a teleport may cut it short: to the FRONT, since its body is
       // the one the player is heading for.
       cancelTierRelease(b.up);
@@ -2982,10 +2985,10 @@ describe('what a release puts on the material', () => {
       // A hand-back the tiles asked for is a release like any other: its body
       // growing back on screen abandons it, it goes to the front, and the
       // tiles' dwell restarts.
-      expect(slot.startRestore((up) => up === b.up, 1_000)).toBe(true);
+      expect(slot.startRestore((up) => (up === b.up ? 'tiles' : null), 1_000)).toBe(true);
       expect(b.up.release?.reason).toBe('tiles');
       trackReleaseBand(b.up, 1, 1_100);
-      expect(abandonReleaseWithoutReason(b.up, false)).toBe(true);
+      expect(abandonReleaseWithoutReason(b.up, false, 1)).toBe(true);
       expect(slot.restores.entries).toEqual([b, a]);
       expect(slot.takeEnded()).toBe(true);
     } finally {
@@ -3026,15 +3029,16 @@ describe('what a release puts on the material', () => {
       bindTierAdmission(() => 'refuse');
       expect(slot.startRestore(undefined, 1_000)).toBe(true);
       expect(entry.up.release?.reason).toBe('neverFits');
-      expect(abandonReleaseWithoutReason(entry.up, true)).toBe(false);
+      expect(abandonReleaseWithoutReason(entry.up, true, 0)).toBe(false);
       pending[0].onError(new Error('offline'));
       await settleRungUpload();
       expect(entry.up.material.map).toBe(entry.tex); // still on the stand-in
       expect(slot.restores.entries).toEqual([entry]);
-      // It waits out the handle's cooldown, then is asked again.
+      // It waits out its own cooldown, then is asked again.
+      const retryAtMs = slot.restores.entries[0].retryAtMs!;
       expect(slot.startRestore(undefined, 1_001)).toBe(false);
       expect(slot.restores.length).toBe(1);
-      expect(slot.startRestore(undefined, entry.up.releaseRetryAtMs!)).toBe(true);
+      expect(slot.startRestore(undefined, retryAtMs)).toBe(true);
       // An entry whose body has a real map again is answered, not re-queued.
       entry.up.material.map = mapTexture(4096);
       pending[1].onError(new Error('offline'));
@@ -3044,6 +3048,117 @@ describe('what a release puts on the material', () => {
       bindTierAdmission(null);
       warn.mockRestore();
     }
+  });
+
+  it('lets a teleport cut short only a swap given back by choice', () => {
+    for (const [reason, cut] of [['pressure', true], ['tiles', true], ['restore', false], ['neverFits', false]] as const) {
+      const up = onFourK();
+      expect(startTierRelease(up, 1_000, { reason }), reason).toBe(true);
+      expect(abandonDiscretionaryRelease(up), reason).toBe(cut);
+      expect(up.release === undefined, reason).toBe(cut);
+    }
+  });
+
+  it('abandons a swap for its body only once the body is clearly back past its band', () => {
+    const up = onFourK();
+    trackReleaseBand(up, 0, 0);
+    startTierRelease(up, 1_000);
+    const band = releaseBandFraction(up.key, '4k');
+    // Just over the band is inside the slack of the overestimate it is read
+    // with: a body parked there would start and abandon a release every dwell.
+    expect(abandonReleaseWithoutReason(up, false, band * 1.1)).toBe(false);
+    expect(up.release).toBeDefined();
+    expect(abandonReleaseWithoutReason(up, false, band * RELEASE_ABANDON_MARGIN * 1.01)).toBe(true);
+  });
+
+  it('keeps the slot while an abandoned container transfer, which cannot be aborted, is in the air', async () => {
+    const transfers: Array<(t: THREE.Texture) => void> = [];
+    bindKtx2TierLoader((_url, onLoad) => { transfers.push(onLoad); }, true);
+    try {
+      withMaxTextureSize(16384);
+      const slot = new SwapSlot({ onLedgerChange: () => {} });
+      const up = ladderHandle('dione');
+      up.appliedTier = '8k';
+      up.material.map = rungTexture('dione', '8k');
+      trackReleaseBand(up, 0, 0);
+      expect(slot.start(up, 'tiles', 1_000)).toBe(true);
+      expect(transfers).toHaveLength(1); // the 4K container
+      // The player turns to it before the transfer lands.
+      expect(abandonReleaseWithoutReason(up, true, 0)).toBe(true);
+      expect(slot.inFlight).toBeNull();
+      // The transfer and its transcode are still coming: nothing else starts.
+      expect(slot.busy(1_000)).toBe(true);
+      const other = onFourK();
+      trackReleaseBand(other, 0, 0);
+      expect(slot.start(other, 'pressure', 1_000)).toBe(false);
+      // It lands, is disposed unapplied, and the slot is free.
+      const late = new THREE.Texture();
+      const wasDisposed = watchDispose(late);
+      transfers[0](late);
+      expect(wasDisposed()).toBe(true);
+      expect(up.material.map).not.toBe(late);
+      expect(slot.busy(1_000)).toBe(false);
+    } finally {
+      bindKtx2TierLoader(null);
+    }
+  });
+
+  it('frees the slot at once for an abandoned transfer that can be aborted', () => {
+    const slot = new SwapSlot({ onLedgerChange: () => {} });
+    const up = onFourK();
+    trackReleaseBand(up, 0, 0);
+    slot.start(up, 'pressure', 1_000); // a webp, through an abortable fetch
+    expect(abandonReleaseWithoutReason(up, true, 0)).toBe(true);
+    expect(slot.busy(1_000)).toBe(false);
+  });
+
+  it('restores a stand-in whatever release cooldown an unrelated swap left on its handle', () => {
+    try {
+      const entry = onStandin('moon');
+      bindTierAdmission(() => 'admit');
+      // A planned release of this handle failed or hung: minutes of cooldown,
+      // which is the planner's, not the restore's.
+      entry.up.releaseRetryAtMs = 300_000;
+      expect(took(takeRestoreRefetch([entry], undefined, 1_000))).toEqual({ up: entry.up, reason: 'restore' });
+    } finally {
+      bindTierAdmission(null);
+    }
+  });
+
+  it('counts a failed hand-back toward the warning that maps cannot be given back', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const slot = new SwapSlot({ onLedgerChange: () => {} });
+      const entry = onStandin('moon');
+      slot.restores.entries.push(entry);
+      bindTierAdmission(() => 'admit');
+      expect(slot.startRestore(() => 'tiles', 1_000)).toBe(true);
+      pending[0].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(slot.failures).toBe(1);
+    } finally {
+      bindTierAdmission(null);
+      warn.mockRestore();
+    }
+  });
+
+  it('hands a stand-in back only through the checks a planned release passes, for the reason one is due', () => {
+    const container = { id: 'c', distance: 1, heldBytes: 40, lowBytes: 10, lowIsContainer: true };
+    const webp = { id: 'w', distance: 2, heldBytes: 40, lowBytes: 10, lowIsContainer: false };
+    const freesNothing = { id: 'n', distance: 3, heldBytes: 10, lowBytes: 10, lowIsContainer: true };
+    const [a, b, c, d] = [ladderHandle('moon'), ladderHandle('moon'), ladderHandle('moon'), ladderHandle('moon')];
+    const candidateOf = new Map<TextureUpgrade, ReleaseCandidate>([[a, container], [b, webp], [c, freesNothing]]);
+    const roomy = { ladderBytes: 0, envelopeBytes: 100 };
+    // No release due: nothing is handed back.
+    expect(handBackFor(null, candidateOf, roomy)).toBeUndefined();
+    // The tiles': a container only, and only one that frees something.
+    const tiles = handBackFor('tiles', candidateOf, { ...roomy, containersOnly: true })!;
+    expect([a, b, c, d].map((up) => tiles(up))).toEqual(['tiles', null, null, null]);
+    // The ladder's own: any candidate that frees something...
+    const pressure = handBackFor('pressure', candidateOf, roomy)!;
+    expect([a, b, c, d].map((up) => pressure(up))).toEqual(['pressure', 'pressure', null, null]);
+    // ...and whose transient of both maps fits the envelope.
+    expect(handBackFor('pressure', candidateOf, { ladderBytes: 95, envelopeBytes: 100 })!(a)).toBeNull();
   });
 
   it('waits out a cooldown after a swap that could not be fetched', async () => {
@@ -3587,8 +3702,8 @@ describe('fetching the maps back after a lost context', () => {
     const far = onStandin('earthClouds');
     const queue = [near, far];
     bindTierAdmission(() => 'admit');
-    expect(took(takeRestoreRefetch(queue, (up) => up === far.up))).toEqual({ up: near.up, reason: 'restore' });
-    expect(took(takeRestoreRefetch(queue, (up) => up === far.up))).toEqual({ up: far.up, reason: 'tiles' });
+    expect(took(takeRestoreRefetch(queue, (up) => (up === far.up ? 'tiles' : null)))).toEqual({ up: near.up, reason: 'restore' });
+    expect(took(takeRestoreRefetch(queue, (up) => (up === far.up ? 'tiles' : null)))).toEqual({ up: far.up, reason: 'tiles' });
     expect(queue).toHaveLength(0);
   });
 

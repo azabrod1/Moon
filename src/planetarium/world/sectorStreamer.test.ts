@@ -56,7 +56,7 @@ import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sect
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
 import { mapTexture, recordWarmUploads, settleRungUpload } from '../testing/upgradeHarness';
-import { planLadderPressure, RELEASE_PRESSURE_DWELL_MS } from './ladderPressure';
+import { planLadderPressure, RELEASE_PRESSURE_DWELL_MS, tilesShortCovered } from './ladderPressure';
 
 /** A scripted loader: records every URL, and lets a test resolve or fail
  *  each one later (or synchronously with `auto`). */
@@ -2694,14 +2694,15 @@ describe('what the tiles say they are short of', () => {
     for (let c = 0; c < 4; c++) four[`${c}_1`] = 4 + 0.01 * c;
     const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
     const streamer = settled(NO_FLOOR, before, four);
-    expect(streamer.tilesShortFor(before)).toBe(true);
+    expect(streamer.tilesShortfallFor(before)).toBeGreaterThan(0);
     // The release pass as the mode runs it, ahead of the frame's reconcile.
     let since: number | null = 0;
     const pass = (ladderBytes: number, nowMs: number, swapEnded = false): boolean => {
       const plan = planLadderPressure({
         ladderBytes, ceilingBytes: Number.POSITIVE_INFINITY, blockedDemand: false, pressureSinceMs: null,
         nowMs, swapInFlight: false, restoreQueued: false,
-        tilesShort: streamer.tilesShortFor(ladderBytes), tilesShortSinceMs: since, drawing: true, swapEnded,
+        tilesShort: tilesShortCovered(streamer.tilesShortfallFor(ladderBytes), Number.POSITIVE_INFINITY),
+        tilesShortSinceMs: since, drawing: true, swapEnded,
       });
       since = plan.tilesShortSinceMs;
       return plan.tilesReleaseDue;
@@ -2722,7 +2723,7 @@ describe('what the tiles say they are short of', () => {
     // The reconcile takes the room it was given and answers against it.
     for (let f = 0; f < 8; f++) streamer.update('Earth', inside, measureOf(four), 2_000 + f * 16);
     expect(streamer.stats().resident).toBe(4);
-    expect(streamer.tilesShortFor(after)).toBe(false);
+    expect(streamer.tilesShortfallFor(after)).toBe(0);
     expect(pass(after, 20 * RELEASE_PRESSURE_DWELL_MS)).toBe(false);
   });
 
@@ -2734,11 +2735,56 @@ describe('what the tiles say they are short of', () => {
     // meets is cleared rather than carried to the next "short".
     const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
     const streamer = settled(NO_FLOOR, before);
-    expect(streamer.tilesShortFor(before)).toBe(true);
-    expect(streamer.tilesShortFor(before - 1)).toBeNull();
+    expect(streamer.tilesShortfallFor(before)).toBeGreaterThan(0);
+    expect(streamer.tilesShortfallFor(before - 1)).toBeNull();
     streamer.dropAll();
-    expect(streamer.tilesShortFor(before)).toBe(false);
-    expect(streamer.tilesShortFor(before - 10 * MiB)).toBe(false);
+    expect(streamer.tilesShortfallFor(before)).toBe(0);
+    expect(streamer.tilesShortfallFor(before - 10 * MiB)).toBe(0);
+  });
+
+  it('says how many bytes the smallest wanted set is short of', () => {
+    loader.auto = true;
+    // Two sets fit what the maps leave; four are wanted. The third is short by
+    // what it needs past the budget, which is a whole set exactly here.
+    const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES - 5 * MiB;
+    const streamer = settled(NO_FLOOR, before);
+    const stats = streamer.stats();
+    expect(stats.resident).toBe(2);
+    expect(streamer.tilesShortfallFor(before))
+      .toBe(stats.budgetedBytes + stats.reserved + EARTH_SET_BYTES - stats.budget);
+    expect(streamer.tilesShortfallFor(before)).toBe(EARTH_SET_BYTES - 5 * MiB);
+  });
+
+  it('takes a "short" as stale when the floor or the fixed reservations move, not only the maps', () => {
+    loader.auto = true;
+    const envelope = new MemoryEnvelope(NO_FLOOR);
+    const streamer = new SectorStreamer({ limits: NO_FLOOR, envelope, load: loader.load, warm: warm.warm });
+    streamer.register(earthHandle());
+    const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
+    streamer.setGlobalMapBytes(before);
+    for (let f = 0; f < 12; f++) streamer.update('Earth', inside, measureOf(sizes), f * 16);
+    expect(streamer.tilesShortfallFor(before)).toBeGreaterThan(0);
+    // The cloud field's pool allocated: the budget the answer was about is
+    // gone, though the maps hold what they held.
+    envelope.setFixedBytes(64 * MiB);
+    expect(streamer.tilesShortfallFor(before)).toBeNull();
+    envelope.setFixedBytes(0);
+    expect(streamer.tilesShortfallFor(before)).toBeGreaterThan(0);
+    envelope.setFloorBytes(EARTH_SET_BYTES);
+    expect(streamer.tilesShortfallFor(before)).toBeNull();
+  });
+
+  it('prices each wanted set once a pass, for the admissions and the shortfall alike', () => {
+    loader.auto = true;
+    const streamer = settled(NO_FLOOR, NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES);
+    expect(streamer.tilesShort()).toBe(true);
+    const price = vi.spyOn(streamer as unknown as { slotSetBytes: (...a: unknown[]) => number }, 'slotSetBytes');
+    streamer.update('Earth', inside, measureOf(sizes), 1_000);
+    // Four sectors wait (six wanted, two resident); each is priced once,
+    // though the admission loop and the shortfall pass both read it.
+    expect(streamer.tilesShort()).toBe(true);
+    expect(price).toHaveBeenCalledTimes(4);
+    price.mockRestore();
   });
 
   it('is not short for a set the fetch pool can never carry', () => {

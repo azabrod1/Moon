@@ -29,7 +29,7 @@
  *
  * The streamer cannot take memory from the globe maps — its budget is what the
  * envelope leaves over them — but it says when they are what it is short of
- * (`tilesShortFor`): a set it wants is still waiting, the working set has a
+ * (`tilesShortfallFor`): a set it wants is still waiting, the working set has a
  * place for it, and it fits what the tiles may hold with no map on the ladder
  * but not what the maps leave them now. That is the signal the ladder's release
  * pass answers by giving back far rungs (world/ladderPressure); the tiles' own
@@ -1065,6 +1065,15 @@ function releaseBitmap(tex: THREE.Texture): void {
   releaseTilePixels(tex);
 }
 
+/** A wanted, idle sector this frame's reconcile may admit, with the bytes
+ *  its set would hold once the admission loop or the shortfall pass has
+ *  priced it — priced once a pass. */
+interface ShortfallCandidate {
+  body: SectorBody;
+  slot: SectorSlot;
+  bytes?: number;
+}
+
 export class SectorStreamer {
   private readonly bodies = new Map<string, SectorBody>();
   private readonly load: TextureLoad;
@@ -1084,10 +1093,14 @@ export class SectorStreamer {
   /** The one envelope the tiles and the globe maps spend between them. */
   private readonly envelope: MemoryEnvelope;
   private warnedNoBudget = false;
-  /** The last reconcile's answer to `tilesShortFor`, and the globe maps' bytes
-   *  it was taken against (`tilesShortFor`). */
-  private short = false;
-  private shortAgainst = 0;
+  /** The last reconcile's answer to `tilesShortfallFor` — the bytes the
+   *  smallest short set lacks, 0 when none is — and the envelope it was taken
+   *  against: the globe maps' bytes, the tiles' floor and the fixed
+   *  reservations, any of which moves the budget the answer was about. */
+  private shortfall = 0;
+  private shortAgainstLadder = 0;
+  private shortAgainstFloor = 0;
+  private shortAgainstFixed = 0;
   private generation = 0;
   private lastNowMs = 0;
   private batching = false;
@@ -1311,7 +1324,7 @@ export class SectorStreamer {
     this.lastNowMs = nowMs;
     this.setGlobalMapBytes(globalMapBytes);
     // Nothing is wanted on a frame nothing measures, so nothing is short.
-    this.answerShort(false);
+    this.answerShort(0);
     for (const body of this.bodies.values()) {
       for (const slot of body.slots) {
         if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
@@ -1382,7 +1395,7 @@ export class SectorStreamer {
       body.admitting = false;
       // No reconcile follows for this body, and a suspended frame wants
       // nothing; the batch's reconcile, if there is one, answers afresh.
-      this.answerShort(false);
+      this.answerShort(0);
       return;
     }
 
@@ -1534,7 +1547,7 @@ export class SectorStreamer {
     this.trimToBudget();
 
     const stale: Array<{ body: SectorBody; slot: SectorSlot }> = [];
-    const candidates: Array<{ body: SectorBody; slot: SectorSlot }> = [];
+    const candidates: ShortfallCandidate[] = [];
     for (const body of bodies) {
       if (!body.admitting) continue;
       for (const slot of body.slots) {
@@ -1572,14 +1585,16 @@ export class SectorStreamer {
       // a cheaper or smaller one behind it may still fit in the room there
       // is. `makeRoom` releases nothing unless the whole victim set is
       // proven, so a refusal here has cost nothing.
-      if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) continue;
+      // Kept on the candidate: the shortfall pass below reads the same figure.
+      candidate.bytes = this.slotSetBytes(candidate.body, candidate.slot);
+      if (!this.makeRoom(candidate.slot, candidate.bytes, nowMs)) continue;
       this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
     // Its own pass over what the admissions left, never a flag set inside the
     // loop above: that loop stops at the in-flight cap and skips a candidate
     // the fetch pool cannot carry, and either would leave the answer to
     // whichever candidate happened to be reached.
-    this.answerShort(this.shortOfMaps(candidates));
+    this.answerShort(this.shortfallOf(candidates));
     // Last, with every release and materialisation of the frame behind it:
     // the cover each family's ground draws until something changes again.
     for (const body of this.bodies.values()) if (body.cutDirty) this.applyCut(body);
@@ -1810,10 +1825,11 @@ export class SectorStreamer {
   }
 
   /**
-   * Whether the globe maps are what keeps a wanted set out: one of this
-   * frame's candidates is still idle, the working set has a place for it, and
-   * it fits what the tiles may hold with an EMPTY ladder but not what they may
-   * hold now. Each condition rules out a shortfall the ladder cannot answer:
+   * How many bytes the globe maps keep the smallest wanted set out by, or 0:
+   * one of this frame's candidates is still idle, the working set has a place
+   * for it, and it fits what the tiles may hold with an EMPTY ladder but not
+   * what they may hold now. Each condition rules out a shortfall the ladder
+   * cannot answer:
    * at the draw-call cap a set is refused whatever the memory; where the
    * tiles' own ceiling binds, an empty ladder leaves them no more room than
    * they have; a set that fits now is only waiting on the network; and a set
@@ -1822,29 +1838,35 @@ export class SectorStreamer {
    * the pool's size, never how busy it is right now: a pool merely full
    * would flicker the answer frame to frame. Read at the floor the same way —
    * a ladder big enough to hold the tiles at their floor is the case this
-   * exists for.
+   * exists for. The figure is the SMALLEST short set's, because that is the
+   * least a release has to free for the tiles to gain anything at all
+   * (ladderPressure's tilesShortCovered).
    */
-  private shortOfMaps(candidates: ReadonlyArray<{ body: SectorBody; slot: SectorSlot }>): boolean {
-    if (candidates.length === 0 || this.liveCount() >= this.residentCap) return false;
+  private shortfallOf(candidates: readonly ShortfallCandidate[]): number {
+    if (candidates.length === 0 || this.liveCount() >= this.residentCap) return 0;
     const budget = this.budget();
     const unsqueezed = sectorBudgetBytes(this.envelope, 0, this.envelope.floorBytes, this.envelope.fixedBytes);
     // The maps leave the tiles all an empty ladder would, so no set can be
     // short of them — the common case, and no slot need be visited.
-    if (budget >= unsqueezed) return false;
+    if (budget >= unsqueezed) return 0;
     const held = this.heldBytes();
-    for (const { body, slot } of candidates) {
-      if (slot.state !== 'idle') continue;
-      if (this.loadFetchCount(body, slot) > this.fetchPool) continue;
-      const need = held + this.slotSetBytes(body, slot);
-      if (need > budget && need <= unsqueezed) return true;
+    let smallest = 0;
+    for (const c of candidates) {
+      if (c.slot.state !== 'idle') continue;
+      if (this.loadFetchCount(c.body, c.slot) > this.fetchPool) continue;
+      c.bytes ??= this.slotSetBytes(c.body, c.slot);
+      const need = held + c.bytes;
+      if (need > budget && need <= unsqueezed && (smallest === 0 || need - budget < smallest)) smallest = need - budget;
     }
-    return false;
+    return smallest;
   }
 
-  /** Record an answer with the ledger it was taken against. */
-  private answerShort(short: boolean): void {
-    this.short = short;
-    this.shortAgainst = this.envelope.ladderBytes;
+  /** Record an answer with the envelope it was taken against. */
+  private answerShort(shortfall: number): void {
+    this.shortfall = shortfall;
+    this.shortAgainstLadder = this.envelope.ladderBytes;
+    this.shortAgainstFloor = this.envelope.floorBytes;
+    this.shortAgainstFixed = this.envelope.fixedBytes;
   }
 
   /**
@@ -1852,26 +1874,31 @@ export class SectorStreamer {
    * reconcile left a wanted set out for want of memory the globe maps hold,
    * and only then (see shortOfMaps). Cleared on every frame that reconciles
    * nothing — the chart's `maintain`, a suspended body, `dropAll` — since
-   * nothing is wanted there. The release pass reads `tilesShortFor`.
+   * nothing is wanted there. The release pass reads `tilesShortfallFor`.
    */
   tilesShort(): boolean {
-    return this.short;
+    return this.shortfall > 0;
   }
 
   /**
-   * The same answer, or null when it says short against other globe-map
-   * bytes than `ladderBytes`. The ladder's release pass runs before this
+   * The bytes the smallest wanted set is short of (shortfallOf), 0 when none
+   * is, or null when the answer is "short" but was taken against another
+   * envelope than now: other globe-map bytes than `ladderBytes`, or another
+   * floor or fixed reservation. The ladder's release pass runs before this
    * frame's reconcile, so what it reads is the last frame's; a swap that
-   * landed since (or any rung applied, a source closed) has changed the very
-   * budget a "short" was about, and acting on it would give a second map back
-   * for room the first may already have made. "Not short" holds whatever the
-   * ledger has done since — nothing then asks for a map back — so it is
-   * always an answer, including the frames that want nothing at all (a
-   * teleport's dropAll, a chart frame), whatever their ledger.
+   * landed since (or any rung applied, a source closed, the cloud pool
+   * allocated) has changed the very budget a "short" was about, and acting
+   * on it would give a second map back for room the first may already have
+   * made. "Not short" holds whatever has moved since — nothing then asks for
+   * a map back — so it is always an answer, including the frames that want
+   * nothing at all (a teleport's dropAll, a chart frame).
    */
-  tilesShortFor(ladderBytes: number): boolean | null {
-    if (!this.short) return false;
-    return ladderBytes === this.shortAgainst ? true : null;
+  tilesShortfallFor(ladderBytes: number): number | null {
+    if (this.shortfall === 0) return 0;
+    const same = ladderBytes === this.shortAgainstLadder
+      && this.envelope.floorBytes === this.shortAgainstFloor
+      && this.envelope.fixedBytes === this.shortAgainstFixed;
+    return same ? this.shortfall : null;
   }
 
   /** Bytes held: what the resident sets draw plus what the loads in flight
@@ -1946,7 +1973,7 @@ export class SectorStreamer {
    *  cache when they were resident before. */
   dropAll(): void {
     for (const body of this.bodies.values()) for (const slot of body.slots) this.release(slot);
-    this.answerShort(false);
+    this.answerShort(0);
     // Whatever frame was open is over: a batch left behind by a caller that
     // never reached its endFrame must not hold every later frame in
     // measure-only mode.

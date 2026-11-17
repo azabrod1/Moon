@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planLadderPressure, RELEASE_PRESSURE_DWELL_MS, type LadderPressureState } from './ladderPressure';
+import { anyDemandBlocked, planLadderPressure, RELEASE_PRESSURE_DWELL_MS, tilesShortCovered, type LadderPressureState } from './ladderPressure';
 
 const MiB = 1024 * 1024;
 
@@ -212,5 +212,24 @@ describe('the tiles\' shortfall', () => {
     expect(planLadderPressure(state({
       tilesShort: true, tilesShortSinceMs: sameFrame.tilesShortSinceMs, nowMs: 11 * RELEASE_PRESSURE_DWELL_MS,
     })).tilesReleaseDue).toBe(true);
+  });
+});
+
+describe('what the pass asks before it counts pressure', () => {
+  it('counts the tiles short only when the releases they may take would cover it', () => {
+    // A tiles-only release takes containers, 32 MiB a far 8K at most: a set
+    // short by more than all of them together is one no release admits.
+    expect(tilesShortCovered(30 * MiB, 20 * MiB)).toBe(false);
+    expect(tilesShortCovered(30 * MiB, 32 * MiB)).toBe(true);
+    expect(tilesShortCovered(0, 100 * MiB)).toBe(false);
+    expect(tilesShortCovered(null, 100 * MiB)).toBeNull();
+  });
+
+  it('does not ask the ledger about blocked demand while the maps are over their share', () => {
+    const asked: number[] = [];
+    expect(anyDemandBlocked(true, [1, 2], (w) => { asked.push(w); return true; })).toBe(false);
+    expect(asked).toEqual([]);
+    expect(anyDemandBlocked(false, [1, 2], (w) => { asked.push(w); return w === 1; })).toBe(true);
+    expect(asked).toEqual([1]);
   });
 });

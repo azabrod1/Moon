@@ -6,6 +6,7 @@ import {
   observatoryEventsStatus,
   observatoryPhaseText,
   trackedBodyPhaseText,
+  trackedPlanetText,
   observatoryWatchRowState,
   observatoryWindowKey,
   observatoryWindowState,
@@ -94,6 +95,12 @@ describe('trackedBodyPhaseText', () => {
       headline: 'Phobos eclipsed by Mars',
       meta: "Phobos · in Mars's shadow",
     });
+  });
+
+  it('gives a tracked planet its brightness, and a phase only short of full', () => {
+    expect(trackedPlanetText('Venus', 0.23, -4.62)).toEqual({ headline: 'Crescent Venus', meta: 'Venus · mag −4.6 · 23% lit' });
+    expect(trackedPlanetText('Jupiter', 0.99, -2.43).headline).toBe('Jupiter');
+    expect(trackedPlanetText('Uranus', 1, 5.68).meta).toBe('Uranus · mag 5.7 · 100% lit');
   });
 });
 

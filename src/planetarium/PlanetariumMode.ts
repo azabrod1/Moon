@@ -32,6 +32,7 @@ import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
 import {
   PLANETARIUM_BODIES,
+  PLANETS,
   SUN_DATA,
   SUN_POLE_DEC_DEG,
   SUN_POLE_RA_DEG,
@@ -493,6 +494,7 @@ import {
   observatoryEventsStatus,
   observatoryPhaseText,
   trackedBodyPhaseText,
+  trackedPlanetText,
   type ObservatoryEventRow,
   type ObservatoryRenderExtras,
   type ObservatorySubjectInfo,
@@ -6528,6 +6530,14 @@ export class PlanetariumMode {
     this.moonDots.flush();
   }
 
+  /** A planet's apparent magnitude from the camera, the planet at the scene
+   *  position given (NaN for a body without an equation). */
+  private planetMagnitudeFromCamera(planetName: string, planetPosition: THREE.Vector3): number {
+    if (!this.solarSystem) return Number.NaN;
+    const year = 1970 + this.timeState.currentUtcMs / (365.25 * 86_400_000);
+    return planetMagnitudeFromPositions(planetName, planetPosition, this.solarSystem.sun.position, this.camera.position, year);
+  }
+
   /** A planet's point colour: a star's at the planet's B−V (planetPoints.ts). */
   private planetPointColor(name: string): { r: number; g: number; b: number; luminance: number } {
     let color = this.planetPointColors.get(name);
@@ -6561,7 +6571,6 @@ export class PlanetariumMode {
     const sun = this.solarSystem.sun.position;
     const cameraPosition = this.camera.position;
     const fovDeg = displayFovDeg(this.camera);
-    const year = 1970 + this.timeState.currentUtcMs / (365.25 * 86_400_000);
     const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : null;
     const kneeActive = this.starGain > 1.001;
     const planets = this.solarSystem.planets;
@@ -6573,7 +6582,7 @@ export class PlanetariumMode {
         continue;
       }
       const position = planet.group.getWorldPosition(this.tmpPlanetPointPos);
-      const magnitude = planetMagnitudeFromPositions(name, position, sun, cameraPosition, year);
+      const magnitude = this.planetMagnitudeFromCamera(name, position);
       const distanceAU = position.distanceTo(cameraPosition);
       const radiusAU = planet.data.radiusAU * this.planetScale;
       const toSunX = sun.x - position.x;
@@ -19669,15 +19678,37 @@ export class PlanetariumMode {
       if (m.data.name === landedInfo.name) continue; // never the ground underfoot
       add({ kind: 'moon', moonName: m.data.name }, bodyDisplayName(m.data.name), m.data.color);
     }
+    // The other planets, as the points the sky draws them as: never the
+    // system's own planet (underfoot, or the parent row above), nor a body
+    // without a brightness to draw it at (Pluto).
+    for (const planet of this.solarSystem?.planets ?? []) {
+      const name = planet.data.name;
+      if (name === parentName) continue;
+      const target: SurfaceTarget = { kind: 'planet', planetName: name };
+      const position = this.resolveSurfaceTargetScenePos(target, this.tmpSurfaceTargetPos);
+      const magnitude = position ? this.planetMagnitudeFromCamera(name, position) : Number.NaN;
+      if (!Number.isFinite(magnitude)) continue;
+      choices.push(makeSurfaceTargetChoice(
+        target,
+        bodyDisplayName(name),
+        this.surfaceTargetAngularDiameterDeg(target),
+        planet.data.color,
+        magnitude,
+      ));
+    }
     return orderSurfaceTargetChoices(choices);
   }
 
   /** Cheap row count for gating the ⌖ chip — no positions computed. Both
    *  vantage types sum the same: on a planet it's the Sun + the moons; on a
-   *  moon the parent replaces yourself in that count. */
+   *  moon the parent replaces yourself in that count. The other planets are
+   *  rows everywhere, so even Mercury and Venus, with no moons, get the chip. */
   private surfaceTargetChoiceCount(): number {
     if (!this.landedOn) return 0;
-    return 1 + getMoonsByPlanet(this.observatoryParentPlanetName() ?? '').length;
+    const parentName = this.observatoryParentPlanetName() ?? '';
+    let otherPlanets = 0;
+    for (const planet of PLANETS) if (planet.name !== parentName) otherPlanets++;
+    return 1 + getMoonsByPlanet(parentName).length + otherPlanets;
   }
 
   private openSurfaceTargetMenu() {
@@ -19938,6 +19969,8 @@ export class PlanetariumMode {
         return this.landedOn?.type === 'moon' ? this.landedOn.parentPlanet : 'the planet';
       case 'moon':
         return bodyDisplayName(target.moonName);
+      case 'planet':
+        return bodyDisplayName(target.planetName);
     }
   }
 
@@ -19969,7 +20002,7 @@ export class PlanetariumMode {
    *  null while it tracks the Sun. */
   private trackedBodyPhase(): { headline: string; meta: string } | null {
     const target = this.surfaceTarget;
-    if (target.kind !== 'moon' && target.kind !== 'parent') return null;
+    if (target.kind !== 'moon' && target.kind !== 'parent' && target.kind !== 'planet') return null;
     const targetPos = this.resolveSurfaceTargetScenePos(target, this.tmpPhaseTarget);
     if (!targetPos) return null;
     // The Sun sits at the scene's floating origin, the player's negation.
@@ -19978,6 +20011,13 @@ export class PlanetariumMode {
     const lengths = toSun.length() * toEye.length();
     if (!(lengths > 0)) return null;
     const name = this.surfaceTargetDisplayName(target).replace(/^the /, '');
+    if (target.kind === 'planet') {
+      return trackedPlanetText(
+        name,
+        (1 + toSun.dot(toEye) / lengths) / 2,
+        this.planetMagnitudeFromCamera(target.planetName, targetPos),
+      );
+    }
     // The sunlight the renderer dims the moon by: under half, it is eclipsed.
     let shadowOf: string | null = null;
     if (target.kind === 'moon') {
@@ -20638,6 +20678,10 @@ export class PlanetariumMode {
         if (!moonMesh || !systemGroup) return null;
         return out.copy(systemGroup.position).add(moonMesh.mesh.position);
       }
+      case 'planet': {
+        const planet = this.planetMeshByName.get(target.planetName);
+        return planet ? out.copy(planet.group.position) : null;
+      }
     }
   }
 
@@ -20658,6 +20702,8 @@ export class PlanetariumMode {
             .radiusAU ?? 0
         );
       }
+      case 'planet':
+        return this.planetMeshByName.get(target.planetName)?.data.radiusAU ?? 0;
     }
   }
 
@@ -20762,7 +20808,7 @@ export class PlanetariumMode {
     const entryFov = entryFovDeg(
       this.surfaceTargetAngularDiameterDeg(this.surfaceTarget),
       context,
-      this.surfaceTarget.kind === 'sun',
+      this.surfaceTarget.kind === 'sun' || this.surfaceTarget.kind === 'planet',
     );
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {

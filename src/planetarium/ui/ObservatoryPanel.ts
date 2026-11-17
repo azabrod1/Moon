@@ -25,6 +25,7 @@ import type { ShadowClassification, ShadowEvent } from '../../astronomy/shadows'
 import {
   bodyDisplayName,
   formatDiscDeg,
+  formatMagnitude,
   selectSurfaceTarget,
   surfaceEventPhrase,
   type SurfaceEventInfo,
@@ -231,6 +232,8 @@ function windowEventGlyph(sight: ReturnType<typeof selectSurfaceTarget>['kind'])
     case 'moon':
       return 'reddened';
     case 'parent':
+    // Never chosen for an event (selectSurfaceTarget); here for the switch.
+    case 'planet':
       return 'shadow-dot';
   }
 }
@@ -567,6 +570,22 @@ export function trackedBodyPhaseText(
   return {
     headline: `${genericPhaseName(illumination)} ${bodyName}`,
     meta: `${bodyName} · ${Math.round(illumination * 100)}% lit`,
+  };
+}
+
+/** The same line for a planet the view tracks. It is a point from here, so
+ *  its brightness joins the line, and its phase is named only where it is
+ *  not simply full (Venus's crescent, Mars's gibbous). */
+export function trackedPlanetText(
+  planetName: string,
+  illumination: number,
+  magnitude: number,
+): { headline: string; meta: string } {
+  const phase = genericPhaseName(illumination);
+  const brightness = Number.isFinite(magnitude) ? ` · ${formatMagnitude(magnitude)}` : '';
+  return {
+    headline: phase === 'Full' ? planetName : `${phase} ${planetName}`,
+    meta: `${planetName}${brightness} · ${Math.round(illumination * 100)}% lit`,
   };
 }
 

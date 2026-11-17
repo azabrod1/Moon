@@ -20,6 +20,7 @@ import {
   computeSubTargetVantage,
   entryFovDeg,
   formatDiscDeg,
+  formatMagnitude,
   GUIDE_RESOLVABLE_OFF_PX,
   GUIDE_RESOLVABLE_ON_PX,
   isBelowResolutionAtMaxZoom,
@@ -668,6 +669,24 @@ describe('Look-at menu choices', () => {
       moon('Ganymede', 0.18),
     ]);
     expect(ordered.map((c) => c.name)).toEqual(['Jupiter', 'the Sun', 'Europa', 'Ganymede']);
+  });
+
+  it('lists the other planets last, brightest first, never dimmed, by magnitude', () => {
+    const planet = (name: string, magnitude: number) =>
+      makeSurfaceTargetChoice({ kind: 'planet', planetName: name }, name, 0.005, 0xffffff, magnitude);
+    const ordered = orderSurfaceTargetChoices([
+      planet('Saturn', 0.9),
+      moon('Moon', 0.52),
+      planet('Venus', -4.1),
+      makeSurfaceTargetChoice({ kind: 'sun' }, 'the Sun', 0.53),
+      planet('Jupiter', -2.4),
+    ]);
+    expect(ordered.map((c) => c.name)).toEqual(['the Sun', 'Moon', 'Venus', 'Jupiter', 'Saturn']);
+    expect(planet('Neptune', 7.8).resolvable).toBe(true);
+    expect(formatMagnitude(-2.43)).toBe('mag −2.4');
+    expect(formatMagnitude(0.04)).toBe('mag 0.0');
+    // A point opens at the resting sky field, as the Sun does.
+    expect(entryFovDeg(0.0125, 'companion', true)).toBe(SURFACE_FOV_DEFAULT_DEG);
   });
 
   it('equal-size moons keep input order', () => {

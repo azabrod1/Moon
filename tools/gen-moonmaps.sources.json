@@ -1081,7 +1081,7 @@
     "height": 7200,
     "format": "png, 8-bit, 3 bands (RGB)",
     "color": "colour",
-    "product": "Merged Cassini and Juno global map of Jupiter by Björn Jónsson (2018): Cassini ISS colour frames from the December 2000 flyby (about 65 km/px, native detail about 21 px/deg, resampled to 40) with the polar caps from JunoCam and JIRAM. Simple cylindrical (equirectangular), 14400x7200, no unmeasured pixels (the darkest pixel's channel mean is 99).",
+    "product": "Merged Cassini and Juno global map of Jupiter by Björn Jónsson (2018): Cassini ISS colour frames from the December 2000 flyby (about 65 km/px, native detail about 21 px/deg, resampled to 40) with the polar caps from JunoCam and JIRAM. Simple cylindrical (equirectangular), 14400x7200, no unmeasured pixels (the darkest pixel's channel mean is 99). The shipped maps take one colour step on the way: each pixel's saturation is raised by 30 per cent in linear light at unchanged Rec. 709 luminance and hue (gen-moonmaps' `saturation: 1.3`), then a plain gain under one puts the map on the replaced map's level.",
     "product_page": "https://www.planetary.org/space-images/merged-cassini-and-juno",
     "licence": "CC BY 3.0 Unported (https://creativecommons.org/licenses/by/3.0/). Not public domain like the rest of this file: the credit line below must be shown wherever the map is.",
     "citation": "NASA / JPL-Caltech / SSI / SwRI / MSSS / ASI / INAF / JIRAM / Björn Jónsson. Licence CC BY 3.0 Unported.",
@@ -1096,19 +1096,20 @@
     },
     "wire": {
       "candidate": "4096x2048",
-      "webpBytes": 640030,
-      "ktx2Bytes": 6314852,
-      "ratio": 9.87,
+      "webpBytes": 692462,
+      "ktx2Bytes": 6528136,
+      "ratio": 9.43,
       "ratio_at_or_under_4x": false,
-      "note": "Unlike the other rows, the candidate is the shipped 4K webp itself (public/textures/4k/jupiter.v2.webp) and the container is tools/gen-ktx2.mjs transcoding exactly that file, since a 4K container would ship beside it as its twin. UASTC at lambda 1, 2 and 4: 6314852, 5828214 and 5487402 bytes (9.87x, 9.11x, 8.57x), RMS 1.39 / 1.70 / 2.07 against the webp, so the 4K ships as the webp alone.",
-      "ktx2BytesByLambda": { "1": 6314852, "2": 5828214, "4": 5487402 },
+      "note": "Unlike the other rows, the candidate is the shipped 4K webp itself (public/textures/4k/jupiter.v2.webp) and the container is tools/gen-ktx2.mjs transcoding exactly that file, since a 4K container would ship beside it as its twin. UASTC at lambda 1, 2 and 4: 6528136, 5997924 and 5640036 bytes (9.43x, 8.66x, 8.14x), RMS 1.48 / 1.79 / 2.16 against the webp, so the 4K ships as the webp alone.",
+      "ktx2BytesByLambda": { "1": 6528136, "2": 5997924, "4": 5640036 },
       "rung8k": {
         "file": "8k/jupiter.v2.ktx2",
         "format": "UASTC, container only",
-        "bytesByLambda": { "1": 26787185, "2": 22685695, "4": 20376265 },
-        "rmsByLambda": { "1": 1.79, "2": 2.27, "4": 2.66 },
-        "meanByLambda": { "1": 0.01, "2": -0.04, "4": -0.07 },
-        "shipped": "lambda 4, default 8K RDO dictionary (a 64K one came to 20483195 bytes); measured against the graded, rolled jupiter-8k intermediate with mip level 0 unpacked to BC7 and the baked vertical flip undone"
+        "bytesByLambda": { "1": 29256397, "2": 24245621, "4": 21122709 },
+        "rmsByLambda": { "1": 1.83, "2": 2.44, "4": 2.94 },
+        "meanByLambda": { "1": 0.01, "2": -0.04, "4": -0.09 },
+        "shippedBytes": 21122709,
+        "shipped": "lambda 4, default 8K RDO dictionary (on the first cut of this map a 64K one saved nothing: 20483195 bytes against 20376265); measured against the graded, rolled jupiter-8k intermediate with mip level 0 unpacked to BC7 and the baked vertical flip undone. The shipped file is the lambda 4 sweep's own output, byte for byte."
       }
     },
     "used_by": [

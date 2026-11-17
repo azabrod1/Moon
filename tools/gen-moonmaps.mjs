@@ -263,6 +263,13 @@ const PLUTO_CAP = [42, 38, 34];
  * name); `outputs` are the shipped maps; `rungs` are the widths written to the
  * cache as PNG for gen-ktx2 to encode.
  *
+ * The picture passes, in the order runJob applies them: `colour` (a mono
+ * source's luminance -> RGB pass), `saturation` (a colour map's distance
+ * from grey scaled by that factor at unchanged luminance and hue, see
+ * saturate), `localContrast`, then `level` — `{ albedo }` or `{ mean }`, with
+ * `shoulder: false` for a plain gain where the gain is under one and the top
+ * of the range should keep its spacing (see applyLevel).
+ *
  * Every tier ABOVE a moon's boot map is a rung, never an output, because every
  * one of them ships GPU-compressed and alone: an ETC1S container of one of
  * these maps is about the size of its webp twin on the wire and a quarter of it
@@ -274,7 +281,7 @@ const PLUTO_CAP = [42, 38, 34];
  * of one source in one run.
  *
  * Jupiter is the one exception, and only at 4K: a planet's 4K rung is toured,
- * and a UASTC container of its map costs 8.6 times the webp on the wire at
+ * and a UASTC container of its map costs 8.1 times the webp on the wire at
  * best (tools/gen-ktx2.mjs), so its 4K ships as a webp output (into the
  * tier's folder, `4k/...`) and only its 8K is a rung. All three still come
  * out of the one run.
@@ -479,15 +486,22 @@ const JOBS = {
     // every step up is a pure sharpen.
     outputs: [{ width: 2048, out: 'jupiter.v2.webp' }, { width: 4096, out: '4k/jupiter.v2.webp' }],
     rungs: [{ width: 8192, name: 'jupiter-8k' }],
-    // A colour source with no colour pass: the map's own balance, paler and
-    // nearer true colour than the orange of the map it replaces.
-    //
+    // The map's own hues, with their saturation raised by 30 per cent: about
+    // the lift published natural-colour pictures of Jupiter are given, and
+    // what lets it hold its own beside the other planets' maps rather than
+    // reading as a washed-out ball. Luminance is untouched and no hue moves
+    // toward another, so the white zones stay white and only the belts and
+    // the Red Spot gain colour.
+    saturation: 1.3,
     // Held at the level the replaced 2K map measures in this tool's own
     // metric (cos-latitude-weighted Rec. 709 mean of the sRGB counts, 168.7),
     // because the exposure, the night side and the glow were tuned on that
     // Jupiter. Same class of exception as Mercury's: Jupiter's published
     // albedo is a disc's, not a map's, and the curve would put it elsewhere.
-    level: { mean: 168.7, why: 'the replaced map the exposure was tuned on' },
+    // The gain this needs is under one, so it cannot clip, and a plain gain
+    // leaves the zones' brightest gradation where the shoulder would have
+    // bent it flat.
+    level: { mean: 168.7, why: 'the replaced map the exposure was tuned on', shoulder: false },
     // Every pixel is a measurement (the darkest pixel's channel mean is 99),
     // and a dark belt feature is cloud, not a gap, so nothing is masked.
     noData: { below: 0 },
@@ -1164,6 +1178,32 @@ function colourise(ras, job) {
 }
 
 /**
+ * Scale a colour map's saturation by `s`, keeping every pixel's luminance and
+ * hue: in linear light, c' = Y + s (c - Y), with Y the Rec. 709 luminance.
+ * Nothing moves toward another hue, so a grey stays grey and only the
+ * distance from grey grows. A channel pushed past black or white is clamped,
+ * which is the one place a hue can shift; the caller is told how often. In
+ * place on a 3-channel raster.
+ */
+function saturate(ras, s) {
+  const n = ras.width * ras.height;
+  const dec = Float64Array.from({ length: 256 }, (_, v) => srgbDecode(v / 255));
+  const d = ras.data;
+  let clamped = 0;
+  for (let i = 0; i < n; i++) {
+    const k = i * 3;
+    const r = dec[d[k]]; const g = dec[d[k + 1]]; const b = dec[d[k + 2]];
+    const y = REC709[0] * r + REC709[1] * g + REC709[2] * b;
+    for (let c = 0; c < 3; c++) {
+      let v = y + s * ((c === 0 ? r : c === 1 ? g : b) - y);
+      if (v < 0) { v = 0; clamped++; } else if (v > 1) { v = 1; clamped++; }
+      d[k + c] = Math.round(srgbEncode(v) * 255);
+    }
+  }
+  return { clampedShare: clamped / (n * 3) };
+}
+
+/**
  * Put the map's level where the body's albedo says it goes.
  *
  * One neutral gain on all three channels, so every ratio in the picture — the
@@ -1183,7 +1223,13 @@ function colourise(ras, job) {
  */
 function applyLevel(ras, mask, spec, forceGain) {
   const KNEE = 0.80;
-  const shoulder = (x) => (x <= KNEE ? x : KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE))));
+  // `shoulder: false` is a plain gain: no bend anywhere, so the brightest
+  // values keep their spacing. Only safe while the gain stays under one,
+  // which is checked below once the gain is known.
+  const plain = spec.shoulder === false;
+  const shoulder = plain
+    ? (x) => x
+    : (x) => (x <= KNEE ? x : KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE))));
   const { width: W, height: H } = ras;
   const n = W * H;
   const hist = [new Float64Array(256), new Float64Array(256), new Float64Array(256)];
@@ -1219,13 +1265,18 @@ function applyLevel(ras, mask, spec, forceGain) {
     }
     a = (lo + hi) / 2;
   }
+  if (plain && a > 1) {
+    throw new Error(`a plain level gain of ${a.toFixed(4)} would clip every count above ${Math.round(255 / a)}; this map needs the shoulder`);
+  }
   const lut = new Uint8Array(256);
   for (let v = 0; v < 256; v++) {
     const x = Math.round(shoulder((v / 255) * a) * 255);
     lut[v] = x < 0 ? 0 : x > 255 ? 255 : x;
   }
   for (let i = 0; i < n * 3; i++) ras.data[i] = lut[ras.data[i]];
-  return { before, after: meanAt(a), target, gain: a, shouldered: a > 1 ? Math.round((KNEE / a) * 255) : 255 };
+  // The count the shoulder starts bending at — inside the range whenever the
+  // gain is above KNEE, not only above one — or null for a plain gain.
+  return { before, after: meanAt(a), target, gain: a, shouldered: plain ? null : Math.min(255, Math.round((KNEE / a) * 255)) };
 }
 
 /**
@@ -1569,6 +1620,13 @@ async function runJob(name) {
     const resampled = await resampleToTarget(src, target.width, left);
     const { ras: bare, mask, fraction } = splitAlpha(resampled);
     let ras = colourise(bare, job);
+    if (job.saturation !== undefined) {
+      const { clampedShare } = saturate(ras, job.saturation);
+      console.log(`  saturation x${job.saturation}: ${(100 * clampedShare).toFixed(4)}% of channel values clamped`);
+      if (clampedShare > 0.001) {
+        throw new Error(`saturation x${job.saturation} clamps ${(100 * clampedShare).toFixed(3)}% of channel values, over the 0.1% that leaves hues alone`);
+      }
+    }
     // Before the level, not after: an unsharp overshoots on a bright rim, and
     // the level's shoulder is the thing in this pipeline that catches an
     // overshoot without cutting it off.
@@ -1580,7 +1638,7 @@ async function runJob(name) {
         ? `${job.level.mean} (${job.level.why})`
         : `${lv.target.toFixed(1)} from albedo ${job.level.albedo}`;
       console.log(`  level ${lv.before.toFixed(1)} -> ${lv.after.toFixed(1)}, asked ${asked}`
-        + `; gain ${lv.gain.toFixed(3)}, shoulder from ${lv.shouldered}`);
+        + `; gain ${lv.gain.toFixed(4)}, ${lv.shouldered === null ? 'plain (no shoulder)' : `shoulder from ${lv.shouldered}`}`);
     }
     if (fraction > 0) {
       const { mean, std, octaves } = await fillNoData(ras, mask, nd);

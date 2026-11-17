@@ -249,17 +249,22 @@ describe('heapSplit — the pure frame-independent bulk/cone solve', () => {
       const discR2 = Math.max(0, R * R - y * y);
       return sphericalCapVolume(h, R) + (Math.PI / 3) * discR2 * peakCap(h, slope, mouthY);
     };
+    // Steps that fail to rise, gathered and held to none once: an expect per
+    // grid point was 24,000 calls.
+    const flat: string[] = [];
     for (const slope of [0.5, 0.6, 0.8]) {
       for (const mouthY of [0.955, 0.9901]) {
         let prev = -Infinity;
         for (let i = 0; i <= 4000; i++) {
           const h = (i / 4000) * 2 * R;
           const v = F(h, slope, mouthY);
-          expect(v).toBeGreaterThan(prev); // strictly monotone → bisection is valid
+          // strictly monotone → bisection is valid
+          if (!(v > prev) && flat.length < 10) flat.push(`slope ${slope}, mouth ${mouthY}, h ${h}: ${v} after ${prev}`);
           prev = v;
         }
       }
     }
+    expect(flat).toEqual([]);
   });
 
   it('reads as a heap at partial fills and flattens toward the brim', () => {

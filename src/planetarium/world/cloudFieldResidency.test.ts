@@ -634,6 +634,9 @@ describe('the pool', () => {
   it('is never over-filled, and the table names each layer once, through a long random session', async () => {
     let seed = 12345;
     const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    // Frames that break the pool's books, gathered and held to none once: four
+    // expects and more a frame was 56,000 calls.
+    const broken: string[] = [];
     for (const layers of [1, 3, 6]) {
       const w = new World(layers);
       for (let f = 0; f < 3000; f++) {
@@ -653,14 +656,17 @@ describe('the pool', () => {
         }
         w.step(f * 16, { upload: r() < 0.7 });
         const named = w.resident().map((p) => w.r(p) - 1);
-        expect(named.length).toBeLessThanOrEqual(layers);
-        expect(new Set(named).size).toBe(named.length);
-        for (const l of named) expect(l).toBeLessThan(layers);
         const s = w.residency.stats();
-        expect(s.resident + s.freeLayers + (s.pipe === 'uploading' ? 1 : 0)).toBe(layers);
+        const accounted = s.resident + s.freeLayers + (s.pipe === 'uploading' ? 1 : 0);
+        const books = named.length <= layers && new Set(named).size === named.length
+          && named.every((l) => l < layers) && Object.is(accounted, layers);
+        if (!books && broken.length < 10) {
+          broken.push(`${layers} layers, frame ${f}: table names ${JSON.stringify(named)}, ${s.resident} resident + ${s.freeLayers} free + ${s.pipe}`);
+        }
       }
       expect(w.residency.stats().admissions).toBeGreaterThan(layers);
     }
+    expect(broken).toEqual([]);
   });
 });
 

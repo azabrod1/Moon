@@ -24,25 +24,32 @@ describe('the map star backdrop', () => {
     expect(expected).toBeGreaterThan(1000);
   });
 
+  // The per-star checks below gather the stars that fail and hold them to none
+  // once, the first ten named: an expect per attribute of 25,000 stars was a
+  // fifth of a million calls and most of this file's time.
+
   it('places every star on the camera-centred sphere', () => {
     const pos = geo.getAttribute('position');
+    const off: string[] = [];
     for (let i = 0; i < pos.count; i++) {
       const r = Math.hypot(pos.getX(i), pos.getY(i), pos.getZ(i));
-      expect(r).toBeCloseTo(MAP_STAR_SPHERE_RADIUS, 6);
+      // toBeCloseTo's 6 digits: closer than half of 1e-6.
+      if (!(Math.abs(MAP_STAR_SPHERE_RADIUS - r) < 0.5e-6) && off.length < 10) off.push(`star ${i} at radius ${r}`);
     }
+    expect(off).toEqual([]);
   });
 
   it('keeps colours and alphas finite and in range', () => {
     const color = geo.getAttribute('color');
     const alpha = geo.getAttribute('alpha');
+    const bad: string[] = [];
     for (let i = 0; i < alpha.count; i++) {
-      expect(Number.isFinite(color.getX(i))).toBe(true);
-      expect(Number.isFinite(color.getY(i))).toBe(true);
-      expect(Number.isFinite(color.getZ(i))).toBe(true);
       const a = alpha.getX(i);
-      expect(a).toBeGreaterThan(0);
-      expect(a).toBeLessThanOrEqual(1);
+      const ok = Number.isFinite(color.getX(i)) && Number.isFinite(color.getY(i)) && Number.isFinite(color.getZ(i))
+        && a > 0 && a <= 1;
+      if (!ok && bad.length < 10) bad.push(`star ${i}: colour ${color.getX(i)}, ${color.getY(i)}, ${color.getZ(i)}, alpha ${a}`);
     }
+    expect(bad).toEqual([]);
   });
 
   it('composites as a backdrop: depth off, drawn first, own layer', () => {
@@ -66,14 +73,20 @@ describe('the map star backdrop', () => {
     const size = geo.getAttribute('size');
     const alpha = geo.getAttribute('alpha');
     let tapered = 0;
+    const unlike: string[] = [];
     for (let i = 0; i < catalog.length; i++) {
       const star = catalog[i];
       const visual = starPointVisual(star.magnitude, faintestMag);
       const taper = starBeyondAnchorScale(star.magnitude);
-      expect(size.getX(i)).toBeCloseTo(visual.sizePx, 6);
-      expect(alpha.getX(i)).toBeCloseTo(visual.alpha * taper, 6);
+      // toBeCloseTo's 6 digits on both attributes.
+      const sizeOk = Math.abs(visual.sizePx - size.getX(i)) < 0.5e-6;
+      const alphaOk = Math.abs(visual.alpha * taper - alpha.getX(i)) < 0.5e-6;
+      if (!(sizeOk && alphaOk) && unlike.length < 10) {
+        unlike.push(`star ${i} (mag ${star.magnitude}): size ${size.getX(i)} for ${visual.sizePx}, alpha ${alpha.getX(i)} for ${visual.alpha * taper}`);
+      }
       if (taper < 1) tapered++;
     }
+    expect(unlike).toEqual([]);
     // The taper must actually bind for part of the catalog, or this test
     // would pass with the factor deleted.
     expect(tapered).toBeGreaterThan(0);

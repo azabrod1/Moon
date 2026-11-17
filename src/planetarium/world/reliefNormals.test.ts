@@ -69,7 +69,14 @@ describe('encodeReliefNormals', () => {
       expect(Math.abs(dzdx - expected)).toBeLessThan(0.02);
       expect(Math.abs(dzdy)).toBeLessThan(0.02);
     }
-    for (let i = 2; i < out.length; i += 3) expect(out[i]).toBeGreaterThanOrEqual(128);
+    // Every blue byte at 128 or over is the lowest of them at 128 or over: one
+    // assertion, where one per texel was 259,200 calls and two seconds.
+    let lowestBlue = Number.POSITIVE_INFINITY;
+    let lowestAt = -1;
+    for (let i = 2; i < out.length; i += 3) {
+      if (out[i] < lowestBlue) { lowestBlue = out[i]; lowestAt = (i - 2) / 3; }
+    }
+    expect(lowestBlue, `the lowest blue is texel ${lowestAt}'s`).toBeGreaterThanOrEqual(128);
   });
 
   it('wraps longitude at the seam and clamps latitude at the poles', () => {

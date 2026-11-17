@@ -3383,20 +3383,24 @@ export class PlanetariumMode {
           // in place before anything draws with it. main.ts kicked the load at
           // init; this await usually finds it already settled.
           //
-          // Every body's position comes from the fitted ephemeris, and the
-          // build samples the orbit lines from those positions, so the build
-          // waits for that file (also kicked at init; its loader never
-          // rejects, falling back to the analytic models instead). Chained
-          // onto the build alone, so a star catalog that fails still fails
-          // the gate at once, not after the ephemeris has had its full wait.
+          // Every body's position comes from the fitted ephemeris (also
+          // kicked at init; its loader never rejects, falling back to the
+          // analytic models), so the gate waits for it too. The build runs
+          // beside it rather than after it, which keeps its texture decodes
+          // and mesh work off a slow link's critical path; the one thing the
+          // build bakes from positions, the orbit lines, is sampled again
+          // below once the file is in. A star catalog that fails still fails
+          // the gate at once.
           const [solarSystem] = await Promise.all([
-            loadFittedEphemeris().then(() =>
-              createSolarSystem((progress) => {
-                reportActivationProgress(progress.completedUnits);
-              }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
-            ),
+            createSolarSystem((progress) => {
+              reportActivationProgress(progress.completedUnits);
+            }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
             loadBrightStarCatalog(),
+            loadFittedEphemeris(),
           ]);
+          // The build may have sampled the lines before the ephemeris was
+          // installed; draw them from the positions the scene will use.
+          resampleOrbitLines(solarSystem, this.layoutMode, initialWorldUtcMs);
           this.solarSystem = solarSystem;
         } catch (error) {
           this.resumePrompt.cancel();

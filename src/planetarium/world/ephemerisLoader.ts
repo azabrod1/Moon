@@ -1,11 +1,15 @@
 /**
- * Fetches the fitted ephemeris (public/ephemeris/ephemeris.v1.bin, 1.8 MB) and
+ * Fetches the fitted ephemeris (public/ephemeris/ephemeris.v1.bin, 1.4 MB) and
  * installs it in astronomy/fittedEphemeris.ts. One shared, memoized load:
  * main.ts kicks it at init so the fetch overlaps everything else, and
- * PlanetariumMode.activate awaits the same promise before it builds the solar
- * system. The build samples every orbit line, so the positions have to be the
- * fitted ones by then, or the lines would be drawn from the analytic models
- * and sit thousands of kilometres off their bodies until the next resample.
+ * PlanetariumMode.activate awaits the same promise in the gate that lifts the
+ * loading screen, beside the solar-system build, then samples the orbit lines
+ * again: the build may have drawn them from the analytic models, thousands of
+ * kilometres off their bodies.
+ *
+ * While it loads, index.html holds back the boot warm's durable wave (the
+ * moons' maps, 10 MB the loading screen does not wait for) so it does not
+ * share a slow line with this file; settling, either way, releases it.
  *
  * Unlike the star catalog, a failed load is not a boot error. The analytic
  * models are a complete answer, only a less accurate one (the Moon within
@@ -19,12 +23,12 @@
  * a slow phone link it shares the line with the boot textures, and a fixed
  * timeout would abandon a download that was still arriving and start a
  * second one against it. It is given up when no bytes have arrived for
- * STALL_MS, or past TOTAL_MS (1.8 MB in 2 minutes is 120 kbit/s). On a link
+ * STALL_MS, or past TOTAL_MS (1.4 MB in 2 minutes is 100 kbit/s). On a link
  * that delivers nothing the fallback comes after 15 + 1 + 15 = 31 s; the star
  * catalog's own ladder has failed the boot well before that.
  */
 import { FITTED_EPHEMERIS_FILE, parseFittedEphemeris, setFittedEphemeris } from '../../astronomy/fittedEphemeris';
-import { takeBootWarmResponse } from './textureBitmapLoader';
+import { releaseBootWarmWave, takeBootWarmResponse } from './textureBitmapLoader';
 import { debugWarn } from '../../shared/debug';
 
 const STALL_MS = 15_000;
@@ -82,22 +86,28 @@ async function fetchOnce(url: string, attempt: number): Promise<ArrayBuffer> {
   return readBody(await withDeadline(request, STALL_MS, 'ephemeris request stalled'));
 }
 
-/** Load and install the ephemeris. Idempotent; never rejects. */
+/** Load and install the ephemeris. Idempotent; never rejects. Once it has
+ *  settled, either way, the boot warm's held durable wave starts (index.html):
+ *  until then those maps would only slow this download down. */
 export function loadFittedEphemeris(): Promise<void> {
   loadPromise ??= (async () => {
     const url = import.meta.env.BASE_URL + FITTED_EPHEMERIS_FILE;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        setFittedEphemeris(parseFittedEphemeris(await fetchOnce(url, attempt)));
-        return;
-      } catch (err) {
-        if (attempt >= RETRY_BACKOFF_MS.length) {
-          debugWarn('Ephemeris unavailable; positions use the analytic models this session', { err: String(err) });
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          setFittedEphemeris(parseFittedEphemeris(await fetchOnce(url, attempt)));
           return;
+        } catch (err) {
+          if (attempt >= RETRY_BACKOFF_MS.length) {
+            debugWarn('Ephemeris unavailable; positions use the analytic models this session', { err: String(err) });
+            return;
+          }
+          debugWarn('Ephemeris fetch failed; retrying', { attempt, err: String(err) });
+          await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
         }
-        debugWarn('Ephemeris fetch failed; retrying', { attempt, err: String(err) });
-        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
       }
+    } finally {
+      releaseBootWarmWave();
     }
   })();
   return loadPromise;

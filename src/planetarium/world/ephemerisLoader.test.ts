@@ -43,12 +43,12 @@ afterEach(() => {
 });
 
 describe('boot wiring', () => {
-  // Pinned in source, as the star catalog's are: the build samples every
-  // orbit line from the positions, so it must wait for the file, and it must
-  // wait inside the gate that also awaits the star catalog.
-  it('chains the solar-system build onto the ephemeris inside the gate', () => {
+  // Pinned in source, as the star catalog's are: nothing may draw before the
+  // file is in, so the gate that lifts the loading screen waits for it, and
+  // the orbit lines the build sampled beside it are sampled again after it.
+  it('waits for the ephemeris inside the gate, then resamples the orbit lines', () => {
     expect(planetariumModeSource).toMatch(
-      /Promise\.all\(\[\s*loadFittedEphemeris\(\)\.then\(\(\) =>\s*createSolarSystem\([\s\S]{0,400}?loadBrightStarCatalog\(\),\s*\]\)/,
+      /Promise\.all\(\[\s*createSolarSystem\([\s\S]{0,400}?loadBrightStarCatalog\(\),\s*loadFittedEphemeris\(\),\s*\]\);\s*(?:\/\/[^\n]*\n\s*)*resampleOrbitLines\(solarSystem, this\.layoutMode, initialWorldUtcMs\);/,
     );
   });
 
@@ -60,22 +60,30 @@ describe('boot wiring', () => {
 describe('loadFittedEphemeris', () => {
   it('drinks the boot warm response and installs the file', async () => {
     const fetchSpy = vi.fn();
+    const release = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('__bootTexWarm', new Map([[URL_PATH, Promise.resolve(new Response(tinyFile()))]]));
+    vi.stubGlobal('__bootWarmRelease', release);
     await loadFittedEphemeris();
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(fittedEphemerisInstalled()).toBe(true);
+    // The held durable wave starts once the ephemeris is in.
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('resolves without installing when every attempt fails, so the session runs on the analytic models', async () => {
     const fetchSpy = vi.fn(async () => new Response('nope', { status: 503 }));
+    const release = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('__bootWarmRelease', release);
     vi.useFakeTimers();
     const load = loadFittedEphemeris();
     await vi.runAllTimersAsync();
     await expect(load).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fittedEphemerisInstalled()).toBe(false);
+    // Given up, the held wave starts all the same.
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a truncated file rather than installing a shorter ephemeris', async () => {

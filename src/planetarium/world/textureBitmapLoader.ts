@@ -98,6 +98,12 @@ export function takeBootWarmResponse(url: string): Promise<Response> | undefined
   return hit;
 }
 
+/** Start the boot warm's durable wave, which index.html holds back until the
+ *  ephemeris has settled so it does not share the line with it. Idempotent. */
+export function releaseBootWarmWave(): void {
+  (globalThis as { __bootWarmRelease?: () => void }).__bootWarmRelease?.();
+}
+
 function bootWarmMap(): Map<string, Promise<Response>> | undefined {
   return (globalThis as { __bootTexWarm?: Map<string, Promise<Response>> }).__bootTexWarm;
 }

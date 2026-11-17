@@ -107,6 +107,22 @@ describe('index.html boot texture fetch-warm', () => {
     expect(firstBackground).toBeGreaterThan(lastBlocking);
   });
 
+  it('holds the durable wave until the ephemeris has settled', () => {
+    // The wave would otherwise share a slow line with the ephemeris the
+    // solar-system build waits for. Its maps sit in the warm map as promises
+    // released by ephemerisLoader.ts (with a safety timer for a page whose
+    // app never gets there), never started by the immediate loop.
+    const script = warmScript();
+    const heldList = script.slice(script.indexOf('var durableWave = ['), script.indexOf('var warm = new Map()'));
+    const immediateList = script.slice(script.indexOf('var files = ['), script.indexOf('var durableWave = ['));
+    for (const file of [PLANET_TEXTURE_FILES.moon, PLANET_TEXTURE_FILES.europa, PLANET_TEXTURE_FILES.moonNormal]) {
+      expect(heldList).toContain(`'${file}'`);
+      expect(immediateList).not.toContain(`'${file}'`);
+    }
+    expect(script).toContain('window.__bootWarmRelease = function');
+    expect(script).toContain('setTimeout(window.__bootWarmRelease, 30000)');
+  });
+
   it('stashes the promises under the key the loader takes them from', () => {
     // Both ends of the handoff, pinned against each other: the inline script
     // must write the global this test stores under, and takeBootWarmResponse

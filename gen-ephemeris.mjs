@@ -45,7 +45,8 @@ const BIN_OUT = path.resolve(process.cwd(), 'public/ephemeris/ephemeris.v1.bin')
 const GOLDENS_OUT = path.resolve(process.cwd(), 'src/astronomy/ephemeris.goldens.json');
 
 /** 1900-01-01 00:00 TDB, for 143 × 512 days (to 2100-06-16), so that every
- *  interval length tried divides the window exactly. */
+ *  interval length tried up to 512 days divides the window exactly (1024 is
+ *  tried and declined where it does not). */
 const WINDOW_START_JD = 2415020.5;
 const WINDOW_END_JD = WINDOW_START_JD + 143 * 512;
 /** Horizons refuses more than 90,000 rows a request, and answered 503 to one
@@ -58,21 +59,22 @@ const EARTH_MOON_MASS_RATIO = 81.3005690769;
  * Targets, as the worst held-out error in km. Moon: 1 km keeps an eclipse's
  * centre line within about 2 km. The barycentre feeds Earth, whose error
  * moves the Sun's direction by error / 1 AU. Planets: about 0.05″ from Earth
- * at closest approach, far below anything visible.
+ * at closest approach (Mercury's 20 km at 0.55 AU), far below anything
+ * visible.
  */
 const BODIES = [
-  { name: 'Moon', command: '301', center: '500@399', stepHours: 4, targetKm: 1, intervals: [4, 8, 16] },
-  { name: 'EarthMoonBarycenter', command: '3', center: '500@10', stepHours: 12, targetKm: 5, intervals: [16, 32, 64] },
-  { name: 'Mercury', command: '1', center: '500@10', stepHours: 12, targetKm: 10, intervals: [8, 16, 32] },
-  { name: 'Venus', command: '2', center: '500@10', stepHours: 24, targetKm: 10, intervals: [16, 32, 64] },
-  { name: 'Mars', command: '4', center: '500@10', stepHours: 24, targetKm: 20, intervals: [16, 32, 64] },
-  { name: 'Jupiter', command: '5', center: '500@10', stepHours: 96, targetKm: 50, intervals: [64, 128, 256] },
-  { name: 'Saturn', command: '6', center: '500@10', stepHours: 96, targetKm: 50, intervals: [64, 128, 256] },
-  { name: 'Uranus', command: '7', center: '500@10', stepHours: 192, targetKm: 100, intervals: [128, 256, 512] },
-  { name: 'Neptune', command: '8', center: '500@10', stepHours: 192, targetKm: 100, intervals: [128, 256, 512] },
-  { name: 'Pluto', command: '9', center: '500@10', stepHours: 192, targetKm: 100, intervals: [128, 256, 512] },
+  { name: 'Moon', command: '301', center: '500@399', stepHours: 4, targetKm: 1, intervals: [8, 16, 32, 64] },
+  { name: 'EarthMoonBarycenter', command: '3', center: '500@10', stepHours: 12, targetKm: 5, intervals: [32, 64, 128, 256] },
+  { name: 'Mercury', command: '1', center: '500@10', stepHours: 12, targetKm: 20, intervals: [16, 32, 64, 128] },
+  { name: 'Venus', command: '2', center: '500@10', stepHours: 24, targetKm: 10, intervals: [32, 64, 128, 256] },
+  { name: 'Mars', command: '4', center: '500@10', stepHours: 24, targetKm: 20, intervals: [32, 64, 128, 256] },
+  { name: 'Jupiter', command: '5', center: '500@10', stepHours: 96, targetKm: 50, intervals: [128, 256, 512, 1024] },
+  { name: 'Saturn', command: '6', center: '500@10', stepHours: 96, targetKm: 50, intervals: [128, 256, 512, 1024] },
+  { name: 'Uranus', command: '7', center: '500@10', stepHours: 192, targetKm: 100, intervals: [256, 512, 1024] },
+  { name: 'Neptune', command: '8', center: '500@10', stepHours: 192, targetKm: 100, intervals: [256, 512, 1024] },
+  { name: 'Pluto', command: '9', center: '500@10', stepHours: 192, targetKm: 100, intervals: [256, 512, 1024] },
 ];
-const COEFFICIENT_COUNTS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const COEFFICIENT_COUNTS = Array.from({ length: 35 }, (_, index) => index + 6); // 6 … 40
 
 /** Golden instants: off every fit grid (odd fractions of a day), spread over
  *  the window. Earth (399) is fetched too, for the derived-Earth check. */

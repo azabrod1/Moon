@@ -6150,6 +6150,13 @@
         'earth-seawind.v2.webp',
         'earth-bump.webp', 'neptune.webp', 'venus.webp', 'saturn.webp',
         'uranus.webp',
+      ];
+      // The durable wave: the moons' maps and three relief maps, which the
+      // loading screen never waits for. They are held until the ephemeris has
+      // landed (or been given up): on a slow link these 10MB would otherwise
+      // share the line with the 1.4MB the loading screen waits for, and
+      // the boot sat a minute behind maps it does not need yet.
+      var durableWave = [
         'moon-normal.webp', 'mars-normal.v3.webp', 'earth-clouds-normal.v2.webp',
         'europa.v2.webp', 'io.v2.webp',
         'ganymede.v2.webp', 'triton.webp', 'moon.webp', 'callisto.v2.webp',
@@ -6159,13 +6166,13 @@
       ];
       var warm = new Map();
       // The star-catalog sidecar goes first: 313KB that gates the starfield
-      // build, ahead of the 9.2MB texture wave.
+      // build, ahead of the texture wave.
       var starUrl = '%BASE_URL%stardata/bright-stars.v1.bin';
       var starRequest = fetch(starUrl);
       starRequest.catch(function () {});
       warm.set(starUrl, starRequest);
-      // Then the ephemeris (1.8MB): every body's position comes from it, and
-      // the solar-system build waits for it.
+      // Then the ephemeris (1.4MB): every body's position comes from it, and
+      // the loading screen waits for it.
       var ephemerisUrl = '%BASE_URL%ephemeris/ephemeris.v1.bin';
       var ephemerisRequest = fetch(ephemerisUrl);
       ephemerisRequest.catch(function () {});
@@ -6179,6 +6186,31 @@
         request.catch(function () {});
         warm.set(url, request);
       }
+      // A held map sits in the warm map as a promise of its request, so a
+      // loader that asks early waits for it rather than fetching it twice.
+      var held = [];
+      for (var j = 0; j < durableWave.length; j++) {
+        (function (heldUrl) {
+          var gate = new Promise(function (resolve) {
+            held.push(function () {
+              var heldRequest = fetch(heldUrl);
+              heldRequest.catch(function () {});
+              resolve(heldRequest);
+            });
+          });
+          gate.catch(function () {});
+          warm.set(heldUrl, gate);
+        })('%BASE_URL%textures/' + durableWave[j]);
+      }
+      var released = false;
+      window.__bootWarmRelease = function () {
+        if (released) return;
+        released = true;
+        for (var k = 0; k < held.length; k++) held[k]();
+      };
+      // The app releases the wave when the ephemeris settles
+      // (ephemerisLoader.ts); this covers a page whose app never gets there.
+      setTimeout(window.__bootWarmRelease, 30000);
       window.__bootTexWarm = warm;
     })();
   </script>

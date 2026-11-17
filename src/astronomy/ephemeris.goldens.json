@@ -24,7 +24,7 @@
   "targetsKm": {
    "Moon": 1,
    "EarthMoonBarycenter": 5,
-   "Mercury": 10,
+   "Mercury": 20,
    "Venus": 10,
    "Mars": 20,
    "Jupiter": 50,
@@ -34,13 +34,13 @@
    "Pluto": 100
   },
   "heldOutWorstKm": {
-   "Moon": 0.5043,
-   "EarthMoonBarycenter": 1.8866,
-   "Mercury": 6.6637,
-   "Venus": 2.7396,
-   "Mars": 4.3327,
-   "Jupiter": 35.0006,
-   "Saturn": 32.0376,
+   "Moon": 0.8804,
+   "EarthMoonBarycenter": 4.5186,
+   "Mercury": 18.8819,
+   "Venus": 7.1021,
+   "Mars": 10.5527,
+   "Jupiter": 31.9057,
+   "Saturn": 31.7035,
    "Uranus": 59.4519,
    "Neptune": 59.454,
    "Pluto": 59.4576

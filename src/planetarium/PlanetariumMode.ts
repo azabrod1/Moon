@@ -1748,6 +1748,9 @@ export class PlanetariumMode {
    *  view, blank everywhere else. */
   private planetPoints: MoonDots | null = null;
   private planetPointsFilled = false;
+  /** The planets drawn as points this frame, less the tracked one (the HUD
+   *  names it): the surface view's labels name these and no others. */
+  private surfacePlanetLabelNames = new Set<string>();
   private tmpPlanetPointPos = new THREE.Vector3();
   private tmpPlanetPointVisual: PlanetPointVisual = { alpha: 0, sizePx: 0, brightness: 0 };
   /** Each planet's point colour (a star's at its B−V) and its luminance. */
@@ -6572,8 +6575,10 @@ export class PlanetariumMode {
     const cameraPosition = this.camera.position;
     const fovDeg = displayFovDeg(this.camera);
     const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : null;
+    const trackedPlanetName = this.surfaceTarget.kind === 'planet' ? this.surfaceTarget.planetName : null;
     const kneeActive = this.starGain > 1.001;
     const planets = this.solarSystem.planets;
+    this.surfacePlanetLabelNames.clear();
     for (let index = 0; index < planets.length; index++) {
       const planet = planets[index];
       const name = planet.data.name;
@@ -6610,6 +6615,7 @@ export class PlanetariumMode {
         points.hide(index);
         continue;
       }
+      if (alpha >= LABEL_DOT_MIN_ALPHA && name !== trackedPlanetName) this.surfacePlanetLabelNames.add(name);
       // In front of the globe and its rings, so neither depth-kills the point
       // while it hands over; nearer bodies still cover it.
       const ring = RING_CONFIGS[name];
@@ -6628,6 +6634,38 @@ export class PlanetariumMode {
     }
     points.flush();
     this.planetPointsFilled = true;
+  }
+
+  /**
+   * The surface view's labels: the "Planet labels" setting names the planets
+   * drawn as points (updatePlanetPointsForCamera), through the planet label
+   * layer's own occlusion, glare fade and de-overlap — no markers, no Sun or
+   * moon labels, no reveal. Everything else in the layer stays hidden, as it
+   * has been since the surface view hid it: a name printed on a disc there
+   * covers the very thing the view is for.
+   */
+  private renderSurfacePlanetLabels(): void {
+    const labels = this.planetLabels;
+    // The container's display is syncWorldLabelContainers' alone; this pass
+    // only places names, and none while the layer is down.
+    if (!labels || !this.solarSystem || this.planetLabelsContainerEl?.style.display === 'none') return;
+    const scenePositions = this.ensurePickScenePositions();
+    for (const planet of this.solarSystem.planets) {
+      const slot = scenePositions.get(planet.data.name)!;
+      slot.x = planet.group.position.x;
+      slot.y = planet.group.position.y;
+      slot.z = planet.group.position.z;
+    }
+    labels.collectForegroundSpheres(scenePositions, this.renderer, this.scenePixelRatio());
+    this.collectDynamicOccluders();
+    labels.renderLabels(scenePositions, this.labelPlayerOrigin, this.renderer, {
+      showMarkers: false,
+      showLabels: true,
+      excludeName: this.landedOn?.type === 'planet' ? this.landedOn.name : undefined,
+      sunMask: this.sunGlareMaskParams,
+      sunPos: this.solarSystem.sun.position,
+      onlyBodies: this.surfacePlanetLabelNames,
+    });
   }
 
   /**
@@ -8159,19 +8197,23 @@ export class PlanetariumMode {
    *  whenever labels are on OR a body is being revealed (per-child hiding does
    *  the rest), fold away in surface view, and honour the modal hide. */
   private syncWorldLabelContainers(): void {
-    const show = !this.worldLabelsModalHidden
+    const allowed = !this.worldLabelsModalHidden
       && !this.worldLabelsTourHidden
-      && this.landedView !== 'surface'
       // Nothing may re-show world labels over the map: the system-map-active
       // class force-hides the DOM anyway, but a modal closing under the map
       // would otherwise clear the hide flag and leave them nominally shown.
-      && !this.isMapOpen()
-      && (this.showBodyLabels || this.revealedBody !== null);
-    const disp = show ? '' : 'none';
+      && !this.isMapOpen();
+    // The surface view names its planet points (renderSurfacePlanetLabels)
+    // by the setting alone — it has no reveal — and shows no moon labels.
+    const surface = this.landedView === 'surface';
+    const planetShow = allowed && (surface ? this.showBodyLabels : this.showBodyLabels || this.revealedBody !== null);
+    const moonShow = allowed && !surface && (this.showBodyLabels || this.revealedBody !== null);
+    const planetDisplay = planetShow ? '' : 'none';
+    const moonDisplay = moonShow ? '' : 'none';
     const planetEl = this.planetLabelsContainerEl;
-    if (planetEl && planetEl.style.display !== disp) planetEl.style.display = disp;
-    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== disp) {
-      this.moonLabelContainer.style.display = disp;
+    if (planetEl && planetEl.style.display !== planetDisplay) planetEl.style.display = planetDisplay;
+    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== moonDisplay) {
+      this.moonLabelContainer.style.display = moonDisplay;
     }
   }
 
@@ -20941,16 +20983,19 @@ export class PlanetariumMode {
     // A half-degree disc at 10° FOV doesn't want a 14px DOM label on it.
     // #planet-labels also hosts the Sun label; constellation labels stay
     // (they're the sky itself). Un-hiding on surface exit still respects the
-    // "Planet labels" setting.
-    const show = !hidden && this.showBodyLabels;
-    const planetLabelsEl = document.getElementById('planet-labels');
-    if (planetLabelsEl) planetLabelsEl.style.display = show ? '' : 'none';
-    if (this.moonLabelContainer) this.moonLabelContainer.style.display = show ? '' : 'none';
+    // "Planet labels" setting. Inside the surface view the planet layer comes
+    // back for the planets drawn as points (renderSurfacePlanetLabels). The
+    // containers' display has one writer, syncWorldLabelContainers, which
+    // reads the view from landedView (already switched by both callers).
+    this.syncWorldLabelContainers();
     // The marker sprites are Three.js objects owned by the renderLabels loop,
     // which surface view skips — clear them only when nothing should paint them
     // (entering surface view, or both the label and marker flags off). Exiting
     // with labels off but markers on leaves them for the pipeline to revive.
     if (hidden || (!this.showBodyLabels && !this.showBodyMarkers)) this.planetLabels?.hideAll();
+    // The surface view shows this layer again for its planet points' names
+    // (renderSurfacePlanetLabels), and the Sun's label lives in it.
+    if (hidden) this.sunLabel.hide();
   }
 
   /** Drag look-around: content follows the finger; any drag breaks tracking. */
@@ -22487,6 +22532,7 @@ export class PlanetariumMode {
       if (willDraw) this.updateMoonDotsForCamera();
     }
     if (willDraw) this.updatePlanetPointsForCamera();
+    if (willDraw && !mapOpen && this.landedView === 'surface') this.renderSurfacePlanetLabels();
     // After the surface re-pin: the Sun metering (screen position, occlusion,
     // corona gate) must read this frame's camera pose, not last frame's.
     // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the

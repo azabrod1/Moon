@@ -567,12 +567,16 @@ export class PlanetLabels {
        *  (ship under the angular floor, a few px) no test runs — hiding a
        *  whole beacon glow behind a 3px ship would be the worse artifact. */
       markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
+      /** When set, only these bodies may draw a label: the surface view names
+       *  the planets it draws as points, and no others. */
+      onlyBodies?: ReadonlySet<string>;
     } = {},
   ) {
     const {
       showMarkers = true,
       showLabels = true,
       excludeName,
+      onlyBodies,
       revealedBody,
       sunMask,
       sunPos,
@@ -604,7 +608,7 @@ export class PlanetLabels {
       // Suppress the landed body's own label/sprite entirely — no need to
       // label the thing you're standing on, and its own disc would dominate
       // the view.
-      if (!pos || entry.planet.name === excludeName) {
+      if (!pos || entry.planet.name === excludeName || (onlyBodies && !onlyBodies.has(entry.planet.name))) {
         entry.sprite.visible = false;
         if (entry.labelVisible) {
           entry.label.style.display = 'none';

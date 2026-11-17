@@ -7,6 +7,8 @@ import {
   SPHERE_SHAPE,
   type SpheroidShape,
 } from './spheroid';
+import { bodyShape } from './bodyShape';
+import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 
 // Saturn's shape, its pole tipped off every axis so nothing lines up by luck.
 const EQUATORIAL = 60_268;
@@ -110,6 +112,27 @@ describe('spheroid', () => {
         const radius = projectedOutlineRadius(sight.x, sight.y, sight.z, direction.x, direction.y, direction.z, EQUATORIAL, SATURN);
         expect(radius, `latitude ${sightLatitudeDeg}°, angle ${angle}`).toBeCloseTo(inside, 3);
       }
+    }
+  });
+});
+
+describe("the giants' shapes", () => {
+  it('flatten the four giants by their published polar radii, and nothing else', () => {
+    // IAU WGCCRE equatorial and polar radii at the 1-bar level, km.
+    const published: Record<string, [number, number]> = {
+      Jupiter: [71_492, 66_854], Saturn: [60_268, 54_364], Uranus: [25_559, 24_973], Neptune: [24_764, 24_341],
+    };
+    for (const body of PLANETARIUM_BODIES) {
+      const shape = bodyShape(body.name);
+      const radii = published[body.name];
+      if (!radii) {
+        expect(shape.flattening, body.name).toBe(0);
+        continue;
+      }
+      expect(body.radiusKm, body.name).toBe(radii[0]);
+      expect(body.radiusKm * (1 - shape.flattening), body.name).toBeCloseTo(radii[1], 6);
+      // Along the pole the globe is drawn on (planetary.ts' pole basis).
+      expect(Math.hypot(shape.poleX, shape.poleY, shape.poleZ), body.name).toBeCloseTo(1, 12);
     }
   });
 });

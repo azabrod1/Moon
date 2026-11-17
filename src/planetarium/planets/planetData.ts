@@ -161,6 +161,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 5.203,
     radiusAU: kmToAU(71_492),
     radiusKm: 71_492,
+    flattening: 1 - 66_854 / 71_492,   // polar 66,854 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 3.13,
     orbitalVelocityKmS: 13.07,
     color: 0xa89060,
@@ -184,6 +185,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 9.588,
     radiusAU: kmToAU(60_268),
     radiusKm: 60_268,
+    flattening: 1 - 54_364 / 60_268,   // polar 54,364 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 26.73,
     orbitalVelocityKmS: 9.69,
     color: 0xbfb08a,
@@ -207,6 +209,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
+    flattening: 1 - 24_973 / 25_559,   // polar 24,973 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 97.77,
     orbitalVelocityKmS: 6.81,
     color: 0x6aa0b8,
@@ -230,6 +233,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,
+    flattening: 1 - 24_341 / 24_764,   // polar 24,341 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 29.56,
     orbitalVelocityKmS: 5.43,
     color: 0x2a4ab8,

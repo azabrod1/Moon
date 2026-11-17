@@ -47,6 +47,8 @@ import { getSatelliteOrbitMeta } from './satellites';
 import { KM_PER_AU } from './constants';
 import goldens from './shadows.goldens.json';
 import { raySpheroidT, SPHERE_SHAPE, type SpheroidShape } from './spheroid';
+import { bodyShape } from './bodyShape';
+import { eclipticToEquatorial } from './planetary';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 const MIN = 60_000;
@@ -303,6 +305,12 @@ describe('Earth: solar eclipses vs EclipseWise', () => {
   });
 });
 
+/** A heliocentric J2000 ecliptic vector (the goldens' frame) in the scene
+ *  frame, where a body's pole (bodyShape) is expressed. */
+function fromEcliptic(vector: number[]): THREE.Vector3 {
+  return eclipticToEquatorial(new THREE.Vector3(vector[0], vector[2], -vector[1]));
+}
+
 describe('satellite events vs JPL Horizons vectors', () => {
   const samples = goldens.samples as Record<
     string,
@@ -332,18 +340,21 @@ describe('satellite events vs JPL Horizons vectors', () => {
         [afterSample, 'none'],
       ] as const) {
         const sample = samples[sampleName];
-        const parentVec = new THREE.Vector3(...(sample.vectors[parentName] as [number, number, number]));
-        const moonVec = new THREE.Vector3(...(sample.vectors[moonName] as [number, number, number]));
+        const parentVec = fromEcliptic(sample.vectors[parentName]);
+        const moonVec = fromEcliptic(sample.vectors[moonName]);
+        const parentShape = bodyShape(parentName);
         const occluder = typedSpec.kind === 'eclipse' ? parentVec : moonVec;
         const target = typedSpec.kind === 'eclipse' ? moonVec : parentVec;
         const occluderR = radiusKmOf(parentName, typedSpec.kind === 'eclipse' ? parentName : moonName);
         const targetR = radiusKmOf(parentName, typedSpec.kind === 'eclipse' ? moonName : parentName);
 
-        const g = computeShadowGeometry(occluder, occluderR, target, geometryScratch());
+        const g = typedSpec.kind === 'eclipse'
+          ? computeShadowGeometry(occluder, occluderR, target, geometryScratch(), 1, parentShape)
+          : computeShadowGeometry(occluder, occluderR, target, geometryScratch());
         const classification =
           typedSpec.kind === 'eclipse'
             ? classifyEclipse(g, targetR, circumstanceScratch()).classification
-            : classifyShadowTransit(g, occluderR, targetR, occluder.length() * KM_PER_AU);
+            : classifyShadowTransit(g, occluderR, targetR, occluder.length() * KM_PER_AU, parentShape);
         expect(classification, `${sampleName} (JPL vectors)`).toBe(expected);
       }
     },
@@ -377,9 +388,9 @@ describe('satellite events vs JPL Horizons vectors', () => {
     expect(event!.classification).toBe('total');
     let inEclipseSamples = 0;
     for (const row of goldens.titanEclipseScan) {
-      const saturn = new THREE.Vector3(...(row.Saturn as [number, number, number]));
-      const titan = new THREE.Vector3(...(row.Titan as [number, number, number]));
-      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch());
+      const saturn = fromEcliptic(row.Saturn as number[]);
+      const titan = fromEcliptic(row.Titan as number[]);
+      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch(), 1, bodyShape('Saturn'));
       const jplInEclipse = classifyEclipse(g, titanR, circumstanceScratch()).classification !== 'none';
       const utcMs = Date.parse(row.utc);
       expect(jplInEclipse, row.utc).toBe(utcMs >= event!.startUtcMs && utcMs <= event!.endUtcMs);

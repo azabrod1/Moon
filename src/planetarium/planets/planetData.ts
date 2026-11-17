@@ -37,7 +37,7 @@ export interface PlanetData {
   systemRadiusAU: number;             // radius at which speed throttle begins
 }
 
-import { KM_PER_AU } from '../../astronomy/constants';
+import { KM_PER_AU, SUN_RADIUS_KM } from '../../astronomy/constants';
 
 function kmToAU(km: number): number {
   return km / KM_PER_AU;
@@ -45,8 +45,8 @@ function kmToAU(km: number): number {
 
 export const SUN_DATA = {
   name: 'Sun',
-  radiusAU: kmToAU(696_340),     // ~0.00465 AU
-  radiusKm: 696_340,
+  radiusAU: kmToAU(SUN_RADIUS_KM),     // ~0.00465 AU
+  radiusKm: SUN_RADIUS_KM,
   color: 0xfff5e0,
 };
 

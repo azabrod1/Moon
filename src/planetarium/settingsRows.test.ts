@@ -41,7 +41,11 @@ const graphicsPage = panelMarkup.slice(
   panelMarkup.indexOf('data-page="graphics"'),
   panelMarkup.indexOf('data-page="display"'),
 );
-const displayPage = panelMarkup.slice(panelMarkup.indexOf('data-page="display"'));
+const displayPage = panelMarkup.slice(
+  panelMarkup.indexOf('data-page="display"'),
+  panelMarkup.indexOf('data-page="credits"'),
+);
+const creditsPage = panelMarkup.slice(panelMarkup.indexOf('data-page="credits"'));
 /** Every id the TypeScript asks a page for, by getElementById or setText. */
 const pageRead = idsIn(ts, /(?:getElementById|setText)\('(settings-[a-z0-9-]+|menu-page-[a-z0-9-]+)'/g);
 
@@ -177,6 +181,61 @@ describe('the Display page', () => {
     const value = row.match(/<span class="menu-tier-value">([^<]*)<\/span>/)?.[1];
     expect(value).toBe(nightSidesSummary(DEFAULT_NIGHT_SIDES));
     expect(mode).toContain("setTierValue('display', nightSidesSummary(mode))");
+  });
+});
+
+describe('the Credits page', () => {
+  it('lives inside the panel, behind a tier row that names it', () => {
+    expect(panelMarkup).toContain('class="menu-page" data-page="credits" hidden');
+    expect(rootPage).toContain('data-open="credits"');
+    expect(creditsPage).toContain('class="menu-back"');
+    expect(creditsPage).toContain('<h3>Credits</h3>');
+  });
+
+  it('is static text, with no id for the TypeScript to miss', () => {
+    expect([...idsIn(creditsPage, /id="([a-z0-9-]+)"/g)]).toEqual([]);
+  });
+
+  it('opens every link in a new tab, away from the journey', () => {
+    // A link followed in place would unload the app mid-journey.
+    const links = [...creditsPage.matchAll(/<a\s[^>]*>/g)].map((m) => m[0]);
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link, link).toMatch(/href="https:\/\/[^"]+"/);
+      expect(link, link).toContain('target="_blank"');
+      expect(link, link).toContain('rel="noopener"');
+    }
+  });
+
+  it('sits straight under System map, as the last of the actions', () => {
+    const map = rootPage.indexOf('id="planetarium-btn-map"');
+    const credits = rootPage.indexOf('data-open="credits"');
+    expect(credits).toBeGreaterThan(map);
+    expect(rootPage.indexOf('data-open="graphics"')).toBeGreaterThan(credits);
+    // Nothing between the two but the comment that explains the row.
+    const between = rootPage.slice(
+      rootPage.indexOf('</button>', map) + '</button>'.length,
+      rootPage.lastIndexOf('<button', credits),
+    );
+    expect(between).not.toMatch(/<button|menu-divider|settings-row/);
+    expect(rootPage).toContain('class="menu-action menu-tier" data-open="credits"');
+    // ...and the last of them: the divider before the tiers comes next.
+    const after = rootPage.slice(credits, rootPage.indexOf('menu-divider', credits));
+    expect(after).not.toMatch(/menu-action|<button/);
+  });
+
+  it('names each group with a heading under the page\'s own', () => {
+    expect(creditsPage).not.toMatch(/<h[1256][\s>]/);
+    expect([...creditsPage.matchAll(/<h3[\s>]/g)]).toHaveLength(1);
+    expect([...creditsPage.matchAll(/<h4 class="menu-field-label">/g)].length).toBeGreaterThan(1);
+  });
+
+  it('gives every description a term, as a description list must', () => {
+    // A <dl> is groups of one or more <dt> then one or more <dd>; a <dd> with
+    // no <dt> before it in its list is invalid and reads oddly aloud.
+    for (const list of creditsPage.matchAll(/<dl[^>]*>([\s\S]*?)<\/dl>/g)) {
+      expect(list[1].trim().startsWith('<dt>'), list[1].slice(0, 80)).toBe(true);
+    }
   });
 });
 

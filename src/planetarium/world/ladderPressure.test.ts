@@ -185,4 +185,26 @@ describe('the tiles\' shortfall', () => {
       drawing: false, blockedDemand: true, pressureSinceMs: 0, nowMs: RELEASE_PRESSURE_DWELL_MS,
     })).releaseDue).toBe(true);
   });
+
+  it('owes a fresh dwell after any swap ends, settled or cancelled', () => {
+    // The caller restarts the latch when a swap it started settles, and when
+    // it cancels one whose body came back into view or under protection: the
+    // slot that frees must not be taken on the same frame, on an answer the
+    // ended swap was already answering.
+    const served = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS, swapInFlight: true,
+    }));
+    expect(served.tilesReleaseDue).toBe(false); // the swap holds the slot
+    expect(served.tilesShortSinceMs).toBe(0);
+    // The swap is cancelled: the slot is free and the latch restarted.
+    const sameFrame = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: null, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(sameFrame.tilesReleaseDue).toBe(false);
+    expect(sameFrame.tilesShortSinceMs).toBe(10 * RELEASE_PRESSURE_DWELL_MS);
+    // Still short a dwell later, it may go again.
+    expect(planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: sameFrame.tilesShortSinceMs, nowMs: 11 * RELEASE_PRESSURE_DWELL_MS,
+    })).tilesReleaseDue).toBe(true);
+  });
 });

@@ -4468,6 +4468,10 @@ export class PlanetariumMode {
         if (releaseLostItsReason(up, guarded.has(up))) {
           cancelTierRelease(up);
           if (this.releasing === up) this.releasing = null;
+          // Ended like a settled swap, and owed what one is owed: the tiles'
+          // next release waits a fresh dwell. Without it the freed slot is
+          // taken this same frame, on an answer from before the cancel.
+          this.tilesShortSinceMs = null;
           this.onLadderLedgerChange();
         }
         if (!overShare && !blockedDemand) {

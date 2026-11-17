@@ -813,7 +813,7 @@ describe('a scripted pan', () => {
 // Cost: the whole update, the measure included, and what it allocates.
 
 describe('the residency\'s cost', () => {
-  it('is a few hundredths of a millisecond at the worst pose found, and allocates nothing in steady state', async () => {
+  it('stays under a millisecond at the worst pose found, and allocates nothing in steady state', async () => {
     // The pose that makes the measure read the most points, from a search over
     // altitude, pitch, field of view and frame (a phone held upright, a
     // desktop window and a tall 4K window, in tile-ratio pixels): a grid,
@@ -881,16 +881,21 @@ describe('the residency\'s cost', () => {
     expect(w.residency.stats().resident).toBe(12);
     cam = worst.cam;
     frame();
+    // The ceiling below is ten times the figures, and 200 samples find a median
+    // well enough for that; 2,000 a timing was most of a second of every run
+    // for figures only the log line shows. CLOUD_RESIDENCY_SAMPLES=2000 gives
+    // them their old precision, the p99 among them.
+    const samples = Number(process.env.CLOUD_RESIDENCY_SAMPLES ?? 200);
     const time = (fn: () => void): [number, number] => {
       for (let i = 0; i < 300; i++) fn();
       const ts: number[] = [];
-      for (let i = 0; i < 2000; i++) {
+      for (let i = 0; i < samples; i++) {
         const t0 = performance.now();
         fn();
         ts.push(performance.now() - t0);
       }
       ts.sort((a, b) => a - b);
-      return [ts[1000] * 1000, ts[1980] * 1000];
+      return [ts[samples >> 1] * 1000, ts[Math.floor(samples * 0.99)] * 1000];
     };
     const [measureMedian, measureP99] = time(() => measure.measure(cam, sun));
     const [median, p99] = time(frame);
@@ -904,9 +909,9 @@ describe('the residency\'s cost', () => {
     });
     console.log(`worst pose: ${worst.label}; ${measure.pagesRead} pages read point by point, ${measure.pagesBounded} by their floor, `
       + `${measure.pointsRead} points, ${w.residency.stats().resident} resident, ${w.residency.stats().wanted} wanted\n`
-      + `  the measure: median ${measureMedian.toFixed(1)} µs, p99 ${measureP99.toFixed(1)} µs over 2,000\n`
-      + `  the whole update with it: median ${median.toFixed(1)} µs, p99 ${p99.toFixed(1)} µs over 2,000\n`
-      + `  the measure through a zoom: median ${zoomMedian.toFixed(1)} µs, p99 ${zoomP99.toFixed(1)} µs over 2,000`);
+      + `  the measure: median ${measureMedian.toFixed(1)} µs, p99 ${measureP99.toFixed(1)} µs over ${samples}\n`
+      + `  the whole update with it: median ${median.toFixed(1)} µs, p99 ${p99.toFixed(1)} µs over ${samples}\n`
+      + `  the measure through a zoom: median ${zoomMedian.toFixed(1)} µs, p99 ${zoomP99.toFixed(1)} µs over ${samples}`);
     // A ceiling with room for a slower machine than the one the figures were
     // taken on; the figures themselves are the log line.
     expect(median).toBeLessThan(1000);

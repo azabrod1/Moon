@@ -246,6 +246,8 @@ import {
   SURFACE_FOV_MIN_DEG,
   SURFACE_SPOT_SUN_DOWN,
   SURFACE_TARGET_ELEVATION_DEG,
+  SURFACE_AIM_EASE_S,
+  surfaceAimLiftPx,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
@@ -267,6 +269,7 @@ import {
   lensMaxFrameScale,
   lensSourceBoundOfOutputRect,
   makeLensWarpContext,
+  viewAngleAtOutputNdcY,
   type LensLocalScale,
   type LensWarpContext,
   type NdcRect,
@@ -2007,6 +2010,13 @@ export class PlanetariumMode {
   private coachSuppressesNextSurfaceHint = false;
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
+  /** How far above the screen's centre tracking aims the target, in px: the
+   *  centre of the sky the phone sheet leaves (surfaceAimLiftPx), zero
+   *  otherwise. The goal is re-measured at 8 Hz with the HUD's band and the
+   *  applied value eases toward it every frame, so a sheet that opens, parks
+   *  or is dragged slides the subject instead of jumping it. */
+  private surfaceAimLiftGoalPx = 0;
+  private surfaceAimLiftAppliedPx = 0;
   private surfaceLook: SurfaceLook;
   /** `?lookdrag=eyepiece`: the look-up view drags in the camera's own frame
    *  (applySurfaceEyepieceDrag) — no twist, and no level horizon — instead of
@@ -19897,6 +19907,19 @@ export class PlanetariumMode {
       swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
     };
     this.observatoryHud.render(state);
+    this.surfaceAimLiftGoalPx = this.measureSurfaceAimLiftPx();
+  }
+
+  /** The aim lift the open phone sheet asks for, from the strip of sky the
+   *  HUD just measured between its chips and its band. Nothing on desktop,
+   *  where the panel stands beside the sky, nor while the tour frames the
+   *  picture itself. */
+  private measureSurfaceAimLiftPx(): number {
+    if (this.tutorial || !this.observatoryPanel.sheetFormActive()) return 0;
+    const canvas = this.renderer.domElement;
+    const canvasTop = canvas.getBoundingClientRect().top;
+    const free = this.observatoryHud.freeSkyPx();
+    return surfaceAimLiftPx(free.top - canvasTop, free.bottom - canvasTop, canvas.clientHeight);
   }
 
   /**
@@ -20517,6 +20540,13 @@ export class PlanetariumMode {
     // event; plain "Look up" frames the companion subject.
     const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
     this.surfaceTracking = true;
+    // A fresh entry starts on the centre and eases to the free sky once the
+    // HUD has measured it; a lift left from an earlier visit would otherwise
+    // drift the first frames. A re-point keeps the lift it is already at.
+    if (this.landedView !== 'surface') {
+      this.surfaceAimLiftGoalPx = 0;
+      this.surfaceAimLiftAppliedPx = 0;
+    }
     // Fresh target, fresh marker: the hysteresis band must not inherit the
     // previous target's brackets/reticle state across entries/jumps/swaps.
     this.surfaceMarkerKind = 'brackets';
@@ -20833,11 +20863,28 @@ export class PlanetariumMode {
     // up to ~20° off-target). Parallel-transport a tangent up instead; it is
     // seeded from the camera's current up on entry/re-point/resume so
     // tracking never starts with a roll snap.
+    this.surfaceAimLiftAppliedPx +=
+      (this.surfaceAimLiftGoalPx - this.surfaceAimLiftAppliedPx) * (1 - Math.exp(-dt / SURFACE_AIM_EASE_S));
     if (this.surfaceTracking) {
       const forward = this.tmpSurfaceZenith.copy(targetPos).sub(this.camera.position);
       if (forward.lengthSq() > 0) forward.normalize();
       this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
       this.camera.lookAt(targetPos);
+      // The lift: turn the camera down by the view angle that shows the
+      // target that far up the finished frame, through the lens map the
+      // picture is drawn with. Recomputed every frame from the live FOV, so a
+      // pinch keeps the target where it is.
+      if (this.surfaceAimLiftAppliedPx > 0.05) {
+        const lens = this.camera.userData.lens as { strength: number; effectiveStrength?: number } | undefined;
+        const viewportHeight = Math.max(1, this.renderer.domElement.clientHeight);
+        this.camera.rotateX(
+          -viewAngleAtOutputNdcY(
+            (2 * this.surfaceAimLiftAppliedPx) / viewportHeight,
+            displayFovDeg(this.camera),
+            lens ? lens.effectiveStrength ?? lens.strength : 0,
+          ),
+        );
+      }
     }
 
     // The surface camera is now fully posed for this frame. Refresh its world

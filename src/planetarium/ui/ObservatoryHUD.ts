@@ -143,6 +143,7 @@ export class ObservatoryHUD {
   private blEl: HTMLElement | null = null;
   private brEl: HTMLElement | null = null;
   private timebarEl: HTMLElement | null = null;
+  private chipRowEl: HTMLElement | null = null;
   /** Last rendered clock state. The button dispatches an explicit intent so a
    * delayed Pause click can never turn into a resume when it is finally read. */
   private paused = false;
@@ -152,6 +153,9 @@ export class ObservatoryHUD {
   // both from render's band measure.
   private bandTopY = Infinity;
   private clusterMaxY = Infinity;
+  // Bottom edge of the top-right chip row: with bandTopY, the strip of sky
+  // the owner can centre the tracked target in.
+  private chipRowBottomY = -Infinity;
   private lastMarkerCss = '';
   private wired = false;
   /** Removals for the document-level gesture-retire listeners the reliable
@@ -181,6 +185,7 @@ export class ObservatoryHUD {
     this.blEl = this.rootEl?.querySelector('.shud-bl') ?? null;
     this.brEl = this.rootEl?.querySelector('.shud-br') ?? null;
     this.timebarEl = document.getElementById('surface-timebar');
+    this.chipRowEl = this.rootEl?.querySelector('.shud-tr') ?? null;
     if (this.wired) return;
     this.wired = true;
     // Touch devices pinch to zoom; pointer devices scroll. Set once — the input
@@ -297,6 +302,12 @@ export class ObservatoryHUD {
     return this.bandTopY;
   }
 
+  /** The strip of sky between the chip row and the bottom band, in viewport
+   *  px, as last measured; an unmeasured edge is infinite. */
+  freeSkyPx(): { top: number; bottom: number } {
+    return { top: this.chipRowBottomY, bottom: this.bandTopY };
+  }
+
   private anchorCluster(xPx: number, belowYPx: number): void {
     if (!this.discNoteEl || !this.trackPillEl) return;
     // At wide FOV the bracket bottom dives into the HUD's bottom band —
@@ -383,6 +394,9 @@ export class ObservatoryHUD {
       el && el.getClientRects().length > 0 ? el.getBoundingClientRect().top : Infinity;
     this.bandTopY = Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl));
     this.clusterMaxY = this.bandTopY - 62;
+    const chipRow = this.chipRowEl;
+    this.chipRowBottomY =
+      chipRow && chipRow.getClientRects().length > 0 ? chipRow.getBoundingClientRect().bottom : -Infinity;
   }
 
   /** Owner teardown: drop the document-level listeners, which would otherwise

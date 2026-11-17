@@ -38,6 +38,8 @@ import {
   SURFACE_TARGET_ELEVATION_DEG,
   makeSurfaceTargetChoice,
   orderSurfaceTargetChoices,
+  SURFACE_AIM_MIN_FREE_PX,
+  surfaceAimLiftPx,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
@@ -1106,5 +1108,19 @@ describe('surfaceLookRotation — the sky follows the finger at any roll', () =>
     const tilt0 = tiltFromLevel(q);
     for (let i = 0; i < 40; i++) q = drag(q, 0.03 * Math.cos(i), 0.02 * Math.sin(i * 1.7));
     expect(tiltFromLevel(q)).toBeCloseTo(tilt0, 9);
+  });
+});
+
+describe('surfaceAimLiftPx — the target centres in the sky the phone sheet leaves', () => {
+  it('lifts to the centre of the strip between the chips and the band', () => {
+    // 844 px screen, chips end at 90, the band starts at 518: centre 304.
+    expect(surfaceAimLiftPx(90, 518, 844)).toBe(118);
+  });
+
+  it('stays on the screen centre when the strip is too short, unmeasured, or not raised', () => {
+    expect(surfaceAimLiftPx(90, 90 + SURFACE_AIM_MIN_FREE_PX - 1, 844)).toBe(0);
+    expect(surfaceAimLiftPx(-Infinity, 518, 844)).toBe(0);
+    expect(surfaceAimLiftPx(90, Infinity, 844)).toBe(0);
+    expect(surfaceAimLiftPx(300, 800, 844)).toBe(0);
   });
 });

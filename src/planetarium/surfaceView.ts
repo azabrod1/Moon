@@ -453,6 +453,27 @@ export function transportTrackingUp(up: THREE.Vector3, forward: THREE.Vector3): 
   return up.normalize();
 }
 
+/** The shortest strip of free sky worth centring a target in. Below it (the
+ *  phone sheet pulled up high) the aim stays on the screen's centre. */
+export const SURFACE_AIM_MIN_FREE_PX = 120;
+
+/** Time constant of the aim lift's ease, in seconds: a sheet parking or
+ *  dragged slides the subject over a few tenths of a second. */
+export const SURFACE_AIM_EASE_S = 0.15;
+
+/**
+ * How far above the screen's centre the tracked target is aimed so that it
+ * centres in the strip of sky left between the chips at the top and the band
+ * at the bottom (px from the canvas top). Zero when either edge is unknown,
+ * when the strip is too short to frame anything in, or when its centre is not
+ * above the screen's: the lift only ever clears a sheet rising from below.
+ */
+export function surfaceAimLiftPx(freeTopPx: number, freeBottomPx: number, viewportHeightPx: number): number {
+  if (!Number.isFinite(freeTopPx) || !Number.isFinite(freeBottomPx)) return 0;
+  if (freeBottomPx - freeTopPx < SURFACE_AIM_MIN_FREE_PX) return 0;
+  return Math.max(0, viewportHeightPx / 2 - (freeTopPx + freeBottomPx) / 2);
+}
+
 /** Where the drag's yaw gain stops growing: the cosine of an 80° elevation,
  *  toward the zenith or the nadir. */
 export const SURFACE_LOOK_COS_FLOOR = Math.cos(80 * DEG2RAD);

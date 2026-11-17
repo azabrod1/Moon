@@ -107,8 +107,8 @@ export const ECLIPTIC_NORTH_EQUATORIAL: THREE.Vector3 = eclipticToEquatorial(
 ).normalize();
 
 /**
- * Scratch for ttJDFromUtcMs. The JD and ΔT conventions are calendar math —
- * dateToJD and deltaTDaysAtDate read civil UTC components — and that stays:
+ * Scratch for ttJDFromUtcMs. The JD is calendar math — dateToJD reads civil
+ * UTC components, and deltaTDaysAtDate the instant (deltaT.ts) — and that stays:
  * setTime loads the same [[DateValue]] a fresh construction would carry, so
  * every component read is bit-identical, without the hot samplers (hundreds
  * of calls a frame) allocating a Date per sample. Consumed before return,

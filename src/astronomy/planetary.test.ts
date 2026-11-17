@@ -411,35 +411,20 @@ describe('orbit-line trajectory sampling', () => {
   });
 
   it('samples an unchanged trajectory inside the element tables', () => {
-    // Vertices captured from the implementation before the clamp existed, so
-    // dates in normal use can never shift.
-    const pinned: Record<string, [number, number, number][]> = {
-      Mercury: [
-        [-0.386162580868, -0.046510443847, 0.161982283037],
-        [0.213430738183, -0.196952516747, 0.327276918536],
-        [-0.386350184923, -0.046084476307, 0.161220675913],
-      ],
-      Earth: [
-        [-0.56514561749, 0.320652791149, -0.73959296003],
-        [-0.174965414608, -0.397835177137, 0.917615889787],
-        [-0.565072428897, 0.320672885432, -0.73963930795],
-      ],
-      Pluto: [
-        [8.281972048607, 11.368945327422, -44.43617176275],
-        [-14.640470670596, -3.625333859281, 25.752389737417],
-        [8.201920610862, 11.399950209489, -44.441357394118],
-      ],
-    };
-    const vertices = [0, 3, 8];
-    for (const [name, expected] of Object.entries(pinned)) {
+    // Inside the tables the clamp must not move a line: every vertex is the
+    // body's own drawn position at that vertex's instant, a period spread
+    // evenly around the centre. (This used to pin vertices captured from the
+    // implementation, which a deliberate change to the time scale moves.)
+    const vertexCount = 8;
+    for (const name of ['Mercury', 'Earth', 'Pluto']) {
       const planet = PLANETARIUM_BODIES.find((p) => p.name === name)!;
-      const points = sampleTrajectoryLinePoints(planet, TODAY_MS, 8);
-      vertices.forEach((vertex, k) => {
-        const where = `${name} vertex ${vertex}`;
-        expect(points[vertex].x, where).toBeCloseTo(expected[k][0], 11);
-        expect(points[vertex].y, where).toBeCloseTo(expected[k][1], 11);
-        expect(points[vertex].z, where).toBeCloseTo(expected[k][2], 11);
-      });
+      const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+      const points = sampleTrajectoryLinePoints(planet, TODAY_MS, vertexCount);
+      for (const vertex of [0, 3, 8]) {
+        const vertexUtcMs = TODAY_MS + (vertex / vertexCount - 0.5) * periodMs;
+        const drawn = computeBodyPositionAU(planet, vertexUtcMs);
+        expect(points[vertex].distanceTo(drawn), `${name} vertex ${vertex}`).toBeLessThan(1e-12);
+      }
     }
   });
 });

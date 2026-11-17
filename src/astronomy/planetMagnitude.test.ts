@@ -1,5 +1,13 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { planetApparentMagnitude, planetMagnitudeTerm, planetographicLatitudeDeg } from './planetMagnitude';
+import { PLANETS } from '../planetarium/planets/planetData';
+import { computeBodyPositionAU } from './planetary';
+import {
+  planetApparentMagnitude,
+  planetMagnitudeFromPositions,
+  planetMagnitudeTerm,
+  planetographicLatitudeDeg,
+} from './planetMagnitude';
 import golden from './planetMagnitude.goldens.json';
 
 describe('planetary magnitudes (Mallama & Hilton 2018)', () => {
@@ -21,6 +29,24 @@ describe('planetary magnitudes (Mallama & Hilton 2018)', () => {
       });
       // Mars's corrections for the longitude it shows and its season
       // (Mallama 2007) are left out; together they reach a tenth of a magnitude.
+      const tolerance = row.planet === 'Mars' ? 0.12 : 0.01;
+      expect(Math.abs(magnitude - row.apmag), `${row.planet} ${row.utc}`).toBeLessThan(tolerance);
+    }
+  });
+
+  it("match Horizons from the drawn positions and poles", () => {
+    // The scene's own seam: the drawn Earth, planet and Sun, and the poles the
+    // globes are built on, give Saturn's ring latitudes and Uranus's
+    // sub-latitudes here, not Horizons' columns.
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const earth = PLANETS.find((planet) => planet.name === 'Earth')!;
+    const sun = new THREE.Vector3();
+    for (const row of golden.rows) {
+      const [year, month, day] = row.utc.slice(0, 11).split('-');
+      const utcMs = Date.UTC(Number(year), months.indexOf(month), Number(day));
+      const planet = computeBodyPositionAU(PLANETS.find((candidate) => candidate.name === row.planet)!, utcMs);
+      const observer = computeBodyPositionAU(earth, utcMs);
+      const magnitude = planetMagnitudeFromPositions(row.planet, planet, sun, observer, Number(year));
       const tolerance = row.planet === 'Mars' ? 0.12 : 0.01;
       expect(Math.abs(magnitude - row.apmag), `${row.planet} ${row.utc}`).toBeLessThan(tolerance);
     }

@@ -28,6 +28,8 @@
  * Mars's corrections for the longitude it shows and its season (Mallama 2007,
  * ±0.06 mag) are left out.
  */
+import { bodyShape } from './bodyShape';
+import type { SpheroidShape } from './spheroid';
 
 /** Where an apparent magnitude is seen from: distances in AU, angles in
  *  degrees, the year as a decimal CE year (Neptune brightened 1980–2000). */
@@ -136,4 +138,61 @@ export function planetographicLatitudeDeg(planetocentricDeg: number, flattening:
   const radians = (planetocentricDeg * Math.PI) / 180;
   const ratio = (1 - flattening) * (1 - flattening);
   return (Math.atan2(Math.sin(radians), Math.cos(radians) * ratio) * 180) / Math.PI;
+}
+
+interface Point3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Latitude, in degrees, of a direction over a pole (both in one frame). */
+function latitudeOverPoleDeg(dx: number, dy: number, dz: number, length: number, shape: SpheroidShape): number {
+  const sine = (dx * shape.poleX + dy * shape.poleY + dz * shape.poleZ) / length;
+  return (Math.asin(Math.max(-1, Math.min(1, sine))) * 180) / Math.PI;
+}
+
+/**
+ * A planet's apparent magnitude from the positions of the planet, the Sun and
+ * the observer, in any one frame and unit of AU (the scene's floating origin
+ * included): the distances, the phase angle, and, from the body's drawn pole
+ * (bodyShape), Saturn's ring latitudes and Uranus's sub-latitudes. Geometric
+ * positions: no light time, which moves no magnitude by a thousandth.
+ */
+export function planetMagnitudeFromPositions(
+  name: string,
+  planet: Point3,
+  sun: Point3,
+  observer: Point3,
+  year: number,
+): number {
+  const sunX = sun.x - planet.x;
+  const sunY = sun.y - planet.y;
+  const sunZ = sun.z - planet.z;
+  const observerX = observer.x - planet.x;
+  const observerY = observer.y - planet.y;
+  const observerZ = observer.z - planet.z;
+  const sunDistanceAU = Math.hypot(sunX, sunY, sunZ);
+  const observerDistanceAU = Math.hypot(observerX, observerY, observerZ);
+  if (!(sunDistanceAU > 0) || !(observerDistanceAU > 0)) return Number.NaN;
+  const cosine = (sunX * observerX + sunY * observerY + sunZ * observerZ) / (sunDistanceAU * observerDistanceAU);
+  const geometry: MagnitudeGeometry = {
+    sunDistanceAU,
+    observerDistanceAU,
+    phaseAngleDeg: (Math.acos(Math.max(-1, Math.min(1, cosine))) * 180) / Math.PI,
+    year,
+  };
+  if (name === 'Saturn' || name === 'Uranus') {
+    const shape = bodyShape(name);
+    const observerLat = latitudeOverPoleDeg(observerX, observerY, observerZ, observerDistanceAU, shape);
+    const sunLat = latitudeOverPoleDeg(sunX, sunY, sunZ, sunDistanceAU, shape);
+    if (name === 'Saturn') {
+      geometry.ringObserverLatDeg = observerLat;
+      geometry.ringSunLatDeg = sunLat;
+    } else {
+      geometry.observerPlanetographicLatDeg = planetographicLatitudeDeg(observerLat, shape.flattening);
+      geometry.sunPlanetographicLatDeg = planetographicLatitudeDeg(sunLat, shape.flattening);
+    }
+  }
+  return planetApparentMagnitude(name, geometry);
 }

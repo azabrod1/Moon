@@ -126,6 +126,7 @@ import { EarthSurfaceMaps } from './world/surfaceMaps';
 import { writeShadedAlbedo } from './world/albedoGrade';
 import {
   createPlanetariumStarfield,
+  getStarColor,
   setStarfieldGain,
   setStarfieldPixelRatio,
   starfieldFaintLimitMag,
@@ -138,10 +139,21 @@ import {
   discDiameterPx,
   moonDotVisual,
   parentDominanceFade,
+  phaseIllumination,
   systemEdgeFade,
   type MoonDotParams,
   type MoonDotVisual,
 } from './moonDots';
+import {
+  PLANET_POINT_PARAMS,
+  planetColorIndex,
+  planetPointVisual,
+  rec709Luminance,
+  type PlanetPointVisual,
+} from './planetPoints';
+import { STAR_POINT_MAPPING } from './world/starPointMapping';
+import { planetMagnitudeFromPositions } from '../astronomy/planetMagnitude';
+import { BLOOM_THRESHOLD } from '../app/bloomConfig';
 import {
   LABEL_DOT_MIN_ALPHA,
   LABEL_READABLE_RADIUS_PX,
@@ -1729,6 +1741,15 @@ export class PlanetariumMode {
   /** Photometric sub-pixel moon dots (world/MoonDots) + their live knobs. The
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
+  /** The surface view's planets as points (planetPoints.ts), one vertex per
+   *  catalog planet in solarSystem.planets order; filled only in the surface
+   *  view, blank everywhere else. */
+  private planetPoints: MoonDots | null = null;
+  private planetPointsFilled = false;
+  private tmpPlanetPointPos = new THREE.Vector3();
+  private tmpPlanetPointVisual: PlanetPointVisual = { alpha: 0, sizePx: 0, brightness: 0 };
+  /** Each planet's point colour (a star's at its B−V) and its luminance. */
+  private planetPointColors = new Map<string, { r: number; g: number; b: number; luminance: number }>();
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
   private moonLabelPlacementParams: MoonLabelPlacementParams = { ...MOON_LABEL_PLACEMENT_PARAMS };
   /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
@@ -2969,6 +2990,7 @@ export class PlanetariumMode {
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
       this.moonDots?.clear();
+      this.planetPoints?.clear();
       // The cloud field's layers went with the context: its table is cleared,
       // so the deck draws its base sheet until pages are back, and nothing is
       // admitted or uploaded until the pool is allocated again.
@@ -3526,6 +3548,16 @@ export class PlanetariumMode {
         }
         this.moonDots = new MoonDots(dotCount, this.scenePixelRatio(), this.renderer.getPixelRatio());
         this.scene.add(this.moonDots.points);
+      }
+      if (!this.planetPoints) {
+        this.planetPoints = new MoonDots(
+          this.solarSystem.planets.length,
+          this.scenePixelRatio(),
+          this.renderer.getPixelRatio(),
+          { name: 'Planet points', sunGlareMask: true },
+        );
+        this.planetPointsFilled = false;
+        this.scene.add(this.planetPoints.points);
       }
 
       // The ☰ preferences come from their own keys, with a save from before
@@ -5208,6 +5240,11 @@ export class PlanetariumMode {
       this.moonDots.dispose();
       this.moonDots = null;
     }
+    if (this.planetPoints) {
+      this.scene.remove(this.planetPoints.points);
+      this.planetPoints.dispose();
+      this.planetPoints = null;
+    }
 
     if (this.moonLabelContainer) {
       this.moonLabelContainer.style.display = 'none';
@@ -5225,6 +5262,7 @@ export class PlanetariumMode {
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
     if (this.moonDots) this.moonDots.setVisible(visible);
+    if (this.planetPoints) this.planetPoints.setVisible(visible);
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -5264,6 +5302,7 @@ export class PlanetariumMode {
     const outputRatio = this.renderer.getPixelRatio();
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
+    if (this.planetPoints) this.planetPoints.setPixelRatio(sceneRatio, outputRatio);
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
     // The cloud field's guard is measured in the scene target's own pixels and
     // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
@@ -6487,6 +6526,99 @@ export class PlanetariumMode {
       }
     }
     this.moonDots.flush();
+  }
+
+  /** A planet's point colour: a star's at the planet's B−V (planetPoints.ts). */
+  private planetPointColor(name: string): { r: number; g: number; b: number; luminance: number } {
+    let color = this.planetPointColors.get(name);
+    if (!color) {
+      const colorIndex = planetColorIndex(name);
+      const star = getStarColor(Number.isFinite(colorIndex) ? colorIndex : 0.65);
+      color = { r: star.r, g: star.g, b: star.b, luminance: rec709Luminance(star.r, star.g, star.b) };
+      this.planetPointColors.set(name, color);
+    }
+    return color;
+  }
+
+  /**
+   * Fill the planet points for this frame's final surface camera: every planet
+   * but the one underfoot, at its apparent magnitude from the camera
+   * (planetMagnitude.ts), through planetPoints.ts. Outside the surface view
+   * the layer is blank. Shares the stars' telescope gain and glare mask.
+   */
+  private updatePlanetPointsForCamera(): void {
+    const points = this.planetPoints;
+    if (!points || !this.solarSystem) return;
+    if (this.landedView !== 'surface') {
+      if (this.planetPointsFilled) {
+        points.clear();
+        this.planetPointsFilled = false;
+      }
+      return;
+    }
+    const canvasHeight = this.renderer.domElement.clientHeight;
+    points.setLens(this.camera, this.renderer.domElement.clientWidth, canvasHeight, this.scenePixelRatio());
+    const sun = this.solarSystem.sun.position;
+    const cameraPosition = this.camera.position;
+    const fovDeg = displayFovDeg(this.camera);
+    const year = 1970 + this.timeState.currentUtcMs / (365.25 * 86_400_000);
+    const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : null;
+    const kneeActive = this.starGain > 1.001;
+    const planets = this.solarSystem.planets;
+    for (let index = 0; index < planets.length; index++) {
+      const planet = planets[index];
+      const name = planet.data.name;
+      if (name === landedPlanetName || !planet.group.visible) {
+        points.hide(index);
+        continue;
+      }
+      const position = planet.group.getWorldPosition(this.tmpPlanetPointPos);
+      const magnitude = planetMagnitudeFromPositions(name, position, sun, cameraPosition, year);
+      const distanceAU = position.distanceTo(cameraPosition);
+      const radiusAU = planet.data.radiusAU * this.planetScale;
+      const toSunX = sun.x - position.x;
+      const toSunY = sun.y - position.y;
+      const toSunZ = sun.z - position.z;
+      const sunDistanceAU = Math.hypot(toSunX, toSunY, toSunZ) || 1e-9;
+      const phaseCos = distanceAU > 0
+        ? (toSunX * (cameraPosition.x - position.x) + toSunY * (cameraPosition.y - position.y)
+          + toSunZ * (cameraPosition.z - position.z)) / (sunDistanceAU * distanceAU)
+        : 1;
+      const color = this.planetPointColor(name);
+      const visual = planetPointVisual(
+        magnitude,
+        discDiameterPx(radiusAU, distanceAU, fovDeg, canvasHeight),
+        phaseIllumination(phaseCos),
+        color.luminance,
+        BLOOM_THRESHOLD,
+        this.starFaintLimitMag,
+        PLANET_POINT_PARAMS,
+        STAR_POINT_MAPPING,
+        this.tmpPlanetPointVisual,
+      );
+      const alpha = kneeActive ? 1 - Math.pow(1 - visual.alpha, this.starGain) : visual.alpha;
+      if (!(alpha > 0)) {
+        points.hide(index);
+        continue;
+      }
+      // In front of the globe and its rings, so neither depth-kills the point
+      // while it hands over; nearer bodies still cover it.
+      const ring = RING_CONFIGS[name];
+      const lift = (radiusAU * (ring ? ring.outerFactor : 1) * 1.05) / Math.max(distanceAU, 1e-12);
+      points.setDot(
+        index,
+        position.x + (cameraPosition.x - position.x) * lift,
+        position.y + (cameraPosition.y - position.y) * lift,
+        position.z + (cameraPosition.z - position.z) * lift,
+        color.r * visual.brightness,
+        color.g * visual.brightness,
+        color.b * visual.brightness,
+        visual.sizePx,
+        alpha,
+      );
+    }
+    points.flush();
+    this.planetPointsFilled = true;
   }
 
   /**
@@ -8652,6 +8784,14 @@ export class PlanetariumMode {
         this.scenePixelRatio(),
       );
     }
+    const planetPointUniforms = this.planetPoints?.sunGlareMaskUniforms;
+    if (planetPointUniforms) applySunGlareMaskParams(
+      planetPointUniforms,
+      params,
+      viewportWidth,
+      this.camera,
+      this.scenePixelRatio(),
+    );
     const beltUniforms = this.solarSystem?.asteroidBelt.userData.sunGlareMaskUniforms as
       | SunGlareMaskUniforms
       | undefined;
@@ -20725,6 +20865,7 @@ export class PlanetariumMode {
     // the way out, or the cruise sky would carry a lifted faint end for a beat.
     this.starGain = 1;
     if (this.starfield) setStarfieldGain(this.starfield, 1);
+    this.updatePlanetPointsForCamera(); // blanks the planet points
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceSpotPosed = null;
@@ -22299,6 +22440,7 @@ export class PlanetariumMode {
       // photometry is honest naked-eye sky.
       if (willDraw) this.updateMoonDotsForCamera();
     }
+    if (willDraw) this.updatePlanetPointsForCamera();
     // After the surface re-pin: the Sun metering (screen position, occlusion,
     // corona gate) must read this frame's camera pose, not last frame's.
     // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the

@@ -146,6 +146,7 @@ import {
   type MoonDotVisual,
 } from './moonDots';
 import {
+  PLANET_LABEL_MIN_LIGHT,
   PLANET_POINT_PARAMS,
   planetColorIndex,
   planetPointVisual,
@@ -167,8 +168,10 @@ import {
   type MoonLabelPlacementParams,
 } from './moonLabelPlacement';
 import {
+  SUN_GLARE_MASK_MAX_KILL,
   applySunGlareMaskParams,
   sunGlareMaskActivation,
+  sunGlareMaskAt,
   sunGlareMaskCoreOuterPx,
   type SunGlareMaskParams,
   type SunGlareMaskActivationInput,
@@ -1748,11 +1751,13 @@ export class PlanetariumMode {
    *  view, blank everywhere else. */
   private planetPoints: MoonDots | null = null;
   private planetPointsFilled = false;
-  /** The planets drawn as points this frame, less the tracked one (the HUD
-   *  names it): the surface view's labels name these and no others. */
+  /** The planets plainly visible as points this frame (PLANET_LABEL_MIN_LIGHT),
+   *  less the tracked one (the HUD names it): the surface view's labels name
+   *  these and no others. */
   private surfacePlanetLabelNames = new Set<string>();
   private tmpPlanetPointPos = new THREE.Vector3();
   private tmpPlanetPointVisual: PlanetPointVisual = { alpha: 0, sizePx: 0, brightness: 0 };
+  private tmpPlanetPointProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   /** Each planet's point colour (a star's at its B−V) and its luminance. */
   private planetPointColors = new Map<string, { r: number; g: number; b: number; luminance: number }>();
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
@@ -6615,7 +6620,19 @@ export class PlanetariumMode {
         points.hide(index);
         continue;
       }
-      if (alpha >= LABEL_DOT_MIN_ALPHA && name !== trackedPlanetName) this.surfacePlanetLabelNames.add(name);
+      // Named only while the point is plainly there: the glare the shader
+      // fades it by (last frame's mask, a sub-pixel lag) included.
+      if (name !== trackedPlanetName) {
+        let glare = 0;
+        if (this.sunGlareMaskParams.active) {
+          const screen = projectToScreen(
+            position, this.camera, this.renderer.domElement.clientWidth, canvasHeight, this.tmpPlanetPointProjection,
+          );
+          glare = sunGlareMaskAt(this.sunGlareMaskParams, screen.x, screen.y);
+        }
+        const light = alpha * (1 - SUN_GLARE_MASK_MAX_KILL * glare) * visual.brightness;
+        if (light >= PLANET_LABEL_MIN_LIGHT) this.surfacePlanetLabelNames.add(name);
+      }
       // In front of the globe and its rings, so neither depth-kills the point
       // while it hands over; nearer bodies still cover it.
       const ring = RING_CONFIGS[name];

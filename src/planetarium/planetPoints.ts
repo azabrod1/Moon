@@ -154,6 +154,15 @@ export function planetPointVisual(
   return out;
 }
 
+/**
+ * The light a planet's point must show for the surface view to print its
+ * name: vertex alpha (after the telescope gain and the Sun's glare mask)
+ * times brightness. A name beside nothing reads as a bug: Neptune at
+ * magnitude 7.8 is a one-pixel point of 0.10 in a 45° field and 0.18 at 10°,
+ * and inside the Sun's veil it is gone.
+ */
+export const PLANET_LABEL_MIN_LIGHT = 0.15;
+
 /** Rec.709 luminance of an RGB triple. */
 export function rec709Luminance(red: number, green: number, blue: number): number {
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;

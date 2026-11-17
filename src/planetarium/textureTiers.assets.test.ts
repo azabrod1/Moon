@@ -121,8 +121,8 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  * alone.
  */
 const CONTAINER_COLOR_MODEL: Record<string, number> = {
-  '4k/mercury.ktx2': DF_MODEL_ETC1S,
-  '8k/mercury.ktx2': DF_MODEL_ETC1S,
+  '4k/mercury.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/mercury.v2.ktx2': DF_MODEL_ETC1S,
   '4k/moon.ktx2': DF_MODEL_UASTC,
   '8k/moon.ktx2': DF_MODEL_UASTC,
   '4k/earth-clouds.v2.ktx2': DF_MODEL_UASTC,
@@ -214,8 +214,8 @@ describe('the files behind the colour ladder', () => {
     const shipped = Object.entries(TIER_FILE_OVERRIDES).flatMap(([key, byTier]) =>
       Object.entries(byTier).map(([tier, rung]) => `${key} ${tier}: ${tier}/${rung.file}`));
     expect(shipped).toEqual([
-      'mercury 4k: 4k/mercury.ktx2',
-      'mercury 8k: 8k/mercury.ktx2',
+      'mercury 4k: 4k/mercury.v2.ktx2',
+      'mercury 8k: 8k/mercury.v2.ktx2',
       'moon 4k: 4k/moon.ktx2',
       'moon 8k: 8k/moon.ktx2',
       'earthClouds 4k: 4k/earth-clouds.v2.ktx2',

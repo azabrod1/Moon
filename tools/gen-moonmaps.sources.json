@@ -1095,6 +1095,7 @@
     "used_by": [
       "gen-moonmaps mercury"
     ],
+    "notes": "NoData is 0: the 166 m source's GDAL_NODATA tag reads 0, and the caps blanked before the cut are 0 too. Cut since 2026-11-17 as mercury.v2.webp, 4k/mercury.v2.ktx2 and 8k/mercury.v2.ktx2 under SHADOW_NO_DATA (gen-moonmaps.mjs): before it, below 12 masked about 2.4 per cent of the ground between the caps, almost all of it measured shadow (values 1-11), and filled it with grain. At 665 m: 58,472 shadow holes (74,448 px, size median 1, max 34, rim median 32) filled from their rims; 5,010 zero blobs left to the fill, of which the two caps are all but 6,875 px (4,831 blobs of 1-12 px near 76-79 N with rims of 61-85). Level gain unchanged at 1.849244; the 2K's cos-latitude mean is 129.74 against 132.57 shipped, the shadows' share. 8K boxed to 4K against the 4K: mean -1.14, RMS 9.88 (the shipped pair: -1.22, 10.59).",
     "raster": {
       "centralMeridianDeg": 0,
       "sphereRadiusM": 2439400.0,

@@ -86,7 +86,7 @@ export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {
 // to each other, so a new entry here fails the build until the preload
 // (or an explicit exemption there) follows.
 export const PLANET_TEXTURE_FILES: Record<string, string> = {
-  mercury: 'mercury.webp',
+  mercury: 'mercury.v2.webp',
   venus: 'venus.webp',
   // `.v2` marks a map whose content was re-based under this key: the service
   // worker serves the previous deploy's body for a pathname it already holds
@@ -409,8 +409,8 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   // 4K rung used to be transcoded from was a different product, and a ladder
   // that changes product at a rung change changes the planet's face.
   mercury: {
-    '4k': { file: 'mercury.ktx2', webp: false },
-    '8k': { file: 'mercury.ktx2', webp: false },
+    '4k': { file: 'mercury.v2.ktx2', webp: false },
+    '8k': { file: 'mercury.v2.ktx2', webp: false },
   },
   // The Moon, the cloud deck and Earth's night lights are the exception to the
   // 4K cap, and their 4K containers cost 4.8x, 4.9x and 5.3x their twins. The

@@ -3440,7 +3440,7 @@ describe('the rungs that ship only as a compressed container', () => {
     // is seven times the twin, so it keeps the webp), and the three the boot
     // warm uploads, which are downloaded once a device rather than once a
     // tour and are held to a looser bar for it.
-    expect(resolveTierFile('mercury', '4k')).toBe('mercury.ktx2');
+    expect(resolveTierFile('mercury', '4k')).toBe('mercury.v2.ktx2');
     expect(resolveTierFile('mars', '4k')).toBe('mars.v3.webp');
     expect(resolveTierFile('moon', '4k')).toBe('moon.ktx2');
     expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');

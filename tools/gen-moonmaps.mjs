@@ -265,7 +265,8 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * Under the default `below: 12` the darkest of those samples — crater
  * shadows, which on these airless ice moons are deep and sharp — were masked
  * and filled with the bright terrain around them, so every shadow core drew
- * as a pale patch inside a black ring. These three mask 0 alone.
+ * as a pale patch inside a black ring. These three, and Mercury (below),
+ * mask 0 alone.
  *
  * The producer also clipped the shadows' cores to 0: inside bright terrain 0
  * is two to three times commoner than 1. So a 0 is a gap or a shadow core,
@@ -280,6 +281,15 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * Enceladus' south-polar rows, Dione's last row, and a few pixels each side
  * of Dione's 180E edge.
  *
+ * Mercury takes the same rule. MESSENGER's 166 m basemap also tags NoData as
+ * 0 (GDAL_NODATA), and under `below: 12` about 2.4 per cent of the planet
+ * between the caps was masked, almost all of it measured samples from 1 to
+ * 11: the shadows of crater walls and of the long lobate scarps. The fill
+ * replaced each one with grain mirrored in from the lit ground, so a crater
+ * half in shadow lost the shadowed half. Its blanked caps (rows from each
+ * pole to 80 N and 81.25 S, set to 0 before the cut) touch the first and the
+ * last row, so they stay gaps and keep their matched fill.
+ *
  * Their rung intermediates are named `<body>-v2-<tier>`, so the cache keeps
  * the `<body>-4k` ones the shipped .ktx2 files under the old names were cut
  * from, and gen-ktx2 on a branch without this rule still reproduces those.
@@ -290,7 +300,7 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * them.
  */
 const SHADOW_HOLES = { rimBelow: 60, levelSolveBelow: NO_DATA_BELOW };
-/** The noData rule of the three: 0 alone is unmeasured, and shadow holes. */
+/** The noData rule of the three moons and Mercury: 0 alone is unmeasured, and shadow holes. */
 const SHADOW_NO_DATA = { ...DEFAULT_NO_DATA, below: 1, shadowHoles: SHADOW_HOLES };
 
 // ---------------------------------------------------------------------------
@@ -502,8 +512,8 @@ const JOBS = {
     // The boot map and both rungs come out of the one MESSENGER raster: a
     // ladder whose rungs are cut from different products swaps the planet's
     // character at the tier change, which is the one thing a rung must not do.
-    outputs: [{ width: 2048, out: 'mercury.webp' }],
-    rungs: [{ width: 8192, name: 'mercury-8k' }, { width: 4096, name: 'mercury-4k' }],
+    outputs: [{ width: 2048, out: 'mercury.v2.webp' }],
+    rungs: [{ width: 8192, name: 'mercury-v2-8k' }, { width: 4096, name: 'mercury-v2-4k' }],
     // Mercury is grey: the map it replaces has no measurable chroma (mean
     // 132.6, 131.7, 131.6), and MESSENGER's colour products are exaggerated
     // principal-component false colour, not a look to copy.
@@ -518,7 +528,8 @@ const JOBS = {
     // smoothed along longitude and grain at the octaves the imaged ground
     // measures, rather than one guessed amplitude, which on a map whose
     // albedo varies this much comes out as bright speckle at the poles.
-    noData: { below: 12, mode: 'texture', seam: 0.03, matchTexture: true },
+    // Between the caps the shadows are measurements: see SHADOW_HOLES.
+    noData: { ...SHADOW_NO_DATA, matchTexture: true },
   },
   jupiter: {
     src: 'jupiter-bj/jupiter_map_css_plus_juno_bj.png',

@@ -120,7 +120,10 @@ describe('index.html boot texture fetch-warm', () => {
       expect(immediateList).not.toContain(`'${file}'`);
     }
     expect(script).toContain('window.__bootWarmRelease = function');
-    expect(script).toContain('setTimeout(window.__bootWarmRelease, 30000)');
+    // The safety timer, which the loader cancels when it takes charge.
+    expect(script).toContain('var holdTimer = setTimeout(window.__bootWarmRelease, 30000)');
+    expect(script).toContain('window.__bootWarmClaim = function');
+    expect(script).toContain('clearTimeout(holdTimer)');
   });
 
   it('stashes the promises under the key the loader takes them from', () => {

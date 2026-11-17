@@ -63,8 +63,12 @@ describe('loadFittedEphemeris', () => {
     const release = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('__bootTexWarm', new Map([[URL_PATH, Promise.resolve(new Response(tinyFile()))]]));
+    const claim = vi.fn();
     vi.stubGlobal('__bootWarmRelease', release);
+    vi.stubGlobal('__bootWarmClaim', claim);
     await loadFittedEphemeris();
+    // It takes charge of the release (index.html's timer is cancelled)...
+    expect(claim).toHaveBeenCalledTimes(1);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(fittedEphemerisInstalled()).toBe(true);
     // The held durable wave starts once the ephemeris is in.

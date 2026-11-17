@@ -104,6 +104,12 @@ export function releaseBootWarmWave(): void {
   (globalThis as { __bootWarmRelease?: () => void }).__bootWarmRelease?.();
 }
 
+/** Take charge of releasing the held wave: cancels index.html's safety timer,
+ *  which is only for a page whose app never starts the ephemeris load. */
+export function claimBootWarmWave(): void {
+  (globalThis as { __bootWarmClaim?: () => void }).__bootWarmClaim?.();
+}
+
 function bootWarmMap(): Map<string, Promise<Response>> | undefined {
   return (globalThis as { __bootTexWarm?: Map<string, Promise<Response>> }).__bootTexWarm;
 }

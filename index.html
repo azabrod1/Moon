@@ -6209,8 +6209,13 @@
         for (var k = 0; k < held.length; k++) held[k]();
       };
       // The app releases the wave when the ephemeris settles
-      // (ephemerisLoader.ts); this covers a page whose app never gets there.
-      setTimeout(window.__bootWarmRelease, 30000);
+      // (ephemerisLoader.ts). This timer covers only a page whose app never
+      // starts that load: the loader cancels it on start, or on a link slower
+      // than the timer it would release the wave mid-download.
+      var holdTimer = setTimeout(window.__bootWarmRelease, 30000);
+      window.__bootWarmClaim = function () {
+        clearTimeout(holdTimer);
+      };
       window.__bootTexWarm = warm;
     })();
   </script>

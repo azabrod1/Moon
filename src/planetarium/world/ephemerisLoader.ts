@@ -28,7 +28,7 @@
  * catalog's own ladder has failed the boot well before that.
  */
 import { FITTED_EPHEMERIS_FILE, parseFittedEphemeris, setFittedEphemeris } from '../../astronomy/fittedEphemeris';
-import { releaseBootWarmWave, takeBootWarmResponse } from './textureBitmapLoader';
+import { claimBootWarmWave, releaseBootWarmWave, takeBootWarmResponse } from './textureBitmapLoader';
 import { debugWarn } from '../../shared/debug';
 
 const STALL_MS = 15_000;
@@ -92,6 +92,9 @@ async function fetchOnce(url: string, attempt: number): Promise<ArrayBuffer> {
 export function loadFittedEphemeris(): Promise<void> {
   loadPromise ??= (async () => {
     const url = import.meta.env.BASE_URL + FITTED_EPHEMERIS_FILE;
+    // This load now owns the release; index.html's safety timer would fire
+    // mid-download on a slow link.
+    claimBootWarmWave();
     try {
       for (let attempt = 0; ; attempt++) {
         try {

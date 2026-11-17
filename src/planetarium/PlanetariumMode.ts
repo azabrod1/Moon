@@ -19881,6 +19881,7 @@ export class PlanetariumMode {
     const state: SurfaceHudState = {
       eyebrow: `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
+      inEvent: event !== null,
       subText,
       subWarm,
       whenText: formatObservatoryClock(now),

@@ -1516,6 +1516,20 @@
       .shud-br { width: 120px; }
       .shud-fovscale { width: 120px; }
       .shud-hint { line-height: 1.4; }
+      /* The open sheet already says where you stand and names the phase in
+         its hero, and the band would sit on the sky between them. It keeps
+         only what the sheet lacks: a live event's name and its countdown,
+         one compact line above the transport strip. The field-of-view block
+         yields too; the pinch still zooms. */
+      body.observatory-sheet-open .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 96px + env(safe-area-inset-bottom, 0px)); }
+      body.observatory-sheet-open .shud-br,
+      body.observatory-sheet-open .shud-eyebrow,
+      body.observatory-sheet-open .shud-prose,
+      body.observatory-sheet-open .shud-sep,
+      body.observatory-sheet-open #surface-hud:not(.shud-event) .shud-bl { display: none; }
+      body.observatory-sheet-open .shud-bl { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+      body.observatory-sheet-open .shud-bl h1 { margin: 0; font-size: 20px; }
+      body.observatory-sheet-open .shud-sub { margin-top: 0; }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full

@@ -46,7 +46,8 @@ describe('boot wiring', () => {
   // sites are pinned in source, the same way index.html's warm script is.
   it('activate awaits the catalog inside the solar-system gate', () => {
     expect(planetariumModeSource).toMatch(
-      /Promise\.all\(\[\s*createSolarSystem\([\s\S]{0,400}?loadBrightStarCatalog\(\),\s*\]\)/,
+      // The build may wait for the ephemeris first, chained inside the gate.
+      /Promise\.all\(\[\s*(?:loadFittedEphemeris\(\)\.then\(\(\) =>\s*)?createSolarSystem\([\s\S]{0,400}?loadBrightStarCatalog\(\),\s*\]\)/,
     );
   });
 

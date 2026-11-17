@@ -102,3 +102,8 @@ export function loadFittedEphemeris(): Promise<void> {
   })();
   return loadPromise;
 }
+
+/** Test seam: forget the memoized load. */
+export function resetEphemerisLoaderForTests(): void {
+  loadPromise = null;
+}

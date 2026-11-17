@@ -234,6 +234,10 @@ export async function resolveProgramLinks(
     // awaited the compile is not the place to spend a build on.
     if (bounded) await yieldFrame();
     for (const program of pending.slice(i, i + perFrame)) {
+      // Released while this pass waited on a frame (three drops a program its
+      // last material no longer needs, as a bloom or tier switch does): there
+      // is no link left to force, and the GL call would throw on the handle.
+      if (!program.program) continue;
       const started = performance.now();
       resolvedPrograms.add(program);
       try {

@@ -257,6 +257,18 @@ export function lensUnwarpNdcWithContext(
   return out;
 }
 
+/**
+ * The view angle, along the frame's vertical centre line, at which a point
+ * shows at output NDC `ndcY` (positive above the centre): the lens's radial
+ * map inverted on that line, so a camera turned down by this angle shows what
+ * it was aimed at that far up the finished frame. The pinhole's
+ * atan(y·tan(fov/2)) at strength 0.
+ */
+export function viewAngleAtOutputNdcY(ndcY: number, designFovDeg: number, strength: number): number {
+  const radial = Math.abs(ndcY) * lensRadial((designFovDeg / 2) * DEG, strength);
+  return Math.sign(ndcY) * lensRadialInverse(radial, strength);
+}
+
 /** How the lens scales the picture at one view angle, as multiples of its
  *  scale on the axis: radially (along the direction away from the frame
  *  centre) and tangentially (across it). Both are 1 on the axis; at strength

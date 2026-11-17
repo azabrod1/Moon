@@ -477,11 +477,11 @@ describe('service worker build plugin: tile origin and allowlist', () => {
   let dist = '';
   let savedEnv: string | undefined;
 
-  /** A dist tree with the little the plugin insists on: the five data
+  /** A dist tree with the little the plugin insists on: the six data
    *  directories, a boot-warm script whose files all exist, and two fonts. */
   function fakeDist(): string {
     const dir = mkdtempSync(join(tmpdir(), 'moon-sw-'));
-    for (const d of ['textures', 'stardata', 'fonts', 'models', 'historic']) {
+    for (const d of ['textures', 'stardata', 'ephemeris', 'fonts', 'models', 'historic']) {
       mkdirSync(join(dir, d), { recursive: true });
     }
     const warm: string[] = [];
@@ -490,6 +490,8 @@ describe('service worker build plugin: tile origin and allowlist', () => {
       writeFileSync(join(dir, 'textures', `t${i}.webp`), `pixels-${i}`);
     }
     writeFileSync(join(dir, 'stardata', 'bright-stars.v1.bin'), 'records');
+    writeFileSync(join(dir, 'ephemeris', 'ephemeris.v1.bin'), 'series');
+    writeFileSync(join(dir, 'ephemeris', 'moon-corrections.v1.bin'), 'terms');
     writeFileSync(join(dir, 'fonts', 'a.woff2'), 'font-a');
     writeFileSync(join(dir, 'fonts', 'b.woff2'), 'font-b');
     writeFileSync(
@@ -498,6 +500,8 @@ describe('service worker build plugin: tile origin and allowlist', () => {
         `const files = [${warm.map((f) => `'${f}'`).join(', ')}];\n` +
         `for (let i = 0; i < files.length; i++) warm('/textures/' + files[i]);\n` +
         `warm('/stardata/bright-stars.v1.bin');\n` +
+        `warm('/ephemeris/ephemeris.v1.bin');\n` +
+        `warm('/ephemeris/moon-corrections.v1.bin');\n` +
         `</script></body></html>\n`,
     );
     return dir;
@@ -574,6 +578,8 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     }
     expect(manifest['/probe.html']).toBeUndefined();
     expect(precache).not.toContain('/probe.html');
+    // Both ephemeris bins the boot waits for, not just the first one named.
+    expect(precache).toEqual(expect.arrayContaining(['/ephemeris/ephemeris.v1.bin', '/ephemeris/moon-corrections.v1.bin']));
   });
 
   it('allows nothing off-origin when no tile origin is configured', () => {

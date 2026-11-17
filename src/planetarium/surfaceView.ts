@@ -26,7 +26,10 @@ export type SurfaceTarget =
    *  Sun (spotAnchorFor, standAtSpotAnchor); from the default vantage otherwise. */
   | { kind: 'sun-from-spot'; occluderMoonName: string }
   | { kind: 'moon'; moonName: string }
-  | { kind: 'parent' };
+  | { kind: 'parent' }
+  /** Another planet, seen as a point (planetPoints.ts) — never the landed
+   *  body or its parent, which have kinds of their own. */
+  | { kind: 'planet'; planetName: string };
 
 export interface SurfaceLandedInfo {
   type: 'planet' | 'moon';
@@ -453,6 +456,27 @@ export function transportTrackingUp(up: THREE.Vector3, forward: THREE.Vector3): 
   return up.normalize();
 }
 
+/** The shortest strip of free sky worth centring a target in. Below it (the
+ *  phone sheet pulled up high) the aim stays on the screen's centre. */
+export const SURFACE_AIM_MIN_FREE_PX = 120;
+
+/** Time constant of the aim lift's ease, in seconds: a sheet parking or
+ *  dragged slides the subject over a few tenths of a second. */
+export const SURFACE_AIM_EASE_S = 0.15;
+
+/**
+ * How far above the screen's centre the tracked target is aimed so that it
+ * centres in the strip of sky left between the chips at the top and the band
+ * at the bottom (px from the canvas top). Zero when either edge is unknown,
+ * when the strip is too short to frame anything in, or when its centre is not
+ * above the screen's: the lift only ever clears a sheet rising from below.
+ */
+export function surfaceAimLiftPx(freeTopPx: number, freeBottomPx: number, viewportHeightPx: number): number {
+  if (!Number.isFinite(freeTopPx) || !Number.isFinite(freeBottomPx)) return 0;
+  if (freeBottomPx - freeTopPx < SURFACE_AIM_MIN_FREE_PX) return 0;
+  return Math.max(0, viewportHeightPx / 2 - (freeTopPx + freeBottomPx) / 2);
+}
+
 /** Where the drag's yaw gain stops growing: the cosine of an 80° elevation,
  *  toward the zenith or the nadir. */
 export const SURFACE_LOOK_COS_FLOOR = Math.cos(80 * DEG2RAD);
@@ -634,14 +658,16 @@ export type SurfaceEntryContext = 'event' | 'companion';
 export function entryFovDeg(
   targetAngularDiameterDeg: number,
   context: SurfaceEntryContext = 'companion',
-  subjectIsSun = false,
+  restingSubject = false,
 ): number {
   // The Sun is a bright, near-featureless disc: fitting it like a textured body
   // (below) fills the sky with glare and erases its real size cue (large from
   // Mercury, a point from Neptune). Show it at the resting sky FOV instead, so
   // its true apparent size reads. A solar eclipse is the 'event' path — there
-  // the framing is the whole point, so it still fits.
-  if (subjectIsSun && context !== 'event') return SURFACE_FOV_DEFAULT_DEG;
+  // the framing is the whole point, so it still fits. A planet seen as a point
+  // rests there too: fitted, it would open at the tightest field on a few
+  // pixels, with none of the stars around it that make it a planet in a sky.
+  if (restingSubject && context !== 'event') return SURFACE_FOV_DEFAULT_DEG;
   const fillMultiplier = context === 'event' ? 8 : 4;
   return clampSurfaceFovDeg(targetAngularDiameterDeg * fillMultiplier);
 }
@@ -740,6 +766,10 @@ export interface SurfaceTargetChoice {
   resolvable: boolean;
   /** Row dot tint — the body's catalog color (the deck-row dot idiom). */
   color: number;
+  /** A planet's apparent magnitude from the vantage; null for the other
+   *  kinds. A planet's point is a target in its own right, so its row never
+   *  dims as too small. */
+  magnitude: number | null;
 }
 
 export function makeSurfaceTargetChoice(
@@ -747,8 +777,16 @@ export function makeSurfaceTargetChoice(
   name: string,
   discDeg: number,
   color = 0xffffff,
+  magnitude: number | null = null,
 ): SurfaceTargetChoice {
-  return { target, name, discDeg, resolvable: !isBelowResolutionAtMaxZoom(discDeg), color };
+  const resolvable = magnitude !== null || !isBelowResolutionAtMaxZoom(discDeg);
+  return { target, name, discDeg, resolvable, color, magnitude };
+}
+
+/** An apparent magnitude as the interface writes it: "mag −2.4". */
+export function formatMagnitude(magnitude: number): string {
+  const text = magnitude.toFixed(1);
+  return `mag ${text.startsWith('-') ? `−${text.slice(1)}` : text}`;
 }
 
 /**
@@ -764,23 +802,38 @@ export function surfaceTargetKey(target: SurfaceTarget): string {
       return 'parent';
     case 'moon':
       return `moon:${target.moonName}`;
+    case 'planet':
+      return `planet:${target.planetName}`;
   }
 }
 
 /**
  * Look-at menu order: pinned leads first — the parent (only present standing
  * on a moon), then the Sun — then the moons by descending apparent size, so
- * a big system reads Galileans-first with the irregular specks pooled at the
- * scrollable bottom. Equal-size moons keep input order.
+ * a big system reads Galileans-first, then the other planets, brightest
+ * first, and the moons too small to resolve pooled at the scrollable bottom
+ * below them: from Io, Venus and Saturn come before a dozen specks. Equal-size
+ * moons keep input order.
  */
 export function orderSurfaceTargetChoices(choices: SurfaceTargetChoice[]): SurfaceTargetChoice[] {
-  const rank = (c: SurfaceTargetChoice) =>
-    c.target.kind === 'parent' ? 0 : c.target.kind === 'moon' ? 2 : 1;
+  const rank = (c: SurfaceTargetChoice) => {
+    switch (c.target.kind) {
+      case 'parent':
+        return 0;
+      case 'moon':
+        return c.resolvable ? 2 : 4;
+      case 'planet':
+        return 3;
+      default:
+        return 1;
+    }
+  };
   return [...choices].sort((a, b) => {
     const ra = rank(a);
     const rb = rank(b);
     if (ra !== rb) return ra - rb;
-    return ra === 2 ? b.discDeg - a.discDeg : 0;
+    if (ra === 3) return (a.magnitude ?? Infinity) - (b.magnitude ?? Infinity);
+    return ra === 2 || ra === 4 ? b.discDeg - a.discDeg : 0;
   });
 }
 

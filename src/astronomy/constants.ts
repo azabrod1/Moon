@@ -6,6 +6,7 @@
  * `shared/math/angles.ts`; J2000 and OBLIQUITY_DEG are domain constants kept here.
  */
 export { DEG2RAD as DEG, RAD2DEG as RAD } from '../shared/math/angles';
+import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 /** Julian Day Number of the J2000.0 epoch (2000 Jan 1.5 TT). */
 export const J2000 = 2451545.0;
@@ -16,15 +17,17 @@ export const OBLIQUITY_DEG = 23.4392911;
 /** Kilometres per astronomical unit (IAU 2012 definition). */
 export const KM_PER_AU = 149_597_870.7;
 
-/** Nominal solar radius (IAU 2015 Resolution B3), kilometres. */
-export const SUN_RADIUS_KM = 695_700;
+/**
+ * The Sun's photospheric radius, kilometres (KM_CONSTANTS, the measured
+ * 696,342 ± 65 km of Emilio et al. 2012): the one radius the drawn Sun, the
+ * eclipse geometry and the world pass's shadow terms all use.
+ */
+export const SUN_RADIUS_KM = KM_CONSTANTS.SUN_RADIUS;
 
 /**
  * Solar radius in AU. The solar angular-radius terms in the world pass divide
  * this by a distance — the umbra test that picks a planet's shadow-casting
- * moons and the surface shader's penumbra width — so it has one definition
- * here. (The drawn Sun and the eclipse geometry use the catalog's
- * photospheric radius, a slightly different measurement of the same star.)
+ * moons and the surface shader's penumbra width.
  */
 export const SUN_RADIUS_AU = SUN_RADIUS_KM / KM_PER_AU;
 

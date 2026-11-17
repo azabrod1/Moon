@@ -10,9 +10,14 @@
  * into the scene's equatorial embedding via raDecToVector/eclipticToEquatorial,
  * so a moon and its sky backdrop agree. Pinned by satellites.test.ts goldens.
  *
- * Earth's Moon propagates on the Meeus ephemeris, not these elements — the
- * name-keyed seam computeMoonOffsetEquatorialAU dispatches it to
+ * Earth's Moon comes from the fitted ephemeris (Meeus outside it), not these
+ * elements — the name-keyed seam computeMoonOffsetEquatorialAU dispatches it to
  * computeMoonGeocentricEquatorialAU (planetary.ts) and everything else here.
+ *
+ * The seam also applies the moon corrections fitted to JPL (moonCorrections.ts)
+ * once `installMoonCorrections` has them. computeSatelliteOffsetEquatorialAU
+ * stays the bare mean elements: the corrections are fitted against it, and
+ * legacyPositions.ts reproduces an older build with it.
  */
 import * as THREE from 'three';
 import { SATELLITE_ELEMENTS, type SatelliteElementsRecord } from './satelliteElements';
@@ -24,6 +29,13 @@ import {
 } from './planetary';
 import type { KeplerElements } from './standish';
 import { DEG, KM_PER_AU } from './constants';
+import {
+  correctMoonOffsetAU,
+  moonCorrectionInstalled,
+  setMoonCorrections,
+  type MeanElementModel,
+  type MoonCorrectionSet,
+} from './moonCorrections';
 
 interface SatelliteFrameBasis {
   record: SatelliteElementsRecord;
@@ -255,16 +267,31 @@ export function getMoonApoapsisAU(moonName: string, parentPlanetName: string): n
 const MOON_NORMAL_STEP_DAYS = 0.25;
 const tmpNormalA = new THREE.Vector3();
 const tmpNormalB = new THREE.Vector3();
+const tmpModelNormal = new THREE.Vector3();
+
+const meanElementModel: MeanElementModel = (name, jdTT, out, outNormal) => {
+  computeSatelliteOffsetEquatorialAU(name, jdTT, out, outNormal);
+};
+
+/**
+ * Install the moon corrections (null clears them), each checked against the
+ * elements in satelliteElements.ts. Returns the moons whose elements no longer
+ * give the positions the file was fitted to; they stay uncorrected.
+ */
+export function installMoonCorrections(set: MoonCorrectionSet | null): string[] {
+  return setMoonCorrections(set, meanElementModel);
+}
 
 /**
  * Planetocentric offset of ANY catalog moon in the scene equatorial frame
  * (AU), keyed by name — the single position seam shared by the renderer
  * (PlanetariumMode.getMoonWorldOffsetAU) and the shadow engine, so an event
- * the engine finds is an event the renderer shows. Earth's Moon → Meeus;
- * everything else → the JPL mean elements above.
+ * the engine finds is an event the renderer shows. Earth's Moon → the fitted
+ * ephemeris (Meeus outside it); everything else → the JPL mean elements
+ * above, corrected where a correction is installed.
  *
  * `outOrbitNormal` receives the actual orbit normal. For Earth's Moon that is
- * the true 5.1°-tilted normal from a finite difference of two Meeus samples:
+ * the true 5.1°-tilted normal from a finite difference of two samples:
  * L ≈ r(t) × r(t+dt), pointing north in the scene's proper (det +1) frame.
  */
 export function computeMoonOffsetEquatorialAU(
@@ -284,5 +311,13 @@ export function computeMoonOffsetEquatorialAU(
     }
     return out;
   }
-  return computeSatelliteOffsetEquatorialAU(moonName, ttJDFromUtcMs(utcMs), out, outOrbitNormal);
+  const jdTT = ttJDFromUtcMs(utcMs);
+  if (!moonCorrectionInstalled(moonName)) {
+    return computeSatelliteOffsetEquatorialAU(moonName, jdTT, out, outOrbitNormal);
+  }
+  // The roll reference stays the mean-element normal: the corrections move
+  // the moon along and about its orbit, and tilt the plane by a hair.
+  computeSatelliteOffsetEquatorialAU(moonName, jdTT, out, tmpModelNormal);
+  if (outOrbitNormal) outOrbitNormal.copy(tmpModelNormal);
+  return correctMoonOffsetAU(moonName, jdTT, out, tmpModelNormal);
 }

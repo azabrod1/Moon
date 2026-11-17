@@ -1,0 +1,1126 @@
+{
+ "note": "JPL Horizons observer tables from Earth (500@399): APmag, r, delta (AU), S-T-O (deg), planetographic sub-observer and sub-solar latitudes (deg). Written by tools/planet-magnitudes-golden.mjs.",
+ "fetchedUtc": "2026-11-17",
+ "rows": [
+  {
+   "planet": "Mercury",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": 0.508,
+   "r": 0.342463082893,
+   "delta": 0.77754542055822,
+   "phaseDeg": 117.4013,
+   "observerLatDeg": -6.966672,
+   "sunLatDeg": 0.030707
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": -0.84,
+   "r": 0.438797292071,
+   "delta": 1.38610011157186,
+   "phaseDeg": 20.7204,
+   "observerLatDeg": -4.963916,
+   "sunLatDeg": -0.034087
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": 2.345,
+   "r": 0.376703950799,
+   "delta": 0.66964258658098,
+   "phaseDeg": 144.3388,
+   "observerLatDeg": -5.842255,
+   "sunLatDeg": 0.020159
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": -0.034,
+   "r": 0.411770369745,
+   "delta": 1.01363023640401,
+   "phaseDeg": 78.0609,
+   "observerLatDeg": 1.43804,
+   "sunLatDeg": -0.031951
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": -0.184,
+   "r": 0.410064112946,
+   "delta": 1.09331689844654,
+   "phaseDeg": 68.4173,
+   "observerLatDeg": 5.4875,
+   "sunLatDeg": 0.00757
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": 3.97,
+   "r": 0.378608117521,
+   "delta": 0.64895156787431,
+   "phaseDeg": 158.7864,
+   "observerLatDeg": 10.773718,
+   "sunLatDeg": -0.024712
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": -1.012,
+   "r": 0.437497005023,
+   "delta": 1.41847661082624,
+   "phaseDeg": 13.7355,
+   "observerLatDeg": 2.64828,
+   "sunLatDeg": -0.004327
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": 0.183,
+   "r": 0.34422731869,
+   "delta": 0.82869516798344,
+   "phaseDeg": 107.2473,
+   "observerLatDeg": -2.127894,
+   "sunLatDeg": -0.010914
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": -0.413,
+   "r": 0.456464905757,
+   "delta": 1.2889644075177,
+   "phaseDeg": 39.9093,
+   "observerLatDeg": -4.769309,
+   "sunLatDeg": -0.014598
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": -1.147,
+   "r": 0.31709320367,
+   "delta": 1.16226981806658,
+   "phaseDeg": 50.3171,
+   "observerLatDeg": -5.633731,
+   "sunLatDeg": 0.00866
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": 0.684,
+   "r": 0.465790039087,
+   "delta": 0.75323052334824,
+   "phaseDeg": 108.4468,
+   "observerLatDeg": -3.714222,
+   "sunLatDeg": -0.022955
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": -2.157,
+   "r": 0.307557066108,
+   "delta": 1.31760981865952,
+   "phaseDeg": 8.0124,
+   "observerLatDeg": 2.055107,
+   "sunLatDeg": 0.026968
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": 1.612,
+   "r": 0.465020205982,
+   "delta": 0.64817463505242,
+   "phaseDeg": 131.1138,
+   "observerLatDeg": 10.190391,
+   "sunLatDeg": -0.029233
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": -1.398,
+   "r": 0.320296511062,
+   "delta": 1.26078702159006,
+   "phaseDeg": 33.3663,
+   "observerLatDeg": 5.224719,
+   "sunLatDeg": 0.034109
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": -0.186,
+   "r": 0.454202005056,
+   "delta": 1.18048799438206,
+   "phaseDeg": 55.4548,
+   "observerLatDeg": 2.179701,
+   "sunLatDeg": -0.03311
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": -0.34,
+   "r": 0.349228560945,
+   "delta": 0.96560839263829,
+   "phaseDeg": 82.9006,
+   "observerLatDeg": -3.088841,
+   "sunLatDeg": 0.02894
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": -4.039,
+   "r": 0.720452810377,
+   "delta": 1.18190732715254,
+   "phaseDeg": 56.1348,
+   "observerLatDeg": -0.9031,
+   "sunLatDeg": -2.069265
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": -3.911,
+   "r": 0.726410781255,
+   "delta": 1.4437055193096,
+   "phaseDeg": 38.7452,
+   "observerLatDeg": 0.142023,
+   "sunLatDeg": 1.056624
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": -3.876,
+   "r": 0.727787316066,
+   "delta": 1.63235832421451,
+   "phaseDeg": 22.5729,
+   "observerLatDeg": 0.434974,
+   "sunLatDeg": 2.612933
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": -3.896,
+   "r": 0.722557368074,
+   "delta": 1.72869751950174,
+   "phaseDeg": 5.6068,
+   "observerLatDeg": -0.489796,
+   "sunLatDeg": 0.328317
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": -3.902,
+   "r": 0.71847872584,
+   "delta": 1.70531271194504,
+   "phaseDeg": 12.69,
+   "observerLatDeg": -1.227729,
+   "sunLatDeg": -2.460654
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": -3.882,
+   "r": 0.721700998347,
+   "delta": 1.55790606185598,
+   "phaseDeg": 31.1046,
+   "observerLatDeg": -0.300769,
+   "sunLatDeg": -1.515265
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": -3.93,
+   "r": 0.727350680406,
+   "delta": 1.31690632042596,
+   "phaseDeg": 48.6549,
+   "observerLatDeg": 1.845695,
+   "sunLatDeg": 1.694065
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": -4.131,
+   "r": 0.727035697658,
+   "delta": 1.01581331909456,
+   "phaseDeg": 66.6223,
+   "observerLatDeg": 2.731697,
+   "sunLatDeg": 2.40433
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": -4.529,
+   "r": 0.721208745072,
+   "delta": 0.67688924888653,
+   "phaseDeg": 89.3409,
+   "observerLatDeg": -0.16735,
+   "sunLatDeg": -0.432129
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": -4.833,
+   "r": 0.718552848012,
+   "delta": 0.35287892896116,
+   "phaseDeg": 132.0946,
+   "observerLatDeg": -7.524712,
+   "sunLatDeg": -2.630765
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": -4.736,
+   "r": 0.723104250853,
+   "delta": 0.35296025861386,
+   "phaseDeg": 134.6719,
+   "observerLatDeg": -5.221961,
+   "sunLatDeg": -0.836799
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": -4.411,
+   "r": 0.728001314157,
+   "delta": 0.69869094260744,
+   "phaseDeg": 90.5645,
+   "observerLatDeg": 0.917899,
+   "sunLatDeg": 2.194095
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": -4.045,
+   "r": 0.725985006979,
+   "delta": 1.06415924783239,
+   "phaseDeg": 66.0737,
+   "observerLatDeg": 1.266641,
+   "sunLatDeg": 2.001087
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": -3.921,
+   "r": 0.72000772336,
+   "delta": 1.36798003566117,
+   "phaseDeg": 45.8497,
+   "observerLatDeg": -0.019104,
+   "sunLatDeg": -1.158443
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": -3.915,
+   "r": 0.719014309484,
+   "delta": 1.57889524420361,
+   "phaseDeg": 27.2744,
+   "observerLatDeg": -0.394932,
+   "sunLatDeg": -2.578205
+  },
+  {
+   "planet": "Venus",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": -3.919,
+   "r": 0.724508150341,
+   "delta": 1.68918091742789,
+   "phaseDeg": 10.4201,
+   "observerLatDeg": 0.481769,
+   "sunLatDeg": -0.093247
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": 1.419,
+   "r": 1.480677649313,
+   "delta": 2.4238067535467,
+   "phaseDeg": 8.4221,
+   "observerLatDeg": -1.378553,
+   "sunLatDeg": 2.766939
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": 1.305,
+   "r": 1.425913657308,
+   "delta": 2.25950388831684,
+   "phaseDeg": 16.9879,
+   "observerLatDeg": -15.962882,
+   "sunLatDeg": -8.702244
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": 1.103,
+   "r": 1.389967679442,
+   "delta": 2.07894789867739,
+   "phaseDeg": 24.6242,
+   "observerLatDeg": -24.918948,
+   "sunLatDeg": -19.059125
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": 1.059,
+   "r": 1.382639651584,
+   "delta": 1.90108277562408,
+   "phaseDeg": 31.0984,
+   "observerLatDeg": -23.611571,
+   "sunLatDeg": -24.968341
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": 1.068,
+   "r": 1.406088237533,
+   "delta": 1.71313978990633,
+   "phaseDeg": 36.3913,
+   "observerLatDeg": -13.480293,
+   "sunLatDeg": -24.059951
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": 0.848,
+   "r": 1.453614007243,
+   "delta": 1.48259928544015,
+   "phaseDeg": 40.2775,
+   "observerLatDeg": -0.29331,
+   "sunLatDeg": -17.256728
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": 0.309,
+   "r": 1.513248503997,
+   "delta": 1.18505739579869,
+   "phaseDeg": 41.2562,
+   "observerLatDeg": 10.713425,
+   "sunLatDeg": -7.516512
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": -0.405,
+   "r": 1.572622368221,
+   "delta": 0.84619892031024,
+   "phaseDeg": 33.6871,
+   "observerLatDeg": 15.551209,
+   "sunLatDeg": 2.678145
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": -1.369,
+   "r": 1.621845582755,
+   "delta": 0.64254677532511,
+   "phaseDeg": 5.065,
+   "observerLatDeg": 11.197182,
+   "sunLatDeg": 11.861644
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": -0.331,
+   "r": 1.654236418889,
+   "delta": 0.8462553544039,
+   "phaseDeg": 28.0031,
+   "observerLatDeg": 7.286223,
+   "sunLatDeg": 19.152599
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": 0.627,
+   "r": 1.666044222417,
+   "delta": 1.27161775394117,
+   "phaseDeg": 36.9401,
+   "observerLatDeg": 13.127873,
+   "sunLatDeg": 23.877361
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": 1.175,
+   "r": 1.656016122897,
+   "delta": 1.69519350837164,
+   "phaseDeg": 35.1967,
+   "observerLatDeg": 21.200177,
+   "sunLatDeg": 25.453099
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": 1.557,
+   "r": 1.625206859526,
+   "delta": 2.03691460347628,
+   "phaseDeg": 29.5857,
+   "observerLatDeg": 26.066901,
+   "sunLatDeg": 23.493014
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": 1.625,
+   "r": 1.577135644651,
+   "delta": 2.27028098850556,
+   "phaseDeg": 22.3334,
+   "observerLatDeg": 24.279146,
+   "sunLatDeg": 17.973483
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": 1.473,
+   "r": 1.518209100992,
+   "delta": 2.39362459664317,
+   "phaseDeg": 14.3087,
+   "observerLatDeg": 15.068044,
+   "sunLatDeg": 9.308247
+  },
+  {
+   "planet": "Mars",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": 1.248,
+   "r": 1.458062860056,
+   "delta": 2.42343322470734,
+   "phaseDeg": 6.024,
+   "observerLatDeg": 0.724296,
+   "sunLatDeg": -1.579595
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": -2.589,
+   "r": 4.984892933682,
+   "delta": 4.48150367162417,
+   "phaseDeg": 10.2482,
+   "observerLatDeg": 3.49089,
+   "sunLatDeg": 3.563301
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": -2.246,
+   "r": 4.994381938081,
+   "delta": 5.21991002763922,
+   "phaseDeg": 10.8088,
+   "observerLatDeg": 3.3212,
+   "sunLatDeg": 3.561584
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": -2.055,
+   "r": 5.004901464887,
+   "delta": 5.81063030715514,
+   "phaseDeg": 6.3003,
+   "observerLatDeg": 3.30937,
+   "sunLatDeg": 3.540479
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": -1.992,
+   "r": 5.016387997948,
+   "delta": 6.02786854381877,
+   "phaseDeg": 0.3539,
+   "observerLatDeg": 3.334877,
+   "sunLatDeg": 3.500347
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": -2.038,
+   "r": 5.02877203208,
+   "delta": 5.81700544807727,
+   "phaseDeg": 6.8051,
+   "observerLatDeg": 3.328289,
+   "sunLatDeg": 3.44168
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": -2.209,
+   "r": 5.041986183672,
+   "delta": 5.25332904602679,
+   "phaseDeg": 11.0271,
+   "observerLatDeg": 3.296016,
+   "sunLatDeg": 3.365081
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": -2.522,
+   "r": 5.055954645833,
+   "delta": 4.55408216503151,
+   "phaseDeg": 10.3318,
+   "observerLatDeg": 3.289144,
+   "sunLatDeg": 3.271261
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": -2.797,
+   "r": 5.070605380956,
+   "delta": 4.10987313603067,
+   "phaseDeg": 2.8546,
+   "observerLatDeg": 3.293013,
+   "sunLatDeg": 3.161021
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": -2.678,
+   "r": 5.085849938293,
+   "delta": 4.2814208235216,
+   "phaseDeg": 6.9433,
+   "observerLatDeg": 3.178133,
+   "sunLatDeg": 3.035249
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": -2.313,
+   "r": 5.101609778871,
+   "delta": 4.94485907161457,
+   "phaseDeg": 11.1699,
+   "observerLatDeg": 2.990612,
+   "sunLatDeg": 2.894896
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": -2.04,
+   "r": 5.117800733815,
+   "delta": 5.65771629728488,
+   "phaseDeg": 9.0125,
+   "observerLatDeg": 2.808712,
+   "sunLatDeg": 2.740964
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": -1.912,
+   "r": 5.134347614919,
+   "delta": 6.09402693605365,
+   "phaseDeg": 3.3562,
+   "observerLatDeg": 2.590549,
+   "sunLatDeg": 2.574493
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": -1.898,
+   "r": 5.151168708925,
+   "delta": 6.11448759385361,
+   "phaseDeg": 3.3026,
+   "observerLatDeg": 2.303929,
+   "sunLatDeg": 2.396557
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": -1.996,
+   "r": 5.168178300159,
+   "delta": 5.71931753352565,
+   "phaseDeg": 8.9121,
+   "observerLatDeg": 1.975305,
+   "sunLatDeg": 2.208259
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": -2.236,
+   "r": 5.185292836308,
+   "delta": 5.04481717450714,
+   "phaseDeg": 11.0649,
+   "observerLatDeg": 1.690662,
+   "sunLatDeg": 2.010721
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": -2.564,
+   "r": 5.202425934267,
+   "delta": 4.40948154883421,
+   "phaseDeg": 7.0091,
+   "observerLatDeg": 1.565708,
+   "sunLatDeg": 1.805078
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": 0.955,
+   "r": 9.737841934008,
+   "delta": 10.2947006895469,
+   "phaseDeg": 4.6407,
+   "observerLatDeg": 11.233422,
+   "sunLatDeg": 8.73873
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": 0.984,
+   "r": 9.724485875215,
+   "delta": 10.6937117601324,
+   "phaseDeg": 1.0794,
+   "observerLatDeg": 8.361402,
+   "sunLatDeg": 7.932927
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": 1.06,
+   "r": 9.710983882814,
+   "delta": 10.5563624993342,
+   "phaseDeg": 3.0214,
+   "observerLatDeg": 5.22985,
+   "sunLatDeg": 7.119359
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": 1.046,
+   "r": 9.697343541959,
+   "delta": 9.95684625999186,
+   "phaseDeg": 5.7063,
+   "observerLatDeg": 2.959327,
+   "sunLatDeg": 6.298526
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": 0.88,
+   "r": 9.683575354952,
+   "delta": 9.19481388332034,
+   "phaseDeg": 5.4197,
+   "observerLatDeg": 2.456821,
+   "sunLatDeg": 5.470969
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": 0.646,
+   "r": 9.669691300425,
+   "delta": 8.6981278714223,
+   "phaseDeg": 1.7592,
+   "observerLatDeg": 3.86931,
+   "sunLatDeg": 4.637251
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": 0.692,
+   "r": 9.65570105442,
+   "delta": 8.79753299422327,
+   "phaseDeg": 3.1721,
+   "observerLatDeg": 5.834792,
+   "sunLatDeg": 3.797934
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": 0.917,
+   "r": 9.641611639784,
+   "delta": 9.42850092711894,
+   "phaseDeg": 5.7919,
+   "observerLatDeg": 6.340278,
+   "sunLatDeg": 2.95356
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": 1.082,
+   "r": 9.627431365006,
+   "delta": 10.1672392035492,
+   "phaseDeg": 4.7634,
+   "observerLatDeg": 4.733185,
+   "sunLatDeg": 2.104658
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": 1.116,
+   "r": 9.613173530556,
+   "delta": 10.5798514173745,
+   "phaseDeg": 1.2267,
+   "observerLatDeg": 1.740173,
+   "sunLatDeg": 1.251765
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": 1.171,
+   "r": 9.598850740293,
+   "delta": 10.4619321843497,
+   "phaseDeg": 2.9204,
+   "observerLatDeg": -1.477528,
+   "sunLatDeg": 0.395439
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": 1.082,
+   "r": 9.584473429777,
+   "delta": 9.87856665375137,
+   "phaseDeg": 5.7162,
+   "observerLatDeg": -3.806752,
+   "sunLatDeg": -0.46373
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": 0.872,
+   "r": 9.570047781753,
+   "delta": 9.11595074558812,
+   "phaseDeg": 5.5834,
+   "observerLatDeg": -4.38722,
+   "sunLatDeg": -1.325101
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": 0.644,
+   "r": 9.555582771343,
+   "delta": 8.59748996378867,
+   "phaseDeg": 2.0029,
+   "observerLatDeg": -3.048203,
+   "sunLatDeg": -2.187993
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": 0.706,
+   "r": 9.541091297906,
+   "delta": 8.66976111481866,
+   "phaseDeg": 3.0318,
+   "observerLatDeg": -1.071798,
+   "sunLatDeg": -3.051718
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": 0.935,
+   "r": 9.526586044624,
+   "delta": 9.28788442647133,
+   "phaseDeg": 5.8228,
+   "observerLatDeg": -0.522316,
+   "sunLatDeg": -3.915636
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": 5.691,
+   "r": 19.61344308917,
+   "delta": 18.9754148362097,
+   "phaseDeg": 2.2174,
+   "observerLatDeg": 61.667973,
+   "sunLatDeg": 63.746867
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": 5.775,
+   "r": 19.60590870607,
+   "delta": 19.7281406323821,
+   "phaseDeg": 2.8559,
+   "observerLatDeg": 61.564021,
+   "sunLatDeg": 64.237808
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": 5.845,
+   "r": 19.59831816963,
+   "delta": 20.3962599450072,
+   "phaseDeg": 1.7312,
+   "observerLatDeg": 63.115257,
+   "sunLatDeg": 64.72798
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": 5.864,
+   "r": 19.59067012614,
+   "delta": 20.5950202795251,
+   "phaseDeg": 0.3513,
+   "observerLatDeg": 65.543672,
+   "sunLatDeg": 65.217364
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": 5.823,
+   "r": 19.58296362343,
+   "delta": 20.2293515443691,
+   "phaseDeg": 2.2569,
+   "observerLatDeg": 67.780909,
+   "sunLatDeg": 65.705912
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": 5.741,
+   "r": 19.57520062916,
+   "delta": 19.4935194035889,
+   "phaseDeg": 2.9583,
+   "observerLatDeg": 68.899282,
+   "sunLatDeg": 66.193555
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": 5.661,
+   "r": 19.56738460113,
+   "delta": 18.7969828147454,
+   "phaseDeg": 1.9054,
+   "observerLatDeg": 68.422326,
+   "sunLatDeg": 66.680208
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": 5.636,
+   "r": 19.55951502763,
+   "delta": 18.5822152780458,
+   "phaseDeg": 0.4107,
+   "observerLatDeg": 66.787861,
+   "sunLatDeg": 67.165791
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": 5.685,
+   "r": 19.55159011009,
+   "delta": 19.0068064836303,
+   "phaseDeg": 2.4293,
+   "observerLatDeg": 65.414743,
+   "sunLatDeg": 67.650216
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": 5.77,
+   "r": 19.54361004041,
+   "delta": 19.7774452964914,
+   "phaseDeg": 2.805,
+   "observerLatDeg": 65.558561,
+   "sunLatDeg": 68.133418
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": 5.835,
+   "r": 19.53557951085,
+   "delta": 20.396366749599,
+   "phaseDeg": 1.4822,
+   "observerLatDeg": 67.264926,
+   "sunLatDeg": 68.615331
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": 5.845,
+   "r": 19.52750351814,
+   "delta": 20.51553823899,
+   "phaseDeg": 0.648,
+   "observerLatDeg": 69.681969,
+   "sunLatDeg": 69.095894
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": 5.797,
+   "r": 19.51938234335,
+   "delta": 20.0815023944312,
+   "phaseDeg": 2.4484,
+   "observerLatDeg": 71.760808,
+   "sunLatDeg": 69.575019
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": 5.712,
+   "r": 19.51121398973,
+   "delta": 19.3225614226463,
+   "phaseDeg": 2.9268,
+   "observerLatDeg": 72.646525,
+   "sunLatDeg": 70.052585
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": 5.636,
+   "r": 19.50299819601,
+   "delta": 18.6679084473853,
+   "phaseDeg": 1.6355,
+   "observerLatDeg": 71.978889,
+   "sunLatDeg": 70.528435
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": 5.621,
+   "r": 19.49473863525,
+   "delta": 18.5424416892103,
+   "phaseDeg": 0.756,
+   "observerLatDeg": 70.326381,
+   "sunLatDeg": 71.00241
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "apmag": 7.775,
+   "r": 29.90376049873,
+   "delta": 30.1425626828419,
+   "phaseDeg": 1.8209,
+   "observerLatDeg": -22.299437,
+   "sunLatDeg": -21.718519
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Feb-17 00:00:00.000",
+   "apmag": 7.819,
+   "r": 29.90256992953,
+   "delta": 30.7671084275378,
+   "phaseDeg": 0.9072,
+   "observerLatDeg": -21.94343,
+   "sunLatDeg": -21.621525
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Apr-04 00:00:00.000",
+   "apmag": 7.825,
+   "r": 29.90137102553,
+   "delta": 30.8577382329211,
+   "phaseDeg": 0.5475,
+   "observerLatDeg": -21.382317,
+   "sunLatDeg": -21.524029
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-May-21 00:00:00.000",
+   "apmag": 7.791,
+   "r": 29.90016285835,
+   "delta": 30.3777288957577,
+   "phaseDeg": 1.6947,
+   "observerLatDeg": -20.883071,
+   "sunLatDeg": -21.426035
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Jul-07 00:00:00.000",
+   "apmag": 7.736,
+   "r": 29.89894623596,
+   "delta": 29.6118436487177,
+   "phaseDeg": 1.8807,
+   "observerLatDeg": -20.688619,
+   "sunLatDeg": -21.327551
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Aug-23 00:00:00.000",
+   "apmag": 7.691,
+   "r": 29.8977249173,
+   "delta": 29.0086630759916,
+   "phaseDeg": 0.9434,
+   "observerLatDeg": -20.878867,
+   "sunLatDeg": -21.228585
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Oct-09 00:00:00.000",
+   "apmag": 7.686,
+   "r": 29.89649957788,
+   "delta": 28.946054721065,
+   "phaseDeg": 0.5923,
+   "observerLatDeg": -21.284446,
+   "sunLatDeg": -21.129144
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Nov-25 00:00:00.000",
+   "apmag": 7.726,
+   "r": 29.89526917777,
+   "delta": 29.4807646132144,
+   "phaseDeg": 1.7258,
+   "observerLatDeg": -21.577371,
+   "sunLatDeg": -21.029231
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Jan-11 00:00:00.000",
+   "apmag": 7.783,
+   "r": 29.89403341572,
+   "delta": 30.2732175896746,
+   "phaseDeg": 1.7295,
+   "observerLatDeg": -21.513363,
+   "sunLatDeg": -20.92885
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Feb-27 00:00:00.000",
+   "apmag": 7.822,
+   "r": 29.892797181,
+   "delta": 30.8201677638966,
+   "phaseDeg": 0.6604,
+   "observerLatDeg": -21.084759,
+   "sunLatDeg": -20.827997
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Apr-15 00:00:00.000",
+   "apmag": 7.82,
+   "r": 29.89156567888,
+   "delta": 30.7996784824737,
+   "phaseDeg": 0.8007,
+   "observerLatDeg": -20.489492,
+   "sunLatDeg": -20.726672
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Jun-01 00:00:00.000",
+   "apmag": 7.781,
+   "r": 29.8903403864,
+   "delta": 30.2401409053328,
+   "phaseDeg": 1.8128,
+   "observerLatDeg": -20.011878,
+   "sunLatDeg": -20.624874
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Jul-18 00:00:00.000",
+   "apmag": 7.724,
+   "r": 29.88911840534,
+   "delta": 29.469098760015,
+   "phaseDeg": 1.7899,
+   "observerLatDeg": -19.883271,
+   "sunLatDeg": -20.52261
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Sep-03 00:00:00.000",
+   "apmag": 7.685,
+   "r": 29.88789825093,
+   "delta": 28.9413943933243,
+   "phaseDeg": 0.6861,
+   "observerLatDeg": -20.143018,
+   "sunLatDeg": -20.41989
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Oct-20 00:00:00.000",
+   "apmag": 7.689,
+   "r": 29.8866826189,
+   "delta": 28.9947073922281,
+   "phaseDeg": 0.856,
+   "observerLatDeg": -20.571891,
+   "sunLatDeg": -20.316723
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2025-Dec-06 00:00:00.000",
+   "apmag": 7.735,
+   "r": 29.88547537977,
+   "delta": 29.6110361515855,
+   "phaseDeg": 1.8203,
+   "observerLatDeg": -20.823333,
+   "sunLatDeg": -20.213112
+  }
+ ]
+}

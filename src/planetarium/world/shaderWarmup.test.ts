@@ -426,6 +426,22 @@ describe('resolveProgramLinks', () => {
     expect(grownTimings.map((t) => t.name)).toEqual(['c']);
   });
 
+  it('leaves a program three released while the pass waited on a frame', async () => {
+    const programs = [makeProgram('a'), makeProgram('b')];
+    const { resolver, parameterCalls } = makeResolver(programs);
+    const errors: unknown[] = [];
+    const timings = await resolveProgramLinks(resolver, {
+      // Before b's frame ends, b's program is released (three's destroy()).
+      nextFrame: async () => {
+        if (parameterCalls.length === 1) (programs[1] as { program?: unknown }).program = undefined;
+      },
+      onError: (err) => errors.push(err),
+    });
+    expect(parameterCalls).toHaveLength(1);
+    expect(timings.map((t) => t.name)).toEqual(['a']);
+    expect(errors).toEqual([]);
+  });
+
   it('names a row by the material type when the material itself was never named', async () => {
     const unnamed = makeProgram('', { type: 'MeshStandardMaterial' });
     const timings = await resolveProgramLinks(makeResolver([unnamed]).resolver, {

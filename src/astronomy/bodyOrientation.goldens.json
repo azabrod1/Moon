@@ -1,0 +1,384 @@
+{
+ "note": "JPL Horizons ObsSub-LON/LAT (planetodetic, light-time corrected) from Earth (500@399) at TT dates, with each body's stated longitude convention and radii. Written by tools/sub-observer-golden.mjs.",
+ "fetchedUtc": "2026-11-17",
+ "rows": [
+  {
+   "planet": "Mercury",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 74.859044,
+   "latDeg": -5.469399,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 245.402151,
+   "latDeg": -3.847702,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 65.159334,
+   "latDeg": -6.96673,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 152.644026,
+   "latDeg": -1.965806,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 162.234988,
+   "latDeg": 1.928021,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Mercury",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 331.3535,
+   "latDeg": -4.948203,
+   "eastPositive": false,
+   "equatorialKm": 2440.53,
+   "polarKm": 2438.26
+  },
+  {
+   "planet": "Venus",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 281.427487,
+   "latDeg": -0.99907,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Venus",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 257.463319,
+   "latDeg": -1.015825,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Venus",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 284.455754,
+   "latDeg": -0.903112,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Venus",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 27.479579,
+   "latDeg": -0.21462,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Venus",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 164.510944,
+   "latDeg": 0.030961,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Venus",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 60.418712,
+   "latDeg": -4.660101,
+   "eastPositive": true,
+   "equatorialKm": 6051.8,
+   "polarKm": 6051.8
+  },
+  {
+   "planet": "Mars",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 47.61346,
+   "latDeg": 24.035162,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Mars",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 254.253548,
+   "latDeg": -23.171934,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Mars",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 30.628801,
+   "latDeg": -1.37829,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Mars",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 170.175649,
+   "latDeg": 22.731068,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Mars",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 87.351535,
+   "latDeg": 7.518149,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Mars",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 136.24018,
+   "latDeg": 18.032412,
+   "eastPositive": false,
+   "equatorialKm": 3396.19,
+   "polarKm": 3376.2
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 282.435481,
+   "latDeg": -0.619084,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 339.539572,
+   "latDeg": 3.310431,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 168.758603,
+   "latDeg": 3.490894,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 175.640057,
+   "latDeg": -0.41447,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 257.928891,
+   "latDeg": -0.767876,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Jupiter",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 127.818704,
+   "latDeg": -3.439177,
+   "eastPositive": false,
+   "equatorialKm": 71492,
+   "polarKm": 66854
+  },
+  {
+   "planet": "Saturn",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 171.862494,
+   "latDeg": -1.828971,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 224.89101,
+   "latDeg": -23.026573,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 218.672457,
+   "latDeg": 11.233462,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 49.45041,
+   "latDeg": -7.481292,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 263.111327,
+   "latDeg": 17.38057,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Saturn",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 197.473113,
+   "latDeg": 29.251669,
+   "eastPositive": false,
+   "equatorialKm": 60268,
+   "polarKm": 54364
+  },
+  {
+   "planet": "Uranus",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 276.605563,
+   "latDeg": 73.147232,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 14.843169,
+   "latDeg": -33.626139,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 128.241896,
+   "latDeg": 61.667989,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 358.897724,
+   "latDeg": 74.327807,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 232.174547,
+   "latDeg": -3.254256,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Uranus",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 79.099371,
+   "latDeg": -54.543595,
+   "eastPositive": true,
+   "equatorialKm": 25559,
+   "polarKm": 24973
+  },
+  {
+   "planet": "Neptune",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 314.043606,
+   "latDeg": 12.88284,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 145.984192,
+   "latDeg": -28.398864,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 3.236316,
+   "latDeg": -22.29944,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 312.625336,
+   "latDeg": -20.005186,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 194.554369,
+   "latDeg": 5.717937,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  },
+  {
+   "planet": "Neptune",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 270.306113,
+   "latDeg": 27.205048,
+   "eastPositive": false,
+   "equatorialKm": 24764,
+   "polarKm": 24341
+  }
+ ]
+}

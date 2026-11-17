@@ -1,13 +1,14 @@
 /**
  * The Look-at menu: a compact centered card listing the landed sky's
- * pickable targets (Sun / parent planet / moons) with their live apparent
- * sizes. The root element is a full-screen click-catcher — the Observatory
+ * pickable targets (Sun / parent planet / moons / the other planets) with
+ * their live apparent sizes, or for a planet its brightness. The root element is a full-screen click-catcher — the Observatory
  * panel and the mobile sheet are not clickable behind it, and tapping
  * outside the card closes. Rows rebuild on every open (apparent sizes are
  * live quantities); nothing renders per-frame.
  */
 import {
   formatDiscDeg,
+  formatMagnitude,
   surfaceTargetKey,
   type SurfaceTarget,
   type SurfaceTargetChoice,
@@ -73,7 +74,10 @@ export class SurfaceTargetMenu {
       }
       const meta = document.createElement('span');
       meta.className = 'stm-meta';
-      meta.textContent = `∅ ${formatDiscDeg(choice.discDeg)}°${choice.resolvable ? '' : ' · too small'}`;
+      // A planet is a point from here: its brightness says more than its size.
+      meta.textContent = choice.magnitude !== null
+        ? formatMagnitude(choice.magnitude)
+        : `∅ ${formatDiscDeg(choice.discDeg)}°${choice.resolvable ? '' : ' · too small'}`;
       row.appendChild(meta);
       row.addEventListener('click', () => this.onPick(choice.target));
       this.listEl.appendChild(row);

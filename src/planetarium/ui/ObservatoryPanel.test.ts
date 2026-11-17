@@ -5,6 +5,8 @@ import {
   liveEventVerb,
   observatoryEventsStatus,
   observatoryPhaseText,
+  trackedBodyPhaseText,
+  trackedPlanetText,
   observatoryWatchRowState,
   observatoryWindowKey,
   observatoryWindowState,
@@ -81,6 +83,24 @@ describe('sheetReleaseTarget', () => {
     expect(sheetReleaseTarget(495, -3, 500, 490)).toBe('peek'); // target 498: both
     expect(sheetReleaseTarget(495, 3, 500, 490)).toBe('peek'); // target 492: both
     expect(sheetReleaseTarget(495, -4, 500, 490)).toBe('full'); // target 499: full only
+  });
+});
+
+describe('trackedBodyPhaseText', () => {
+  it('names the phase of a tracked body, or its eclipse', () => {
+    expect(trackedBodyPhaseText('Europa', 0.05)).toEqual({ headline: 'Crescent Europa', meta: 'Europa · 5% lit' });
+    expect(trackedBodyPhaseText('Phobos', 0.01).headline).toBe('New Phobos');
+    // Full by geometry, dark in the planet's shadow: the line says which.
+    expect(trackedBodyPhaseText('Phobos', 0.99, 'Mars')).toEqual({
+      headline: 'Phobos eclipsed by Mars',
+      meta: "Phobos · in Mars's shadow",
+    });
+  });
+
+  it('gives a tracked planet its brightness, and a phase only short of full', () => {
+    expect(trackedPlanetText('Venus', 0.23, -4.62)).toEqual({ headline: 'Crescent Venus', meta: 'Venus · mag −4.6 · 23% lit' });
+    expect(trackedPlanetText('Jupiter', 0.99, -2.43).headline).toBe('Jupiter');
+    expect(trackedPlanetText('Uranus', 1, 5.68).meta).toBe('Uranus · mag 5.7 · 100% lit');
   });
 });
 

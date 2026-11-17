@@ -21,6 +21,7 @@ import {
   lensWarpNdc,
   lensWarpNdcWithContext,
   makeLensWarpContext,
+  viewAngleAtOutputNdcY,
   type LensWarpContext,
   type NdcRect,
 } from './lensProjection';
@@ -612,5 +613,21 @@ describe('the inverse map with its derivative (the supersample box’s footprint
     // Unclamped: the taps are clamped one by one after they are placed.
     expect(lensSourceFootprintGlsl).not.toContain('uUvMax');
     expect(lensSourceFootprintGlsl).not.toContain('dFdx');
+  });
+});
+
+describe('viewAngleAtOutputNdcY', () => {
+  it('inverts the forward warp along the vertical centre line', () => {
+    const designFovDeg = 30;
+    const aspect = 390 / 844;
+    for (const strength of [0, 1]) {
+      const renderFovDeg = lensOverscanFovDeg(designFovDeg, aspect, strength);
+      const tanHalfRender = Math.tan((renderFovDeg / 2) * (Math.PI / 180));
+      for (const viewAngleDeg of [-12, -3, 0, 4, 11]) {
+        const viewAngle = viewAngleDeg * (Math.PI / 180);
+        const output = lensWarpNdc(0, Math.tan(viewAngle) / tanHalfRender, designFovDeg, renderFovDeg, aspect, strength, { x: 0, y: 0 });
+        expect(viewAngleAtOutputNdcY(output.y, designFovDeg, strength)).toBeCloseTo(viewAngle, 9);
+      }
+    }
   });
 });

@@ -105,6 +105,52 @@ void main() {
 }
 `;
 
+/**
+ * The shell over a flattened body (a giant squashed along its pole): the same
+ * shader, with every distance taken in the frame stretched along the pole by
+ * a/c, where the squashed shell and globe are spheres again (astronomy/
+ * spheroid.ts). The phase keeps the true view direction; the local sun
+ * elevation is read off the stretched normal, a fraction of the flattening
+ * off, which the soft day and twilight bands do not show. Derived from the
+ * sphere's text by replacement, so that text — pinned byte for byte, and
+ * shared by every other body and tool — does not move.
+ */
+export const atmosphereFragmentShaderOblate = (() => {
+  const replacements: Array<[string, string]> = [
+    [
+      'uniform float alphaScale;      // distance fade, fed per frame (0 far .. 1 near)\n',
+      'uniform float alphaScale;      // distance fade, fed per frame (0 far .. 1 near)\n'
+        + 'uniform vec3 uPoleWorld;       // unit spin pole, scene space\n'
+        + 'uniform float uPoleStretch;    // a/c - 1\n'
+        + 'vec3 stretchAlongPole(vec3 v) { return v + uPoleStretch * dot(v, uPoleWorld) * uPoleWorld; }\n',
+    ],
+    [
+      '  float outerR = length(vWorldPos - vCenter);          // shell radius\n'
+        + '  vec3 D = normalize(vWorldPos - cameraPosition);      // view ray, camera -> fragment\n'
+        + '  vec3 oc = cameraPosition - vCenter;\n'
+        + '  vec3 closest = cameraPosition + D * (-dot(oc, D));   // ray point nearest the center\n'
+        + '  float b = length(closest - vCenter);                 // impact parameter (lowest radius the ray reaches)\n',
+      '  vec3 fragRel = stretchAlongPole(vWorldPos - vCenter);\n'
+        + '  vec3 cameraRel = stretchAlongPole(cameraPosition - vCenter);\n'
+        + '  float outerR = length(fragRel);                      // shell radius, stretched\n'
+        + '  vec3 D = normalize(fragRel - cameraRel);             // view ray, stretched\n'
+        + '  vec3 closestRel = cameraRel + D * (-dot(cameraRel, D));\n'
+        + '  float b = length(closestRel);                        // impact parameter, stretched\n',
+    ],
+    [
+      '  vec3 nClosest = b > 1e-9 ? normalize(closest - vCenter) : normalize(vWorldPos - vCenter);\n',
+      '  vec3 nClosest = b > 1e-9 ? normalize(closestRel) : normalize(fragRel);\n',
+    ],
+    ['  vec3 V = -D;\n', '  vec3 V = -normalize(vWorldPos - cameraPosition);\n'],
+  ];
+  let glsl = atmosphereFragmentShader;
+  for (const [from, to] of replacements) {
+    if (glsl.split(from).length !== 2) throw new Error(`atmosphere: oblate variant lost its anchor: ${from.trim()}`);
+    glsl = glsl.replace(from, to);
+  }
+  return glsl;
+})();
+
 // City lights on the night side. An ADDITIVE layer over the globe, which is
 // what decides how the air in front of it applies: the lights are attenuated by
 // the transmittance of that air (they are seen THROUGH ten airmasses at the

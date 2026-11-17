@@ -166,7 +166,8 @@ export class SunLabel {
     }
   }
 
-  private hide(): void {
+  /** Also the surface view's: its label layer names planet points only. */
+  hide(): void {
     if (!this.el || !this.visible) return;
     this.el.style.display = 'none';
     this.visible = false;

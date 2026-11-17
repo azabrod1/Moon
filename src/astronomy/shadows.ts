@@ -40,6 +40,8 @@ import {
 } from './satellites';
 import { DEG, KM_PER_AU } from './constants';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
+import { projectedOutlineRadius, raySpheroidT, spheroidRadiusToward, SPHERE_SHAPE, type SpheroidShape } from './spheroid';
+import { bodyShape } from './bodyShape';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -114,11 +116,36 @@ export interface ShadowGeometry {
   umbraRadiusKm: number;
   /** Umbra cone length from occluder center to apex (km). */
   umbraLengthKm: number;
+  /** Unit shadow axis, Sun → occluder, in the frame of the positions given. */
+  axisX: number;
+  axisY: number;
+  axisZ: number;
+  /** Unit direction across the axis toward the target's center; zero on the axis. */
+  missX: number;
+  missY: number;
+  missZ: number;
+  /** The occluder radius the cones were drawn from (km, before enlargement):
+   *  a flattened occluder's outline toward the target, seen along the axis. */
+  occluderOutlineKm: number;
+}
+
+/** A zeroed ShadowGeometry, for callers that keep one as scratch. */
+export function emptyShadowGeometry(): ShadowGeometry {
+  return {
+    axialKm: 0, missKm: 0, penumbraRadiusKm: 0, umbraRadiusKm: 0, umbraLengthKm: 0,
+    axisX: 0, axisY: 0, axisZ: 0, missX: 0, missY: 0, missZ: 0, occluderOutlineKm: 0,
+  };
 }
 
 /**
  * Shadow-cone geometry of `occluder` evaluated at `target`, Sun at the
  * origin. Positions in AU, radii in km; zero allocations when `out` is given.
+ *
+ * A flattened occluder (`occluderShape`, spheroid.ts) casts the shadow of its
+ * outline as the Sun sees it: an ellipse, whose radius toward the target
+ * stands in for the sphere's in the cone formulas. That is the radial
+ * approximation eclipse work uses for an oblate Earth; it is exact on the
+ * axis line and for a point Sun.
  */
 export function computeShadowGeometry(
   occluderPosAU: THREE.Vector3,
@@ -126,6 +153,7 @@ export function computeShadowGeometry(
   targetPosAU: THREE.Vector3,
   out: ShadowGeometry,
   shadowEnlargement = 1,
+  occluderShape: SpheroidShape = SPHERE_SHAPE,
 ): ShadowGeometry {
   const sunDistKm = occluderPosAU.length() * KM_PER_AU;
   const axisX = (occluderPosAU.x * KM_PER_AU) / sunDistKm;
@@ -138,8 +166,24 @@ export function computeShadowGeometry(
   const axialKm = relX * axisX + relY * axisY + relZ * axisZ;
   const relSq = relX * relX + relY * relY + relZ * relZ;
   const missKm = Math.sqrt(Math.max(0, relSq - axialKm * axialKm));
+  out.axisX = axisX;
+  out.axisY = axisY;
+  out.axisZ = axisZ;
+  if (missKm > 0) {
+    out.missX = (relX - axialKm * axisX) / missKm;
+    out.missY = (relY - axialKm * axisY) / missKm;
+    out.missZ = (relZ - axialKm * axisZ) / missKm;
+  } else {
+    out.missX = 0;
+    out.missY = 0;
+    out.missZ = 0;
+  }
 
-  const effectiveRadiusKm = occluderRadiusKm * shadowEnlargement;
+  const outlineKm = occluderShape.flattening === 0 || missKm === 0
+    ? occluderRadiusKm
+    : projectedOutlineRadius(axisX, axisY, axisZ, out.missX, out.missY, out.missZ, occluderRadiusKm, occluderShape);
+  out.occluderOutlineKm = outlineKm;
+  const effectiveRadiusKm = outlineKm * shadowEnlargement;
   // Cone radii are clamped to the occluder plane on the sunward side so the
   // search metric stays continuous across axialKm = 0.
   const axialClampedKm = Math.max(0, axialKm);
@@ -199,24 +243,50 @@ export function classifyEclipse(
   return out;
 }
 
+/** The outline radius of a target body toward the occluder's shadow axis
+ *  (`geometry` from computeShadowGeometry with the occluder first). */
+export function targetOutlineKm(geometry: ShadowGeometry, targetRadiusKm: number, targetShape: SpheroidShape): number {
+  if (targetShape.flattening === 0 || geometry.missKm === 0) return targetRadiusKm;
+  return projectedOutlineRadius(
+    geometry.axisX, geometry.axisY, geometry.axisZ,
+    geometry.missX, geometry.missY, geometry.missZ,
+    targetRadiusKm, targetShape,
+  );
+}
+
 /**
  * Touch classification for a shadow falling on the parent sphere
  * ('shadow-transit' kind): which cone reaches the body — total/annular read
  * "somewhere on the body", the convention eclipse catalogs use. Cone radii
  * are re-evaluated at the sphere's near surface along the axis (see header).
+ * A flattened target (`targetShape`) is touched at its outline as seen along
+ * the axis, and pierced where the axis line meets its surface.
  */
 export function classifyShadowTransit(
   geometry: ShadowGeometry,
   occluderRadiusKm: number,
   targetRadiusKm: number,
   occluderSunDistKm: number,
+  targetShape: SpheroidShape = SPHERE_SHAPE,
 ): ShadowClassification {
   const d = geometry.axialKm;
   const rho = geometry.missKm;
-  const rt = targetRadiusKm;
+  const rt = targetOutlineKm(geometry, targetRadiusKm, targetShape);
   if (d <= 0) return 'none';
 
-  const pierceKm = Math.sqrt(Math.max(0, rt * rt - Math.min(rho, rt) * Math.min(rho, rt)));
+  let pierceKm: number;
+  if (targetShape.flattening === 0) {
+    pierceKm = Math.sqrt(Math.max(0, rt * rt - Math.min(rho, rt) * Math.min(rho, rt)));
+  } else {
+    // The axis line, at its miss from the target's center, back toward the
+    // occluder: its near crossing of the surface, before the center plane.
+    const t = raySpheroidT(
+      geometry.missX * rho, geometry.missY * rho, geometry.missZ * rho,
+      geometry.axisX, geometry.axisY, geometry.axisZ,
+      targetRadiusKm, targetShape,
+    );
+    pierceKm = Number.isNaN(t) ? 0 : Math.max(0, -t);
+  }
   const nearAxialKm = Math.max(0, d - pierceKm);
   computeShadowConeProfileKm(occluderRadiusKm, occluderSunDistKm, nearAxialKm, tmpProfile);
   const umbraNearKm = tmpProfile.umbraRadiusKm;
@@ -243,7 +313,16 @@ export function shadowAxisSphereHitAU(
   occluderOffsetAU: THREE.Vector3,
   shadowAxis: THREE.Vector3,
   sphereRadiusAU: number,
+  shape: SpheroidShape = SPHERE_SHAPE,
 ): number | null {
+  if (shape.flattening !== 0) {
+    const t = raySpheroidT(
+      occluderOffsetAU.x, occluderOffsetAU.y, occluderOffsetAU.z,
+      shadowAxis.x, shadowAxis.y, shadowAxis.z,
+      sphereRadiusAU, shape,
+    );
+    return t > 0 ? t : null;
+  }
   const b = occluderOffsetAU.dot(shadowAxis);
   const c = occluderOffsetAU.lengthSq() - sphereRadiusAU * sphereRadiusAU;
   const discriminant = b * b - c;
@@ -265,21 +344,24 @@ export function shadowAxisSurfacePoint(
   shadowAxis: THREE.Vector3,
   sphereRadiusAU: number,
   out: THREE.Vector3,
+  shape: SpheroidShape = SPHERE_SHAPE,
 ): THREE.Vector3 {
-  const tAU = shadowAxisSphereHitAU(occluderOffsetAU, shadowAxis, sphereRadiusAU);
+  // Onto the surface along a direction from the center: the sphere's radius,
+  // or a flattened body's radius that way.
+  const toSurface = (point: THREE.Vector3) => {
+    point.normalize();
+    return point.multiplyScalar(spheroidRadiusToward(point.x, point.y, point.z, sphereRadiusAU, shape));
+  };
+  const tAU = shadowAxisSphereHitAU(occluderOffsetAU, shadowAxis, sphereRadiusAU, shape);
   if (tAU !== null) {
-    return out
-      .copy(occluderOffsetAU)
-      .addScaledVector(shadowAxis, tAU)
-      .normalize()
-      .multiplyScalar(sphereRadiusAU);
+    return toSurface(out.copy(occluderOffsetAU).addScaledVector(shadowAxis, tAU));
   }
   const tClosestAU = -occluderOffsetAU.dot(shadowAxis);
   if (tClosestAU > 0) {
     out.copy(occluderOffsetAU).addScaledVector(shadowAxis, tClosestAU);
-    if (out.lengthSq() > 1e-30) return out.normalize().multiplyScalar(sphereRadiusAU);
+    if (out.lengthSq() > 1e-30) return toSurface(out);
   }
-  return out.copy(occluderOffsetAU).normalize().multiplyScalar(sphereRadiusAU);
+  return toSurface(out.copy(occluderOffsetAU));
 }
 
 export type ConeSilhouetteStatus = 'edges' | 'inside' | 'hidden';
@@ -413,13 +495,7 @@ export function listShadowEventSpecs(parentPlanet: string): ShadowEventSpec[] {
 const tmpMoonOffset = new THREE.Vector3();
 const tmpMoonHelio = new THREE.Vector3();
 const tmpOrbitNormal = new THREE.Vector3();
-const tmpGeometry: ShadowGeometry = {
-  axialKm: 0,
-  missKm: 0,
-  penumbraRadiusKm: 0,
-  umbraRadiusKm: 0,
-  umbraLengthKm: 0,
-};
+const tmpGeometry: ShadowGeometry = emptyShadowGeometry();
 const tmpCircumstance: EclipseCircumstance = {
   classification: 'none',
   penumbralMagnitude: 0,
@@ -440,6 +516,7 @@ function evaluateMetricKm(resolved: ResolvedSpec, kind: ShadowEventKind, utcMs: 
   tmpMoonHelio.copy(parentPos).add(tmpMoonOffset);
 
   let metricKm: number;
+  const parentShape = bodyShape(resolved.parent.name);
   if (kind === 'eclipse') {
     computeShadowGeometry(
       parentPos,
@@ -447,11 +524,13 @@ function evaluateMetricKm(resolved: ResolvedSpec, kind: ShadowEventKind, utcMs: 
       tmpMoonHelio,
       tmpGeometry,
       occluderEnlargement(resolved.parent.name),
+      parentShape,
     );
     metricKm = tmpGeometry.missKm - (tmpGeometry.penumbraRadiusKm + resolved.moon.radiusKm);
   } else {
     computeShadowGeometry(tmpMoonHelio, resolved.moon.radiusKm, parentPos, tmpGeometry);
-    metricKm = tmpGeometry.missKm - (tmpGeometry.penumbraRadiusKm + resolved.parent.radiusKm);
+    metricKm = tmpGeometry.missKm
+      - (tmpGeometry.penumbraRadiusKm + targetOutlineKm(tmpGeometry, resolved.parent.radiusKm, parentShape));
   }
   if (tmpGeometry.axialKm <= 0) {
     metricKm = Math.max(metricKm, -tmpGeometry.axialKm);
@@ -471,6 +550,7 @@ function buildEvent(
   computeMoonOffsetEquatorialAU(resolved.moon.name, resolved.parent.name, peakUtcMs, tmpMoonOffset);
   tmpMoonHelio.copy(parentPos).add(tmpMoonOffset);
 
+  const parentShape = bodyShape(resolved.parent.name);
   if (kind === 'eclipse') {
     computeShadowGeometry(
       parentPos,
@@ -478,6 +558,7 @@ function buildEvent(
       tmpMoonHelio,
       tmpGeometry,
       occluderEnlargement(resolved.parent.name),
+      parentShape,
     );
     const circumstance = classifyEclipse(tmpGeometry, resolved.moon.radiusKm, tmpCircumstance);
     return {
@@ -498,6 +579,7 @@ function buildEvent(
     resolved.moon.radiusKm,
     resolved.parent.radiusKm,
     tmpMoonHelio.length() * KM_PER_AU,
+    parentShape,
   );
   return { spec: resolved.spec, peakUtcMs, startUtcMs, endUtcMs, classification };
 }
@@ -819,6 +901,7 @@ export function computeMoonShading(
     tmpMoonHelio,
     tmpGeometry,
     occluderEnlargement(parentName),
+    bodyShape(parentName),
   );
   out.sunVisibleFraction = 1;
   out.inUmbra = false;

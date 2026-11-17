@@ -518,6 +518,7 @@ describe('the deck lit from below', () => {
     augmentSurfaceMaterial(deck, 'cloud', undefined, 0, {
       uSunDirWorld: { value: new THREE.Vector3() },
       uSunDirLocal: { value: new THREE.Vector3() },
+      uBodyScale: { value: new THREE.Vector3(1, 1, 1) },
       uMoonShadow: { value: [] },
       uMoonShadowCount: { value: 0 },
       uPlanetshineColor: { value: new THREE.Color() },

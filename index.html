@@ -1413,6 +1413,7 @@
       position: absolute; left: 0; top: 0; transform: translateX(-50%); white-space: nowrap;
       font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.08em;
       color: var(--obs-t3); text-transform: uppercase;
+      text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6);
     }
     .shud-trackpill {
       position: absolute; left: 0; top: 0; transform: translateX(-50%);
@@ -1451,6 +1452,10 @@
       right: calc(24px + env(safe-area-inset-right, 0px));
       bottom: calc(86px + env(safe-area-inset-bottom, 0px));
       display: flex; justify-content: space-between; align-items: flex-end; gap: 24px;
+      /* Over a bright disc (Jupiter's cloud tops fill the frame from Io) the
+         grey lines vanish; a tight dark edge on each glyph keeps them, and
+         over black sky it is invisible. No scrim: the picture stays as lit. */
+      text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6);
     }
     body.observatory-sheet-open .shud-bottom { right: calc(12px + 334px + 20px + env(safe-area-inset-right, 0px)); }
     .shud-bl { max-width: 46vw; flex: 0 1 auto; min-width: 0; }
@@ -1461,7 +1466,7 @@
     .shud-eyebrow i { font-style: normal; letter-spacing: 0; color: var(--obs-accent); font-size: 11px; }
     .shud-bl h1 {
       margin: 10px 0 0; font-size: 34px; font-weight: 200; letter-spacing: 0.01em;
-      color: var(--obs-t1); text-shadow: 0 2px 24px rgba(0, 0, 0, 0.6);
+      color: var(--obs-t1); text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 2px 24px rgba(0, 0, 0, 0.6);
     }
     .shud-sub { margin-top: 7px; font-size: 12.5px; color: var(--obs-t2); }
     .shud-sub b { color: var(--obs-warm); font-weight: 500; }
@@ -1516,6 +1521,21 @@
       .shud-br { width: 120px; }
       .shud-fovscale { width: 120px; }
       .shud-hint { line-height: 1.4; }
+      /* The open sheet already says where you stand and names the system's
+         phase in its hero, and the band would sit on the sky between them.
+         It keeps only what the sheet lacks — a live event's name and its
+         countdown, or the phase of a body the hero does not describe — one
+         compact line above the transport strip. The field-of-view block
+         yields too; the pinch still zooms. */
+      body.observatory-sheet-open .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 96px + env(safe-area-inset-bottom, 0px)); }
+      body.observatory-sheet-open .shud-br,
+      body.observatory-sheet-open .shud-eyebrow,
+      body.observatory-sheet-open .shud-prose,
+      body.observatory-sheet-open .shud-sep,
+      body.observatory-sheet-open #surface-hud.shud-hero-repeats .shud-bl { display: none; }
+      body.observatory-sheet-open .shud-bl { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+      body.observatory-sheet-open .shud-bl h1 { margin: 0; font-size: 20px; }
+      body.observatory-sheet-open .shud-sub { margin-top: 0; }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
@@ -6150,6 +6170,14 @@
         'earth-seawind.v2.webp',
         'earth-bump.webp', 'neptune.webp', 'venus.webp', 'saturn.webp',
         'uranus.webp',
+      ];
+      // The durable wave: the moons' maps and three relief maps, which the
+      // loading screen never waits for. They are held until the ephemeris and
+      // the moon corrections have landed (or been given up): on a slow link
+      // these 10MB would otherwise share the line with the 1.5MB the loading
+      // screen waits for, and the boot sat a minute behind maps it does not
+      // need yet.
+      var durableWave = [
         'moon-normal.webp', 'mars-normal.v3.webp', 'earth-clouds-normal.v2.webp',
         'europa.v2.webp', 'io.v2.webp',
         'ganymede.v2.webp', 'triton.webp', 'moon.webp', 'callisto.v2.webp',
@@ -6159,11 +6187,23 @@
       ];
       var warm = new Map();
       // The star-catalog sidecar goes first: 313KB that gates the starfield
-      // build, ahead of the 9.2MB texture wave.
+      // build, ahead of the texture wave.
       var starUrl = '%BASE_URL%stardata/bright-stars.v1.bin';
       var starRequest = fetch(starUrl);
       starRequest.catch(function () {});
       warm.set(starUrl, starRequest);
+      // Then the ephemeris (1.4MB): every body's position comes from it, and
+      // the loading screen waits for it.
+      var ephemerisUrl = '%BASE_URL%ephemeris/ephemeris.v1.bin';
+      var ephemerisRequest = fetch(ephemerisUrl);
+      ephemerisRequest.catch(function () {});
+      warm.set(ephemerisUrl, ephemerisRequest);
+      // And beside it the moon corrections (144KB), which the loading screen
+      // waits for too.
+      var moonCorrectionsUrl = '%BASE_URL%ephemeris/moon-corrections.v1.bin';
+      var moonCorrectionsRequest = fetch(moonCorrectionsUrl);
+      moonCorrectionsRequest.catch(function () {});
+      warm.set(moonCorrectionsUrl, moonCorrectionsRequest);
       for (var i = 0; i < files.length; i++) {
         var url = '%BASE_URL%textures/' + files[i];
         var request = fetch(url);
@@ -6173,6 +6213,36 @@
         request.catch(function () {});
         warm.set(url, request);
       }
+      // A held map sits in the warm map as a promise of its request, so a
+      // loader that asks early waits for it rather than fetching it twice.
+      var held = [];
+      for (var j = 0; j < durableWave.length; j++) {
+        (function (heldUrl) {
+          var gate = new Promise(function (resolve) {
+            held.push(function () {
+              var heldRequest = fetch(heldUrl);
+              heldRequest.catch(function () {});
+              resolve(heldRequest);
+            });
+          });
+          gate.catch(function () {});
+          warm.set(heldUrl, gate);
+        })('%BASE_URL%textures/' + durableWave[j]);
+      }
+      var released = false;
+      window.__bootWarmRelease = function () {
+        if (released) return;
+        released = true;
+        for (var k = 0; k < held.length; k++) held[k]();
+      };
+      // The app releases the wave when the ephemeris and the moon
+      // corrections settle (ephemerisLoader.ts). This timer covers only a page whose app never
+      // starts that load: the loader cancels it on start, or on a link slower
+      // than the timer it would release the wave mid-download.
+      var holdTimer = setTimeout(window.__bootWarmRelease, 30000);
+      window.__bootWarmClaim = function () {
+        clearTimeout(holdTimer);
+      };
       window.__bootTexWarm = warm;
     })();
   </script>

@@ -109,6 +109,7 @@ import {
   setSessionHazeCache, type HazeProbe,
 } from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
+import { clipWorldLabelsAroundGlass } from './app/labelGlassClip';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
   seaWindTexture, seaWindTextureFrom, setSeaWindMips,
@@ -4562,6 +4563,13 @@ async function init() {
     if (glassRegistry && glassRouteLive()) {
       glassMoved = glassRegistry.scan() || glassRegistry.moving;
       glassScannedTick = tickSeq;
+      // The engine blurs only the canvas: clip the DOM world labels out from
+      // under its panels, or they read sharp through the glass
+      // (app/labelGlassClip.ts). Written only when the panels move.
+      clipWorldLabelsAroundGlass(glassRegistry.cssBoxes(), window.innerWidth, window.innerHeight);
+    } else {
+      // The browser's own backdrop blur covers the labels.
+      clipWorldLabelsAroundGlass([], window.innerWidth, window.innerHeight);
     }
     const forced = forcedDrawRequest || glassMoved;
     forcedDrawRequest = false;

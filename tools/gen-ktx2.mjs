@@ -219,10 +219,10 @@ const JOBS = {
   //
   // Pixels come from the gen:moonmaps intermediates rather than from a
   // shipped file, which is what the third source kind above exists for.
-  enceladus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('enceladus-4k'), out: '4k/enceladus.ktx2' },
+  enceladus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('enceladus-4k'), out: '4k/enceladus.v2.ktx2' },
   mimas4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mimas-4k'), out: '4k/mimas.ktx2' },
-  dione4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('dione-4k'), out: '4k/dione.ktx2' },
-  tethys4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('tethys-4k'), out: '4k/tethys.ktx2' },
+  dione4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('dione-4k'), out: '4k/dione.v2.ktx2' },
+  tethys4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('tethys-4k'), out: '4k/tethys.v2.ktx2' },
   rhea4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('rhea-4k'), out: '4k/rhea.ktx2' },
   iapetus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('iapetus-4k'), out: '4k/iapetus.ktx2' },
   charon4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('charon-4k'), out: '4k/charon.ktx2' },
@@ -236,7 +236,7 @@ const JOBS = {
   // trigger gate; only a body flown up to waits for the gate. The service
   // worker keeps what it fetched, so the bill is once per device per moon, on
   // the first visit, at the shipped size: Io 5.5 MB, Europa 6.4, Ganymede
-  // 6.5, Callisto 6.9, Pluto 3.6, Enceladus 6.7, Dione 6.7, Tethys 6.6. What
+  // 6.5, Callisto 6.9, Pluto 3.6, Enceladus 6.8, Dione 6.7, Tethys 6.6. What
   // one must not do is hold 170.7 MiB, which is what the uncompressed twin
   // would be: transcoded it holds 42.7 at a byte a texel (ASTC, BC7) and 21.3
   // at half a byte (ETC2, BC1).
@@ -247,11 +247,12 @@ const JOBS = {
   pluto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
   // The three Saturnians whose mosaics hold real detail past 4K over nearly
   // all of the surface (Mimas' and Iapetus' are 5760 px, so an 8K of either
-  // would be a blow-up; Rhea's and Charon's gain less than Callisto's). Their
-  // 4K containers are unversioned, and so are these: the names are new.
-  enceladus8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('enceladus-8k'), out: '8k/enceladus.ktx2' },
-  dione8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('dione-8k'), out: '8k/dione.ktx2' },
-  tethys8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('tethys-8k'), out: '8k/tethys.ktx2' },
+  // would be a blow-up; Rhea's and Charon's gain less than Callisto's). All
+  // three sizes of these were re-cut with their shadows kept (gen-moonmaps'
+  // SHADOW_HOLES), so every one ships under a .v2 name.
+  enceladus8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('enceladus-8k'), out: '8k/enceladus.v2.ktx2' },
+  dione8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('dione-8k'), out: '8k/dione.v2.ktx2' },
+  tethys8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('tethys-8k'), out: '8k/tethys.v2.ktx2' },
   // Jupiter's 8K, the one toured planet rung with a container, and UASTC
   // like Earth's day map: a gas giant is slow gradients, and nothing else
   // answers a 170.7 MiB upload. It ships alone, so its pixels come from the

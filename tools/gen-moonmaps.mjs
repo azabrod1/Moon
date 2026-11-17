@@ -254,6 +254,33 @@ const PLUTO_RAMP = ramp([
 ]);
 const PLUTO_CAP = [42, 38, 34];
 
+/**
+ * The Cassini mosaics of Enceladus, Dione and Tethys mark NoData as exactly 0
+ * (their GDAL_NODATA tag says so), and every value from 1 up is a sample.
+ * Under the default `below: 12` the darkest of those samples — crater
+ * shadows, which on these airless ice moons are deep and sharp — were masked
+ * and filled with the bright terrain around them, so every shadow core drew
+ * as a pale patch inside a black ring. These three mask 0 alone.
+ *
+ * The producer also clipped the shadows' cores to 0: inside bright terrain 0
+ * is two to three times commoner than 1. So a 0 is a gap or a shadow core,
+ * and each 8-connected blob of zeros is judged as a whole, on the valid
+ * samples 4-adjacent to it. A SHADOW HOLE has a dark rim and does not touch
+ * the first or the last row; it is filled at source resolution from its own
+ * rim by inverse distance, never brighter than the rim's mean, and from then
+ * on it is a sample like any other. A GAP is everything else and keeps the
+ * terrain fill every mosaic gets. On these three the two do not come near
+ * each other: 4,407 shadow holes with rims of 54 at most (median 3 to 8),
+ * and twenty gaps, every one on the last row or with a rim of 77 or more —
+ * Enceladus' south-polar rows, Dione's last row, and a few pixels each side
+ * of Dione's 180E edge.
+ *
+ * `levelSolveBelow` keeps the level solve on the pixels it always used: a
+ * shadow is lighting, not albedo, and a gain solved with the shadows in it
+ * would brighten every lit pixel to pay for them.
+ */
+const SHADOW_HOLES = { rimBelow: 60, levelSolveBelow: 12 };
+
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
@@ -268,9 +295,7 @@ const PLUTO_CAP = [42, 38, 34];
  * from grey scaled by that factor at unchanged luminance and hue, see
  * saturate), `localContrast`, then `level` — `{ albedo }` or `{ mean }`, with
  * `shoulder: false` for a plain gain where the gain is under one and the top
- * of the range should keep its spacing (see applyLevel), and `solveWidth` to
- * solve the one gain every target takes at that width rather than the widest
- * (see runJob).
+ * of the range should keep its spacing (see applyLevel).
  *
  * Every tier ABOVE a moon's boot map is a rung, never an output, because every
  * one of them ships GPU-compressed and alone: an ETC1S container of one of
@@ -328,20 +353,15 @@ const JOBS = {
   },
   enceladus: {
     src: 'Enceladus_Cassini_mosaic_global_110m.tif',
-    outputs: [{ width: 2048, out: 'enceladus.webp' }],
+    outputs: [{ width: 2048, out: 'enceladus.v2.webp' }],
     rungs: [{ width: 8192, name: 'enceladus-8k' }, { width: 4096, name: 'enceladus-4k' }],
     // The most reflective surface in the solar system and as close to neutral
     // as anything gets: the gain is a whisper of blue in the shadows and
     // nothing at all in the highlights.
     colour: gains([0.98, 0.99, 1.0], [1.0, 1.0, 1.0]),
-    // Enceladus, Dione and Tethys took their 8K rung after the boot map and
-    // the 4K had shipped, and those two were levelled with the gain solved on
-    // the 4K, then the widest target. Solved on the 8K instead it moves by up
-    // to 0.4 per cent, which re-cuts both shipped maps a fraction of a count
-    // off under the names they ship as. Solved at 4096, every target takes the
-    // gain the shipped maps carry: a re-run reproduces them byte for byte, and
-    // the 8K is that same level one resample sharper.
-    level: { albedo: 1.04, solveWidth: 4096 },
+    level: { albedo: 1.04 },
+    // Shadows are measurements here: see SHADOW_HOLES.
+    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
   },
   mimas: {
     src: 'PIA17214_Mimas_global_map_2017.tif',
@@ -352,19 +372,19 @@ const JOBS = {
   },
   dione: {
     src: 'Dione_Cassini_Voyager_mosaic_global_154m.tif',
-    outputs: [{ width: 2048, out: 'dione.webp' }],
+    outputs: [{ width: 2048, out: 'dione.v2.webp' }],
     rungs: [{ width: 8192, name: 'dione-8k' }, { width: 4096, name: 'dione-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
-    // Solved at the 4K the shipped maps were levelled on (see Enceladus).
-    level: { albedo: 0.6, solveWidth: 4096 },
+    level: { albedo: 0.6 },
+    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
   },
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
-    outputs: [{ width: 2048, out: 'tethys.webp' }],
+    outputs: [{ width: 2048, out: 'tethys.v2.webp' }],
     rungs: [{ width: 8192, name: 'tethys-8k' }, { width: 4096, name: 'tethys-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
-    // Solved at the 4K the shipped maps were levelled on (see Enceladus).
-    level: { albedo: 0.8, solveWidth: 4096 },
+    level: { albedo: 0.8 },
+    noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
   },
   rhea: {
     src: 'Rhea_Cassini_Voyager_mosaic_global_417m.tif',
@@ -948,6 +968,29 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
   const mask = new Uint8Array(n);
   let bad = 0;
   for (let i = 0; i < n; i++) if (grey[i] < noDataBelow) { mask[i] = 1; bad++; }
+  // The mask the level solve keeps reading where shadows are measurements
+  // (SHADOW_HOLES), taken before any of them is filled.
+  let solveMask = null;
+  if (nd.shadowHoles) {
+    if (nd.darkPatch) throw new Error('shadowHoles and darkPatch both decide what a dark pixel is; use one');
+    solveMask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (grey[i] < nd.shadowHoles.levelSolveBelow) solveMask[i] = 1;
+    const census = fillShadowHoles(grey, mask, W, H, nd.shadowHoles);
+    for (const i of census.filled) {
+      for (let c = 0; c < sc; c++) data[i * sc + c] = Math.round(grey[i]);
+    }
+    bad -= census.filled.length;
+    const pct = (a, q) => (a.length ? a[Math.min(a.length - 1, Math.floor(q * a.length))] : 0);
+    const sizes = census.holes.map((h) => h.area).sort((a, b) => a - b);
+    const rims = census.holes.map((h) => h.rim).sort((a, b) => a - b);
+    console.log(`  ${census.holes.length + census.gaps.length} blobs of zeros: ${census.holes.length} shadow holes`
+      + ` (${census.filled.length} px; size median ${pct(sizes, 0.5)}, p99 ${pct(sizes, 0.99)}, max ${pct(sizes, 1)};`
+      + ` rim median ${pct(rims, 0.5).toFixed(0)}, p99 ${pct(rims, 0.99).toFixed(0)}, max ${pct(rims, 1).toFixed(0)}),`
+      + ` ${census.gaps.length} gaps left to the fill`);
+    for (const g of census.gaps.slice().sort((a, b) => b.area - a.area).slice(0, 4)) {
+      console.log(`    gap ${g.area} px, rim ${g.rim.toFixed(0)}, rows ${g.y0}-${g.y1}, cols ${g.x0}-${g.x1}${g.edgeRow ? ', on an edge row' : ''}`);
+    }
+  }
   const hard = bad;
   if (nd.darkPatch) {
     // A dark REGION is dead data; a dark pixel inside bright terrain is a
@@ -1073,7 +1116,106 @@ async function sourceRaster(file, entry, nd, job, leftEdgeLonDegEast) {
     for (let c = 0; c < sc; c++) withAlpha[i * ch + c] = data[i * sc + c];
     withAlpha[i * ch + sc] = grown[i] ? 0 : 255;
   }
-  return { data: withAlpha, width: info.width, height: info.height, channels: ch };
+  const out = { data: withAlpha, width: info.width, height: info.height, channels: ch };
+  if (solveMask) {
+    // The same pixels under the old mask, for the level solve alone: a
+    // premultiplied resize divides every masked pixel out whatever it holds,
+    // so what the solve reads is exactly what it read before shadows were
+    // kept.
+    const solveGrown = nd.edgeGrow ? dilateMask(solveMask, W, H, nd.edgeGrow) : solveMask;
+    const level = Buffer.from(withAlpha);
+    for (let i = 0; i < n; i++) level[i * ch + sc] = solveGrown[i] ? 0 : 255;
+    out.levelSource = { data: level, width: info.width, height: info.height, channels: ch };
+  }
+  return out;
+}
+
+/**
+ * Judge every 8-connected blob of zeros in `mask` (wrapping in x) by its rim:
+ * the valid samples 4-adjacent to it. A blob is a shadow hole when the rim's
+ * mean is under `spec.rimBelow` and it touches neither the first nor the last
+ * row (SHADOW_HOLES); those are filled in `grey`, from their own rim by
+ * inverse squared distance and never brighter than the rim's mean, and taken
+ * out of `mask`. Everything else stays masked for the fill. Flood-filled over
+ * the zeros alone, which are a fraction of a per cent of a map.
+ */
+function fillShadowHoles(grey, mask, W, H, spec) {
+  const holes = [];
+  const gaps = [];
+  const filled = [];
+  const seen = new Uint8Array(W * H);
+  const stack = [];
+  // A rim of a few thousand samples weighs no differently from a few hundred
+  // of them evenly spread, and the fill is the rim's count times the hole's.
+  const RIM_SAMPLES = 512;
+  for (let s0 = 0; s0 < W * H; s0++) {
+    if (!mask[s0] || seen[s0]) continue;
+    const px = [];
+    const rim = new Set();
+    let edgeRow = false;
+    let x0 = W, x1 = 0, y0 = H, y1 = 0;
+    seen[s0] = 1;
+    stack.push(s0);
+    while (stack.length) {
+      const i = stack.pop();
+      px.push(i);
+      const y = (i / W) | 0;
+      const x = i - y * W;
+      if (y === 0 || y === H - 1) edgeRow = true;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= H) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const j = yy * W + ((x + dx + W) % W);
+          if (mask[j]) {
+            if (!seen[j]) { seen[j] = 1; stack.push(j); }
+          } else if (dx === 0 || dy === 0) {
+            rim.add(j);
+          }
+        }
+      }
+    }
+    let rimSum = 0;
+    for (const j of rim) rimSum += grey[j];
+    const rimMean = rim.size ? rimSum / rim.size : 255;
+    const blob = { area: px.length, rim: rimMean, edgeRow, x0, x1, y0, y1 };
+    if (edgeRow || !rim.size || rimMean >= spec.rimBelow) {
+      gaps.push(blob);
+      continue;
+    }
+    holes.push(blob);
+    const ring = [...rim];
+    const step = Math.max(1, Math.floor(ring.length / RIM_SAMPLES));
+    const rx = [];
+    const ry = [];
+    const rv = [];
+    for (let k = 0; k < ring.length; k += step) {
+      const j = ring[k];
+      ry.push((j / W) | 0);
+      rx.push(j - ry[ry.length - 1] * W);
+      rv.push(grey[j]);
+    }
+    for (const i of px) {
+      const y = (i / W) | 0;
+      const x = i - y * W;
+      let num = 0;
+      let den = 0;
+      for (let k = 0; k < rv.length; k++) {
+        let dx = Math.abs(x - rx[k]);
+        if (dx > W / 2) dx = W - dx;
+        const dy = y - ry[k];
+        const wgt = 1 / (dx * dx + dy * dy);
+        num += wgt * rv[k];
+        den += wgt;
+      }
+      grey[i] = Math.min(rimMean, num / den);
+      mask[i] = 0;
+      filled.push(i);
+    }
+  }
+  return { holes, gaps, filled };
 }
 
 const gcd = (a, b) => (b ? gcd(b, a % b) : a);
@@ -1440,6 +1582,36 @@ async function fillNoData(ras, mask, spec) {
     last = -1;
     for (let y = H - 1; y >= 0; y--) { if (!mask[y * W + x]) last = y; down[y * W + x] = last; }
   }
+  // Where shadows are measurements (SHADOW_HOLES), a guard on what is left to
+  // fill: the nearest valid column either side as well, wrapping in x, so a
+  // hole enclosed on all four sides within the seam can be held to the
+  // darkest of its four edges. The classification at source resolution does
+  // the work; this only stops a fill that a resample left enclosed by dark
+  // ground from coming out brighter than that ground. A polar hole has no
+  // edge on one side and a long seam none within reach along it, so neither
+  // is ever held.
+  let left = null;
+  let right = null;
+  if (spec.shadowHoles) {
+    left = new Int32Array(W * H);
+    right = new Int32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const row = y * W;
+      let last = -1;
+      for (let k = 0; k < 2 * W; k++) {
+        const x = k % W;
+        if (!mask[row + x]) last = x;
+        if (k >= W) left[row + x] = last;
+      }
+      last = -1;
+      for (let k = 2 * W - 1; k >= 0; k--) {
+        const x = k % W;
+        if (!mask[row + x]) last = x;
+        if (k < W) right[row + x] = last;
+      }
+    }
+  }
+  const lumAt = (j) => REC709[0] * ras.data[j * 3] + REC709[1] * ras.data[j * 3 + 1] + REC709[2] * ras.data[j * 3 + 2];
 
   // The row the reflection mirrors about, smoothed along longitude where a
   // body asks for it. Each column still reflects across its OWN data edge —
@@ -1554,6 +1726,7 @@ async function fillNoData(ras, mask, spec) {
   // half-imaged moons were cut and where they stay: at the full amplitude the
   // fill reads as a rougher surface than the one it continues from.
   const grainGain = spec.matchTexture ? 3.0 / NOISE_AMP_PER_SIGMA : 0.35;
+  let held = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
@@ -1561,6 +1734,19 @@ async function fillNoData(ras, mask, spec) {
       const t = seam > 0 ? Math.min(1, dist[i] / seam) : 1;
       const w = t * t * (3 - 2 * t);
       const grain = grainAt(x, y);
+      // The darkest of the four edges, when all four are within the seam.
+      let rimLum = Infinity;
+      if (left) {
+        const u = up[i];
+        const d = down[i];
+        const l = left[i];
+        const r = right[i];
+        const across = (a) => Math.min(Math.abs(x - a), W - Math.abs(x - a));
+        if (u >= 0 && d >= 0 && l >= 0 && r >= 0 && y - u <= seam && d - y <= seam
+          && across(l) <= seam && across(r) <= seam) {
+          rimLum = Math.min(lumAt(u * W + x), lumAt(d * W + x), lumAt(y * W + l), lumAt(y * W + r));
+        }
+      }
       for (let c = 0; c < 3; c++) {
         const sharpV = ras.data[i * 3 + c];
         const softV = soft[i * 3 + c];
@@ -1574,9 +1760,17 @@ async function fillNoData(ras, mask, spec) {
         const v = sharpV * (1 - w) + (softV * (1 - w) + far * w) * w;
         ras.data[i * 3 + c] = v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
       }
+      if (rimLum < Infinity) {
+        const lum = lumAt(i);
+        if (lum > rimLum) {
+          const k = rimLum / lum;
+          for (let c = 0; c < 3; c++) ras.data[i * 3 + c] = Math.floor(ras.data[i * 3 + c] * k);
+          held++;
+        }
+      }
     }
   }
-  return { mean, std, octaves };
+  return { mean, std, octaves, held };
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,19 +1820,22 @@ async function runJob(name) {
   if (!flag('no-rungs')) targets.sort((a, b) => b.width - a.width);
   // Solved once and reused: a rung is a sharpen of the boot below it, and two
   // gains solved separately on two resamples of one picture would leave them a
-  // fraction of a count apart for no reason. It is solved on the first target,
-  // which is the widest unless the level names `solveWidth` (see the Enceladus
-  // job): then that target goes first and the rest take its gain.
-  const solveWidth = job.level?.solveWidth;
-  if (solveWidth !== undefined && !flag('no-rungs')) {
-    if (!targets.some((t) => t.width === solveWidth)) {
-      throw new Error(`${name}: level.solveWidth ${solveWidth} is not one of this job's widths`);
-    }
-    targets.sort((a, b) => (b.width === solveWidth) - (a.width === solveWidth));
-  }
+  // fraction of a count apart for no reason.
   let levelGain;
   for (const target of targets) {
     if (target.kind === 'rung' && flag('no-rungs')) continue;
+    if (job.level && levelGain === undefined && src.levelSource) {
+      // A source that keeps its shadows measured (noData.shadowHoles) still
+      // solves its gain on the pixels every other job's would: the same
+      // raster with the old mask, under which a shadow is not albedo. The
+      // pixels it then levels are its own.
+      const solved = splitAlpha(await resampleToTarget(src.levelSource, target.width, left));
+      const probe = colourise(solved.ras, job);
+      if (job.saturation !== undefined) saturate(probe, job.saturation);
+      if (job.localContrast) localContrast(probe, job.localContrast);
+      levelGain = applyLevel(probe, solved.mask, job.level).gain;
+      console.log(`  level solved on the mask without the shadows: gain ${levelGain.toFixed(6)}`);
+    }
     const resampled = await resampleToTarget(src, target.width, left);
     const { ras: bare, mask, fraction } = splitAlpha(resampled);
     let ras = colourise(bare, job);
@@ -1660,11 +1857,12 @@ async function runJob(name) {
         ? `${job.level.mean} (${job.level.why})`
         : `${lv.target.toFixed(1)} from albedo ${job.level.albedo}`;
       console.log(`  level ${lv.before.toFixed(1)} -> ${lv.after.toFixed(1)}, asked ${asked}`
-        + `; gain ${lv.gain.toFixed(4)}, ${lv.shouldered === null ? 'plain (no shoulder)' : `shoulder from ${lv.shouldered}`}`);
+        + `; gain ${lv.gain.toFixed(6)}, ${lv.shouldered === null ? 'plain (no shoulder)' : `shoulder from ${lv.shouldered}`}`);
     }
     if (fraction > 0) {
-      const { mean, std, octaves } = await fillNoData(ras, mask, nd);
-      console.log(`  ${(100 * fraction).toFixed(2)}% no data -> ${nd.mode} fill (measured mean ${mean.toFixed(1)} std ${std.toFixed(1)}, seam ${(100 * (nd.seam ?? 0)).toFixed(0)}% of height)`);
+      const { mean, std, octaves, held } = await fillNoData(ras, mask, nd);
+      console.log(`  ${(100 * fraction).toFixed(2)}% no data -> ${nd.mode} fill (measured mean ${mean.toFixed(1)} std ${std.toFixed(1)}, seam ${(100 * (nd.seam ?? 0)).toFixed(0)}% of height)`
+        + `${nd.shadowHoles ? `; ${held} filled px held to their darkest edge` : ''}`);
       if (octaves) {
         console.log(`  matched grain: ${octaves.map((o) => `${o.cell.toFixed(0)}px +-${(o.amp / 2).toFixed(1)}`).join(', ')}`);
       }

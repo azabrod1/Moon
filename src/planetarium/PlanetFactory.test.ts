@@ -2006,11 +2006,12 @@ describe('the ladder against the sector memory envelope', () => {
   it('leaves a desktop\'s tiles their working set with every rung earned at once', () => {
     // What a desktop session could hold if it toured everything and gave
     // nothing back: seven 4K containers at 10.7 MiB (the photo moons whose
-    // ladder stops at 4K), four 4K webp rungs at 42.7 (Venus, Jupiter,
-    // Saturn, and Mars, whose Tianwen-1 map is too rich in texture for a
-    // container to clear the wire cap its Viking map cleared), and ten 8K
-    // containers at 42.7 — the Moon, the cloud deck, Earth's globe and its
-    // night lights, Mercury, and the five bodies with an 8K photo rung. The 4K containers the boot warm uses are
+    // ladder stops at 4K), three 4K webp rungs at 42.7 (Venus, Saturn, and
+    // Mars, whose Tianwen-1 map is too rich in texture for a container to
+    // clear the wire cap its Viking map cleared), and eleven 8K containers at
+    // 42.7 — the Moon, the cloud deck, Earth's globe and its night lights,
+    // Mercury, Jupiter, and the five bodies with an 8K photo rung. Jupiter's
+    // 4K webp is climbed past, so it is not in the sum. The 4K containers the boot warm uses are
     // not in this sum: the Moon, the deck and the night lights all reach 8K
     // on a desktop, so the rung their container serves has been climbed past
     // by the time the ladder is at its heaviest. They buy a frame, not
@@ -2019,8 +2020,8 @@ describe('the ladder against the sector memory envelope', () => {
     expect(mib(real)).toBeCloseTo(672.0, 1);
     expect(mib(real)).toBeCloseTo(
       7 * mib(equirectMapGpuBytes(4096, true))
-      + 4 * mib(equirectMapGpuBytes(4096))
-      + 10 * mib(equirectMapGpuBytes(8192, true)),
+      + 3 * mib(equirectMapGpuBytes(4096))
+      + 11 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
     const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
@@ -2407,6 +2408,53 @@ describe('the release band', () => {
     expect(releaseTargetTier(up)).toBe('4k');
     up.appliedTier = '4k';
     expect(releaseTargetTier(up)).toBe('2k'); // the map every device boots with
+  });
+
+  it('skips a rung below that would free nothing: Jupiter\'s 4K webp under its 8K container', () => {
+    withMaxTextureSize(16384);
+    const mib = (bytes: number) => bytes / (1024 * 1024);
+    const held = (bytesPerTexel: number) => {
+      const mipmaps: Array<{ width: number; height: number; data: Uint8Array }> = [];
+      for (let w = 8192, h = 4096; w >= 4; w >>= 1, h >>= 1) {
+        mipmaps.push({ width: w, height: h, data: new Uint8Array(w * h * bytesPerTexel) });
+      }
+      return new THREE.CompressedTexture(mipmaps as unknown as ImageData[], 8192, 4096);
+    };
+    try {
+      // Transcoded to ASTC or BC7, a byte a texel: the 4K webp (42.7 MiB)
+      // holds as much as the container (42.7), so the release goes to the
+      // boot map.
+      bindKtx2TierLoader(() => {}, true);
+      const astc = ladderHandle('jupiter');
+      astc.appliedTier = '8k';
+      astc.material.map = held(1);
+      expect(releaseTargetTier(astc)).toBe('2k');
+      // Transcoded to ETC2 or BC1, half a byte a texel: the webp would hold
+      // twice the container (21.3), so planRelease could never take a step to
+      // it, and the 8K would never be given back.
+      const etc2 = ladderHandle('jupiter');
+      etc2.appliedTier = '8k';
+      etc2.material.map = held(0.5);
+      expect(mib(appliedTierGpuBytes(etc2))).toBeCloseTo(21.3, 1);
+      expect(releaseTargetTier(etc2)).toBe('2k');
+      // Held as RGBA (a transcoder with no compressed format to target): the
+      // 8K costs 170.7, the 4K a quarter of it, and the step is the usual one.
+      bindKtx2TierLoader(() => {}, false);
+      const rgba = ladderHandle('jupiter');
+      rgba.appliedTier = '8k';
+      rgba.material.map = mapTexture(8192);
+      expect(releaseTargetTier(rgba)).toBe('4k');
+      // Every ladder whose rungs share a format keeps its one-rung step.
+      bindKtx2TierLoader(() => {}, true);
+      for (const key of ['moon', 'earthClouds', 'earthNight', 'mercury', 'callisto', 'pluto']) {
+        const up = ladderHandle(key);
+        up.appliedTier = '8k';
+        up.material.map = rungTexture(key, '8k');
+        expect(releaseTargetTier(up), key).toBe('4k');
+      }
+    } finally {
+      bindKtx2TierLoader(null);
+    }
   });
 });
 
@@ -2918,7 +2966,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(mib(tierUploadBytes('jupiter', '8k'))).toBeCloseTo(170.7, 1);
   });
 
-  it('leaves Earth\'s globe rung to the approach rather than to an arrival', () => {
+  it('keeps Earth\'s globe rung out of an arrival\'s cover and its landing prefetch', () => {
     bindKtx2TierLoader(() => {}, true);
     withMaxTextureSize(16384);
     // The gate says it: a rung held back past its tier's own trigger is
@@ -2929,6 +2977,10 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(firstUpgradeTier(day)).toBe('8k');
     expect(arrivalUpgradeTier(day)).toBeNull();
     expect(needsUpgradeCover(day)).toBe(false);
+    // A committed arrival still warms it, behind the veil rather than for it:
+    // the warm goal is the top rung a full-screen disc earns.
+    expect(armArrivalWarmGoal(day)).toBe(true);
+    expect(day.warmGoal).toBe('8k');
     // Every other ladder still enters at its tier's own gate, so the cover
     // and the landing prefetch behave exactly as they did.
     for (const key of ['moon', 'earthClouds', 'earthNight', 'mars']) {

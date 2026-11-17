@@ -27,8 +27,10 @@
  * is in the ledger from the decode either way (pendingUpgradeBytes,
  * pendingReleaseBytes) — never the one where a body has no map.
  *
- * Then the arrival warm goals (banner: "Arrival warm goals") — the rung a
- * committed arrival is holding its veil for — and last the relief ladder
+ * Then the arrival warm goals (banner: "Arrival warm goals") — the top rung a
+ * committed arrival starts fetching at the jump, so the climb overlaps the
+ * veil and the glide; the veil itself waits only for the first rung — and
+ * last the relief ladder
  * (banner: "The relief ladder"), which is a NormalUpgrade of the same shape
  * with one step, no cover and no arrival semantics.
  *
@@ -423,7 +425,10 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   // after the 4K. The veil never waits for it — the 8K rung is approach work
   // (see its trigger gate) — so on a fast link it may land under the veil and
   // on a slow one during the glide. That is download traffic the 8K rule
-  // above admits: every 8K UASTC rung is worth its bytes.
+  // above admits: every 8K UASTC rung is worth its bytes. Given back while it
+  // is held compressed, it drops past the 4K webp to the boot map, since the
+  // webp would free nothing (releaseTargetTier); held as RGBA, it drops to
+  // the 4K like any other rung.
   jupiter: { '8k': { file: 'jupiter.v2.ktx2', webp: false } },
   // Every photo-moon rung, at both tiers, ships as a container ALONE. These
   // maps encode as ETC1S rather than UASTC — a cratered icy moon is texture at
@@ -1272,17 +1277,30 @@ export function releaseDue(up: TextureUpgrade, nowMs: number): boolean {
   return nowMs - up.belowBandSinceMs >= releaseDwellMs(up.appliedTier, compressed);
 }
 
-/** The tier a release drops to: one rung down the ladder, or the boot map
- *  every device carries anyway — which is not a member of `tiers`, so the
- *  handle's appliedTier goes back to null and the climb starts from the
- *  bottom rung again. */
+/** The tier a release drops to: the highest rung below the one held whose
+ *  upload is charged at most half of the held rung's, or the boot map every
+ *  device carries anyway — which is not a member of `tiers`, so the handle's
+ *  appliedTier goes back to null and the climb starts from the bottom rung
+ *  again.
+ *
+ *  Within one format a rung costs a quarter of the one above, so this is one
+ *  rung down. Across formats it need not be: Jupiter's 8K is a container above
+ *  a 4K webp, and the webp holds as much as the container transcoded to a byte
+ *  a texel (ASTC, BC7) and twice as much as one transcoded to half a byte
+ *  (ETC2, BC1). A release to that 4K would be a download that frees nothing,
+ *  and planRelease, refusing a release with nothing to gain, would then never
+ *  give the 8K back at all. The charges (tierUploadBytes) are what the
+ *  ladder admitted the rungs on; they price a container at a byte a texel,
+ *  which sends both cases past the webp, and an 8K held as RGBA (no
+ *  compressed format to target) at four, which keeps its usual step. */
 export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
   if (!up.appliedTier) return null;
-  let below: TextureTier | null = null;
-  for (const tier of up.tiers) {
-    if (TIER_RANK[tier] < TIER_RANK[up.appliedTier]) below = tier; // ascending
+  const held = tierUploadBytes(up.key, up.appliedTier);
+  let below: TextureTier = BOOT_TIER;
+  for (const tier of up.tiers) { // ascending
+    if (TIER_RANK[tier] < TIER_RANK[up.appliedTier] && tierUploadBytes(up.key, tier) <= held / 2) below = tier;
   }
-  return below ?? BOOT_TIER;
+  return below;
 }
 
 /** The tier a body's first-paint map is fetched at. */

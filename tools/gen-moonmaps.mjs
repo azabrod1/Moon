@@ -490,8 +490,9 @@ const JOBS = {
     // the lift published natural-colour pictures of Jupiter are given, and
     // what lets it hold its own beside the other planets' maps rather than
     // reading as a washed-out ball. Luminance is untouched and no hue moves
-    // toward another, so the white zones stay white and only the belts and
-    // the Red Spot gain colour.
+    // toward another (but for rounding, and the few channel values the clamp
+    // catches, which the run logs), so the white zones stay white and only
+    // the belts and the Red Spot gain colour.
     saturation: 1.3,
     // Held at the level the replaced 2K map measures in this tool's own
     // metric (cos-latitude-weighted Rec. 709 mean of the sRGB counts, 168.7),

@@ -196,10 +196,11 @@ describe('the files behind the colour ladder', () => {
     // warm uploads on every session, downloaded once per device rather than
     // once per tour, and admitted on that basis. Jupiter's 8K is the one
     // toured planet rung with a container, and the 8K rule is what admits it:
-    // its map is cut from a source whose real detail runs to 8K, it exists at
-    // that size only as the container (no webp twin), and it is earned only at
-    // half the viewport height, past the 4K that a Jupiter arrival's veil
-    // waits on. UASTC because a gas giant is slow gradients.
+    // its map is cut from a source whose real detail runs to 8K, and it exists
+    // at that size only as the container (no webp twin). An approach earns it
+    // at half the viewport height; a committed arrival warms it after the 4K,
+    // and the veil waits for the 4K alone. UASTC because a gas giant is slow
+    // gradients.
     //
     // The photo moons are ETC1S, and that bar does not apply to them at all:
     // the container is roughly the webp's size on the wire, so there is no

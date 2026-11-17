@@ -2,7 +2,7 @@
  * Shadow-engine goldens.
  *
  * Catalog sources (greatest-eclipse instants quoted in TD; UTC = TD − ΔT,
- * ΔT ≈ 69 s in 2025–2028 — immaterial against the ±20 min tolerances):
+ * ΔT ≈ 69 s in 2025–2028, within 0.2 s of the clock's TT − UTC):
  * - Lunar: EclipseWise (Espenak), https://www.eclipsewise.com/lunar/LEdecade/LEdecade2021.html
  * - Solar: EclipseWise (Espenak), https://www.eclipsewise.com/solar/SEdecade/SEdecade2021.html
  *
@@ -224,11 +224,13 @@ describe('Earth: lunar eclipses vs EclipseWise', () => {
   it.each(CASES)('finds $peakUtc as $cls', ({ from, peakUtc, cls, umag }) => {
     const event = findShadowEvent(spec, Date.parse(from), 1);
     expect(event).not.toBeNull();
-    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(20 * MIN);
+    // On the fitted ephemeris (DE441) the peak lands within 1.5 s and the
+    // magnitude within 0.004; the bounds leave room for the catalog's own
+    // rounding and the ΔT it was computed with (69 s against 69.18 s here).
+    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(5_000);
     expect(event!.classification).toBe(cls);
-    // Truncated Meeus series + the Danjon 1/85 enlargement (EclipseWise uses
-    // its own convention) land within a few hundredths of magnitude.
-    expect(Math.abs(event!.umbralMagnitude! - umag)).toBeLessThan(0.1);
+    // The Danjon 1/85 shadow enlargement; EclipseWise uses its own convention.
+    expect(Math.abs(event!.umbralMagnitude! - umag)).toBeLessThan(0.01);
   });
 
   it('finds the 2027 penumbral-only eclipses (Feb 20, Aug 17)', () => {
@@ -272,7 +274,8 @@ describe('Earth: solar eclipses vs EclipseWise', () => {
   it.each(CASES)('finds $peakUtc as $cls', ({ from, peakUtc, cls }) => {
     const event = findShadowEvent(spec, Date.parse(from), 1);
     expect(event).not.toBeNull();
-    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(20 * MIN);
+    // Within about 1 s on the fitted ephemeris; see the lunar cases.
+    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(5_000);
     expect(event!.classification).toBe(cls);
   });
 

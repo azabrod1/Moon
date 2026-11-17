@@ -18,7 +18,7 @@ The other generators and tile publishing are in `docs/assets.md`.
 - Run the build and the tests. There is no linter.
 - Never commit `planning/`; it is scratch space. Add files by name, never `git add -A`.
 - If you edit shader code, also run `NODE_ENV=production npx vitest run --mode production --dir src src/planetarium/world/aerialPerspective.test.ts`. The shaders are pinned by hash in tests; update a hash only when you meant the change.
-- Never update an astronomy test value by pasting in new output. Some files are generated, so edit them only through their script: `satelliteElements.ts` (`gen:moons`), the ephemeris file (`gen:ephemeris`), the star catalog (`gen:stars`), `constellations.ts` (`gen:constellations`). `standish.ts` is copied from a published table; never round its numbers.
+- Never update an astronomy test value by pasting in new output. Some files are generated, so edit them only through their script: `satelliteElements.ts` (`gen:moons`), the star catalog (`gen:stars`), `constellations.ts` (`gen:constellations`). `standish.ts` is copied from a published table; never round its numbers.
 
 ## Running and testing
 

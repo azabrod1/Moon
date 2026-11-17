@@ -25,8 +25,16 @@ import { DEG2RAD, RAD2DEG } from '../../shared/math/angles';
  * anchors, bit for bit. Floating point makes that a real question, not a
  * formality: summing at unit length and scaling afterwards would be the same
  * arithmetic on paper and a different last bit in practice.
+ *
+ * Built once: both bit-for-bit tests read the same build, and neither writes
+ * to it.
  */
-function referenceBuild(): { positions: Float32Array; anchors: { name: string; pos: THREE.Vector3 }[] } {
+let referenceMemo: ReturnType<typeof buildReference> | undefined;
+function referenceBuild(): ReturnType<typeof buildReference> {
+  return (referenceMemo ??= buildReference());
+}
+
+function buildReference(): { positions: Float32Array; anchors: { name: string; pos: THREE.Vector3 }[] } {
   const snapCache = new Map<string, [number, number]>();
   const angularDistDeg = (ra1: number, dec1: number, ra2: number, dec2: number): number => {
     const d1 = dec1 * DEG2RAD;
@@ -53,6 +61,11 @@ function referenceBuild(): { positions: Float32Array; anchors: { name: string; p
         bestDist = d;
         bestRa = star.raDeg;
         bestDec = star.decDeg;
+        // The one departure from the transcription. No star can be nearer
+        // than one exactly here, so the first such star is the one the full
+        // scan keeps too. Every endpoint in today's figures is one, and the
+        // rest of a 26k-star scan for each of them was most of six seconds.
+        if (d === 0) break;
       }
     }
     const result: [number, number] = [bestRa, bestDec];

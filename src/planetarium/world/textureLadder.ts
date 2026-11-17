@@ -202,14 +202,17 @@ export interface TextureUpgrade {
    *  climbing, and never the other way round. `abort` ends the transfer when
    *  the swap is abandoned: a swap given up on has no reader left, and a
    *  stalled link is exactly where one abandoned transfer per timeout would
-   *  otherwise accumulate for the session. `queued` marks a swap the restore
-   *  queue started, which replaces a stand-in and is never discretionary. */
+   *  otherwise accumulate for the session. `necessary` marks a swap no
+   *  change of view may abandon (releaseLostItsReason). `pending` is the low
+   *  map once it has decoded and is waiting for its upload, so abandoning the
+   *  swap can drop it unuploaded. */
   release?: {
     toTier: TextureTier;
     generation: number;
     startedAtMs: number;
     restore?: boolean;
-    queued?: boolean;
+    necessary?: boolean;
+    pending?: THREE.Texture;
     abort?: AbortController;
   };
   /** GPU bytes the map a swap DOWN has decoded but not yet assigned will
@@ -1353,15 +1356,25 @@ function landsCompressed(key: string, tier: TextureTier): boolean {
 }
 
 /** Whether a swap down already in the air has lost the reason it was started
- *  for, and should be abandoned (cancelTierRelease): its body is now one no
- *  pressure may take a map from (`guarded`), or has grown back past its
- *  release band. Starting a release checks both; without this, one already
- *  running would land anyway, on a body the player is flying to or looking
- *  at. A swap the restore queue started is never abandoned here: it is
- *  replacing a stand-in, which the body needs whatever its size. */
-export function releaseLostItsReason(up: TextureUpgrade, guarded: boolean): boolean {
-  if (!up.release || up.release.queued) return false;
+ *  for: its body is now one no pressure may take a map from (`guarded`), or
+ *  has grown back past its release band. Starting a release checks both;
+ *  without this, one already running would land anyway, on a body the player
+ *  is flying to or looking at. A `necessary` swap never loses its reason. A
+ *  hand-back the tiles asked for is not necessary: abandoned, its restore
+ *  entry goes back on the queue (RestoreQueue.ended). */
+function releaseLostItsReason(up: TextureUpgrade, guarded: boolean): boolean {
+  if (!up.release || up.release.necessary) return false;
   return guarded || up.belowBandSinceMs === undefined;
+}
+
+/** Abandon this handle's swap down if it has lost its reason
+ *  (releaseLostItsReason), and say whether it did. The caller then owes what
+ *  any ended swap is owed: the one-in-flight slot, the ledger's new figure,
+ *  the restore entry if it was one, and the tiles' fresh dwell. */
+export function abandonReleaseWithoutReason(up: TextureUpgrade, guarded: boolean): boolean {
+  if (!releaseLostItsReason(up, guarded)) return false;
+  cancelTierRelease(up);
+  return true;
 }
 
 /**
@@ -1425,10 +1438,10 @@ export function startTierRelease(
   nowMs = performance.now(),
   opts: {
     restore?: boolean;
-    /** Started by the restore queue: a stand-in is being replaced, so the
-     *  swap is not one to abandon when its body comes back into view
-     *  (releaseLostItsReason). */
-    queued?: boolean;
+    /** A swap the body needs whatever the view does: a restore re-fetching a
+     *  stand-in's own tier, or a hand-back for a rung that can never fit
+     *  again. Never abandoned by releaseLostItsReason. */
+    necessary?: boolean;
     onSettled?: (released: boolean) => void;
     /** Called the moment the low map's bytes enter (and leave) the ledger, so
      *  a caller that shares the envelope with another manager can hand it the
@@ -1441,7 +1454,7 @@ export function startTierRelease(
   if (!toTier) return false;
   const generation = ++upgradeGeneration;
   const abort = typeof AbortController === 'function' ? new AbortController() : undefined;
-  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, queued: opts.queued, abort };
+  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, necessary: opts.necessary, abort };
   const abandoned = () => up.release?.generation !== generation;
   const ktx2 = ktx2TierLoader;
   const file = resolveTierFile(up.key, toTier);
@@ -1472,6 +1485,7 @@ export function startTierRelease(
         // high map. Whoever shares the envelope trims for it synchronously,
         // rather than discovering the peak a frame after it has passed.
         up.pendingReleaseBytes = textureGpuBytes(tex, TIER_MAP_WIDTH[toTier]);
+        if (up.release) up.release.pending = tex;
         opts.onLedgerChange?.();
         // The same order as the climb, and for the same reason: a map whose
         // bands are still being uploaded draws as unwritten storage, so the
@@ -1588,14 +1602,14 @@ export function buildRestoreQueue(
  * of the stand-in. So is one `handBack` names — the release pass asks for
  * that while the tiles are short and the rung is one it would give back for
  * them anyway, rather than fetch a far 8K only to swap it straight down.
- * An entry whose swap failed is put back by the caller, and waits out its
- * handle's cooldown here before it is asked again.
+ * An entry whose swap failed is put back (RestoreQueue.ended), and waits out
+ * its handle's cooldown here before it is asked again.
  */
 export function takeRestoreRefetch(
   queue: RestoreRefetchEntry[],
   handBack?: (up: TextureUpgrade) => boolean,
   nowMs = performance.now(),
-): { up: TextureUpgrade; restore: boolean } | null {
+): { up: TextureUpgrade; restore: boolean; forTiles?: true } | null {
   for (let i = 0; i < queue.length; i++) {
     const { up, tex } = queue[i];
     if (!up.appliedTier || materialColorMap(up.material) !== tex) {
@@ -1609,7 +1623,7 @@ export function takeRestoreRefetch(
     if (up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs) continue;
     if (handBack?.(up)) {
       queue.splice(i, 1);
-      return { up, restore: false };
+      return { up, restore: false, forTiles: true };
     }
     const room = tierAdmission(up, up.appliedTier);
     if (room === 'blocked') continue;
@@ -1631,6 +1645,50 @@ export function requeueRestoreEntry(queue: RestoreRefetchEntry[], entry: Restore
   return true;
 }
 
+/**
+ * The restore queue and the one entry whose swap is in the air, as one object
+ * so the bookkeeping a swap's end owes is in one place: an entry whose swap
+ * lands is answered; one whose swap fails, hangs or is abandoned goes back on
+ * the queue (requeueRestoreEntry) and waits out its handle's cooldown.
+ */
+export class RestoreQueue {
+  readonly entries: RestoreRefetchEntry[] = [];
+  private inFlight: RestoreRefetchEntry | null = null;
+
+  get length(): number {
+    return this.entries.length;
+  }
+
+  /** Start over from a lost context's entries (buildRestoreQueue). */
+  rebuild(entries: readonly { up: TextureUpgrade; tex: THREE.Texture | null; distance: number }[]): void {
+    this.entries.length = 0;
+    this.inFlight = null;
+    this.entries.push(...buildRestoreQueue(entries));
+  }
+
+  /** The next entry to start (takeRestoreRefetch), remembered as the one in
+   *  the air. `necessary` is what the swap is started with: everything but a
+   *  hand-back the tiles asked for. */
+  take(
+    handBack?: (up: TextureUpgrade) => boolean,
+    nowMs = performance.now(),
+  ): { up: TextureUpgrade; restore: boolean; necessary: boolean } | null {
+    const next = takeRestoreRefetch(this.entries, handBack, nowMs);
+    if (!next) return null;
+    const tex = materialColorMap(next.up.material);
+    this.inFlight = tex ? { up: next.up, tex } : null;
+    return { up: next.up, restore: next.restore, necessary: next.forTiles !== true };
+  }
+
+  /** The swap of `up` has ended, landed or not. A no-op for any other handle. */
+  ended(up: TextureUpgrade, landed: boolean): void {
+    const entry = this.inFlight;
+    if (!entry || entry.up !== up) return;
+    this.inFlight = null;
+    if (!landed) requeueRestoreEntry(this.entries, entry);
+  }
+}
+
 /** Abandon a swap in flight (a timeout, a teleport away, mode disposal). The
  *  transfer is aborted rather than left to complete for nobody — the only
  *  reader it had is this handle, and it has stopped waiting. A KTX2 rung
@@ -1641,6 +1699,10 @@ export function cancelTierRelease(up: TextureUpgrade): void {
   up.release = undefined;
   up.pendingReleaseBytes = undefined;
   release?.abort?.abort();
+  // A low map already decoded is waiting in the warm queue; disposing it takes
+  // it out unuploaded (textureWarmer), rather than paying an upload nobody
+  // will draw and that the ledger no longer counts.
+  release?.pending?.dispose();
 }
 
 /** Longest side a released rung's stand-in image keeps. The width of the map

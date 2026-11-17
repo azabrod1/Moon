@@ -15,6 +15,7 @@ function state(over: Partial<LadderPressureState> = {}): LadderPressureState {
     tilesShort: false,
     tilesShortSinceMs: null,
     drawing: true,
+    swapEnded: false,
     ...over,
   };
 }
@@ -186,22 +187,27 @@ describe('the tiles\' shortfall', () => {
     })).releaseDue).toBe(true);
   });
 
-  it('owes a fresh dwell after any swap ends, settled or cancelled', () => {
-    // The caller restarts the latch when a swap it started settles, and when
-    // it cancels one whose body came back into view or under protection: the
-    // slot that frees must not be taken on the same frame, on an answer the
-    // ended swap was already answering.
+  it('owes a fresh dwell after any swap ends, settled, abandoned or expired', () => {
+    // The slot a swap frees must not be taken on the frame it frees, on an
+    // answer the ended swap was already answering: the tiles' latch restarts.
     const served = planLadderPressure(state({
       tilesShort: true, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS, swapInFlight: true,
     }));
     expect(served.tilesReleaseDue).toBe(false); // the swap holds the slot
     expect(served.tilesShortSinceMs).toBe(0);
-    // The swap is cancelled: the slot is free and the latch restarted.
+    // The swap ends: the slot is free, and the latch it carried is not.
     const sameFrame = planLadderPressure(state({
-      tilesShort: true, tilesShortSinceMs: null, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+      tilesShort: true, tilesShortSinceMs: served.tilesShortSinceMs, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+      swapEnded: true,
     }));
     expect(sameFrame.tilesReleaseDue).toBe(false);
     expect(sameFrame.tilesShortSinceMs).toBe(10 * RELEASE_PRESSURE_DWELL_MS);
+    // An answer the ended swap made stale clears it too, rather than carrying
+    // it to the first fresh answer.
+    const stale = planLadderPressure(state({
+      tilesShort: null, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS, swapEnded: true,
+    }));
+    expect(stale.tilesShortSinceMs).toBeNull();
     // Still short a dwell later, it may go again.
     expect(planLadderPressure(state({
       tilesShort: true, tilesShortSinceMs: sameFrame.tilesShortSinceMs, nowMs: 11 * RELEASE_PRESSURE_DWELL_MS,

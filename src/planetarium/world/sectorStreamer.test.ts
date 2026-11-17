@@ -2697,11 +2697,11 @@ describe('what the tiles say they are short of', () => {
     expect(streamer.tilesShortFor(before)).toBe(true);
     // The release pass as the mode runs it, ahead of the frame's reconcile.
     let since: number | null = 0;
-    const pass = (ladderBytes: number, nowMs: number): boolean => {
+    const pass = (ladderBytes: number, nowMs: number, swapEnded = false): boolean => {
       const plan = planLadderPressure({
         ladderBytes, ceilingBytes: Number.POSITIVE_INFINITY, blockedDemand: false, pressureSinceMs: null,
         nowMs, swapInFlight: false, restoreQueued: false,
-        tilesShort: streamer.tilesShortFor(ladderBytes), tilesShortSinceMs: since, drawing: true,
+        tilesShort: streamer.tilesShortFor(ladderBytes), tilesShortSinceMs: since, drawing: true, swapEnded,
       });
       since = plan.tilesShortSinceMs;
       return plan.tilesReleaseDue;
@@ -2709,14 +2709,14 @@ describe('what the tiles say they are short of', () => {
     // Short past the dwell: one release is due.
     expect(pass(before, RELEASE_PRESSURE_DWELL_MS)).toBe(true);
     // It lands and frees two sets' worth. The mode hands the streamer the new
-    // figure at once, and the release's settle restarts the latch.
+    // figure at once, and tells the next pass a swap has ended.
     const after = before - 2 * EARTH_SET_BYTES;
     streamer.setGlobalMapBytes(after);
-    since = null;
     // The next pass still holds the last reconcile's answer — taken against
     // the old ledger, and acted on by nothing, however long a latch it met.
     expect(streamer.tilesShort()).toBe(true);
-    expect(pass(after, RELEASE_PRESSURE_DWELL_MS + 16)).toBe(false);
+    expect(pass(after, RELEASE_PRESSURE_DWELL_MS + 16, true)).toBe(false);
+    expect(since).toBeNull();
     since = 0;
     expect(pass(after, 10 * RELEASE_PRESSURE_DWELL_MS)).toBe(false);
     // The reconcile takes the room it was given and answers against it.
@@ -2724,6 +2724,21 @@ describe('what the tiles say they are short of', () => {
     expect(streamer.stats().resident).toBe(4);
     expect(streamer.tilesShortFor(after)).toBe(false);
     expect(pass(after, 20 * RELEASE_PRESSURE_DWELL_MS)).toBe(false);
+  });
+
+  it('says "not short" whatever the ledger has done since', () => {
+    loader.auto = true;
+    // Short against one ledger, then everything dropped (a teleport) with the
+    // ledger moved by a fetch the teleport cancelled before the next pass:
+    // the answer is "not short", and it holds on any ledger, so the latch it
+    // meets is cleared rather than carried to the next "short".
+    const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
+    const streamer = settled(NO_FLOOR, before);
+    expect(streamer.tilesShortFor(before)).toBe(true);
+    expect(streamer.tilesShortFor(before - 1)).toBeNull();
+    streamer.dropAll();
+    expect(streamer.tilesShortFor(before)).toBe(false);
+    expect(streamer.tilesShortFor(before - 10 * MiB)).toBe(false);
   });
 
   it('is not short for a set the fetch pool can never carry', () => {

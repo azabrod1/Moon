@@ -1855,15 +1855,19 @@ export class SectorStreamer {
   }
 
   /**
-   * The same answer, or null when it was taken against other globe-map bytes
-   * than `ladderBytes`. The ladder's release pass runs before this frame's
-   * reconcile, so what it reads is the last frame's; a swap that landed since
-   * (or any rung applied, a source closed) has changed the very budget the
-   * answer was about, and acting on it would give a second map back for room
-   * the first may already have made.
+   * The same answer, or null when it says short against other globe-map
+   * bytes than `ladderBytes`. The ladder's release pass runs before this
+   * frame's reconcile, so what it reads is the last frame's; a swap that
+   * landed since (or any rung applied, a source closed) has changed the very
+   * budget a "short" was about, and acting on it would give a second map back
+   * for room the first may already have made. "Not short" holds whatever the
+   * ledger has done since — nothing then asks for a map back — so it is
+   * always an answer, including the frames that want nothing at all (a
+   * teleport's dropAll, a chart frame), whatever their ledger.
    */
   tilesShortFor(ladderBytes: number): boolean | null {
-    return ladderBytes === this.shortAgainst ? this.short : null;
+    if (!this.short) return false;
+    return ladderBytes === this.shortAgainst ? true : null;
   }
 
   /** Bytes held: what the resident sets draw plus what the loads in flight

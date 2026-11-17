@@ -61,9 +61,9 @@ import {
   releaseDwellMs,
   releaseExpired,
   releaseLandsOnContainer,
-  releaseLostItsReason,
   releaseOffer,
-  requeueRestoreEntry,
+  RestoreQueue,
+  abandonReleaseWithoutReason,
   releaseTargetTier,
   releaseUpgradeSource,
   startTierRelease,
@@ -2870,10 +2870,11 @@ describe('what a release puts on the material', () => {
     trackReleaseBand(up, 0, 0);
     expect(startTierRelease(up, 1_000)).toBe(true);
     // Far and unguarded, the reason it was started still holds.
-    expect(releaseLostItsReason(up, false)).toBe(false);
+    expect(abandonReleaseWithoutReason(up, false)).toBe(false);
+    expect(up.release).toBeDefined();
     // Then the autopilot picks it, or the ship commits to it.
-    expect(releaseLostItsReason(up, true)).toBe(true);
-    cancelTierRelease(up);
+    expect(abandonReleaseWithoutReason(up, true)).toBe(true);
+    expect(up.release).toBeUndefined();
     pending[0].onLoad(new THREE.Texture());
     await settleRungUpload();
     expect(up.material.map).toBe(high);
@@ -2886,24 +2887,68 @@ describe('what a release puts on the material', () => {
     trackReleaseBand(up, 0, 0);
     startTierRelease(up, 1_000);
     trackReleaseBand(up, 1, 2_000); // the approach brings it back to fill the view
-    expect(releaseLostItsReason(up, false)).toBe(true);
-    cancelTierRelease(up);
+    expect(abandonReleaseWithoutReason(up, false)).toBe(true);
     pending[0].onLoad(new THREE.Texture());
     await settleRungUpload();
     expect(up.material.map).toBe(high);
     expect(up.appliedTier).toBe('4k');
   });
 
-  it('never abandons a swap the restore queue started', () => {
-    // Re-fetching a stand-in's own tier, or handing it back for a smaller
-    // one: either replaces a stand-in, which the body needs at any size and
-    // however it is protected.
-    for (const restore of [true, false]) {
-      const up = onFourK();
-      trackReleaseBand(up, 1, 0);
-      startTierRelease(up, 1_000, { restore, queued: true });
-      expect(releaseLostItsReason(up, true)).toBe(false);
-      expect(up.release).toBeDefined();
+  it('drops a low map that decoded before its swap was abandoned, unuploaded', async () => {
+    const uploaded = recordWarmUploads();
+    const up = onFourK();
+    trackReleaseBand(up, 0, 0);
+    startTierRelease(up, 1_000);
+    const low = mapTexture(2048);
+    const wasDisposed = watchDispose(low);
+    pending[0].onLoad(low); // decoded, and waiting in the warm queue for its upload
+    expect(up.pendingReleaseBytes).toBeGreaterThan(0);
+    expect(abandonReleaseWithoutReason(up, true)).toBe(true);
+    expect(wasDisposed()).toBe(true);
+    expect(up.pendingReleaseBytes).toBeUndefined();
+    await settleRungUpload();
+    expect(uploaded).not.toContain(low);
+  });
+
+  it('abandons a hand-back the tiles asked for, and puts its entry back on the queue', () => {
+    try {
+      const entry = onStandin('moon');
+      const queue = new RestoreQueue();
+      queue.entries.push(entry);
+      bindTierAdmission(() => 'admit');
+      // Taken while the tiles were short and the body far: a release like any
+      // other, so not one the body needs.
+      const next = queue.take(() => true, 1_000)!;
+      expect(next).toEqual({ up: entry.up, restore: false, necessary: false });
+      trackReleaseBand(entry.up, 0, 0);
+      startTierRelease(entry.up, 1_000, { restore: next.restore, necessary: next.necessary });
+      // The player turns toward it: a 4K must not land on a body growing on
+      // screen, and the body is still on its stand-in, so it waits its turn.
+      trackReleaseBand(entry.up, 1, 2_000);
+      expect(abandonReleaseWithoutReason(entry.up, false)).toBe(true);
+      queue.ended(entry.up, false);
+      expect(queue.entries).toEqual([entry]);
+    } finally {
+      bindTierAdmission(null);
+    }
+  });
+
+  it('never abandons a restore at the stand-in\'s own tier, or a hand-back the ladder can never fit', () => {
+    try {
+      for (const admission of ['admit', 'refuse'] as const) {
+        const entry = onStandin('moon');
+        const queue = new RestoreQueue();
+        queue.entries.push(entry);
+        bindTierAdmission(() => admission);
+        const next = queue.take(undefined, 1_000)!;
+        expect(next).toEqual({ up: entry.up, restore: admission === 'admit', necessary: true });
+        trackReleaseBand(entry.up, 1, 0);
+        startTierRelease(entry.up, 1_000, { restore: next.restore, necessary: next.necessary });
+        expect(abandonReleaseWithoutReason(entry.up, true)).toBe(false);
+        expect(entry.up.release).toBeDefined();
+      }
+    } finally {
+      bindTierAdmission(null);
     }
   });
 
@@ -2911,29 +2956,36 @@ describe('what a release puts on the material', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const entry = onStandin('moon');
-      const queue = [entry];
+      const queue = new RestoreQueue();
+      queue.entries.push(entry);
       // A rung that can never fit again is handed back rather than restored.
       bindTierAdmission(() => 'refuse');
-      const next = takeRestoreRefetch(queue, undefined, 1_000)!;
-      expect(next).toEqual({ up: entry.up, restore: false });
-      expect(queue).toHaveLength(0);
+      const next = queue.take(undefined, 1_000)!;
+      expect(next).toEqual({ up: entry.up, restore: false, necessary: true });
+      expect(queue.length).toBe(0);
       const settled: boolean[] = [];
-      startTierRelease(entry.up, 1_000, { restore: next.restore, queued: true, onSettled: (ok) => settled.push(ok) });
+      startTierRelease(entry.up, 1_000, {
+        restore: next.restore,
+        necessary: next.necessary,
+        onSettled: (ok) => {
+          settled.push(ok);
+          queue.ended(entry.up, ok);
+        },
+      });
       pending[0].onError(new Error('offline'));
       await settleRungUpload();
       expect(settled).toEqual([false]);
       expect(entry.up.material.map).toBe(entry.tex); // still on the stand-in
-      expect(requeueRestoreEntry(queue, entry)).toBe(true);
-      expect(queue).toEqual([entry]);
+      expect(queue.entries).toEqual([entry]);
       // It waits out the handle's cooldown, then is asked again.
-      expect(takeRestoreRefetch(queue, undefined, 1_001)).toBeNull();
-      expect(queue).toHaveLength(1);
-      expect(takeRestoreRefetch(queue, undefined, entry.up.releaseRetryAtMs!))
-        .toEqual({ up: entry.up, restore: false });
+      expect(queue.take(undefined, 1_001)).toBeNull();
+      expect(queue.length).toBe(1);
+      expect(queue.take(undefined, entry.up.releaseRetryAtMs!))
+        .toEqual({ up: entry.up, restore: false, necessary: true });
       // An entry whose body has a real map again is answered, not re-queued.
       entry.up.material.map = mapTexture(4096);
-      expect(requeueRestoreEntry(queue, entry)).toBe(false);
-      expect(queue).toHaveLength(0);
+      queue.ended(entry.up, false);
+      expect(queue.length).toBe(0);
     } finally {
       bindTierAdmission(null);
       warn.mockRestore();
@@ -3482,7 +3534,7 @@ describe('fetching the maps back after a lost context', () => {
     const queue = [near, far];
     bindTierAdmission(() => 'admit');
     expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: near.up, restore: true });
-    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: far.up, restore: false });
+    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: far.up, restore: false, forTiles: true });
     expect(queue).toHaveLength(0);
   });
 

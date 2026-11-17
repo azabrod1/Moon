@@ -478,6 +478,7 @@ import {
   ObservatoryPanel,
   observatoryEventsStatus,
   observatoryPhaseText,
+  trackedBodyPhaseText,
   type ObservatoryEventRow,
   type ObservatoryRenderExtras,
   type ObservatorySubjectInfo,
@@ -2039,6 +2040,9 @@ export class PlanetariumMode {
   private tmpSurfaceTargetPos = new THREE.Vector3();
   private tmpSurfaceVantage = new THREE.Vector3();
   private tmpSurfaceAxis = new THREE.Vector3();
+  private tmpPhaseTarget = new THREE.Vector3();
+  private tmpPhaseToSun = new THREE.Vector3();
+  private tmpPhaseToEye = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
@@ -19787,6 +19791,30 @@ export class PlanetariumMode {
     );
   }
 
+  /** The phase of the lit body the surface view tracks, as seen from where
+   *  the camera stands, or its eclipse while it sits in its planet's shadow;
+   *  null while it tracks the Sun. */
+  private trackedBodyPhase(): { headline: string; meta: string } | null {
+    const target = this.surfaceTarget;
+    if (target.kind !== 'moon' && target.kind !== 'parent') return null;
+    const targetPos = this.resolveSurfaceTargetScenePos(target, this.tmpPhaseTarget);
+    if (!targetPos) return null;
+    // The Sun sits at the scene's floating origin, the player's negation.
+    const toSun = this.tmpPhaseToSun.set(-this.player.posX, -this.player.posY, -this.player.posZ).sub(targetPos);
+    const toEye = this.tmpPhaseToEye.copy(this.camera.position).sub(targetPos);
+    const lengths = toSun.length() * toEye.length();
+    if (!(lengths > 0)) return null;
+    const name = this.surfaceTargetDisplayName(target).replace(/^the /, '');
+    // The sunlight the renderer dims the moon by: under half, it is eclipsed.
+    let shadowOf: string | null = null;
+    if (target.kind === 'moon') {
+      const parentName = this.observatoryParentPlanetName();
+      const entry = this.planetMoons.get(parentName ?? '')?.find((moon) => moon.data.name === target.moonName);
+      if (parentName && (entry?.shadeSmoothed ?? 1) < 0.5) shadowOf = bodyDisplayName(parentName);
+    }
+    return trackedBodyPhaseText(name, (1 + toSun.dot(toEye) / lengths) / 2, shadowOf);
+  }
+
   /** True when the surface view is pointed at the phase hero's own subject —
    *  the body the no-event headline is describing. */
   private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
@@ -19807,6 +19835,8 @@ export class PlanetariumMode {
     let headline: string;
     let subText: string;
     let subWarm: string | null = null;
+    // An event's line is the band's own; a phase the hero also shows is not.
+    let heroRepeats = false;
     if (event) {
       headline = PlanetariumMode.shadowEventLabel(event.spec);
       subText = this.surfaceNarrative(event.spec);
@@ -19821,19 +19851,22 @@ export class PlanetariumMode {
     } else {
       const subject = this.buildObservatorySubject();
       const phase = subject ? observatoryPhaseText(now, subject) : null;
-      headline = phase?.headline ?? `${this.landedOn.name} sky`;
-      subText = phase?.meta ?? '';
-      // A new companion is a real sight the frame cannot show: the disc is up
-      // there with its night side turned to you. Say so, or an empty frame
-      // reads as the body having failed to load. Keyed to the headline's own
-      // phase name — a "New" name spans under ~1% lit — so this line can never
-      // call a disc dark while the headline calls it a crescent.
-      if (
-        subject &&
-        phase &&
-        phase.headline.startsWith('New ') &&
-        this.isPhaseSubjectTracked(subject)
-      ) {
+      const subjectTracked = subject !== null && phase !== null && this.isPhaseSubjectTracked(subject);
+      // A lit body tracked that the hero does not describe — Phobos from
+      // Mars, which has no phase subject; Europa from Io — gets its own phase.
+      // Tracking the Sun keeps the system's line.
+      const tracked = subjectTracked ? null : this.trackedBodyPhase();
+      headline = tracked?.headline ?? phase?.headline ?? `${this.landedOn.name} sky`;
+      subText = tracked?.meta ?? phase?.meta ?? '';
+      heroRepeats = tracked === null;
+      // A new disc is a real sight the frame cannot show: it is up there with
+      // its night side turned to you. Say so, or an empty frame reads as the
+      // body having failed to load. Keyed to the headline's own phase name —
+      // a "New" name spans only the thinnest few percent — and only for the
+      // body tracked, so this line can never call a disc dark while the
+      // headline calls it a crescent.
+      const trackedHeadline = tracked?.headline ?? (subjectTracked ? phase?.headline ?? '' : '');
+      if (trackedHeadline.startsWith('New ')) {
         subText += ' — its unlit side faces you, so the disc is dark';
       }
     }
@@ -19891,7 +19924,7 @@ export class PlanetariumMode {
     const state: SurfaceHudState = {
       eyebrow: `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
-      inEvent: event !== null,
+      heroRepeats,
       subText,
       subWarm,
       whenText: formatObservatoryClock(now),

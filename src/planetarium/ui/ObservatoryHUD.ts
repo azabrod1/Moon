@@ -16,9 +16,10 @@ export interface SurfaceHudState {
   eyebrow: string;
   /** Event name while one is in window, else the phase name. */
   headline: string;
-  /** An event is in window. With the phone sheet open the band shows only
-   *  then: otherwise its headline is the sheet's own hero. */
-  inEvent: boolean;
+  /** The open sheet's hero already says what the narrative says (the
+   *  system's phase, or nothing worth a line): with the phone sheet open the
+   *  band then steps aside. An event, or a tracked body's own phase, stays. */
+  heroRepeats: boolean;
   /** Narrative subline; `warm` renders highlighted ("peak in 11m"). */
   subText: string;
   subWarm: string | null;
@@ -323,7 +324,7 @@ export class ObservatoryHUD {
 
   /** 8 Hz text pass — no layout writes besides the FOV mark position. */
   render(state: SurfaceHudState): void {
-    this.rootEl?.classList.toggle('shud-event', state.inEvent);
+    this.rootEl?.classList.toggle('shud-hero-repeats', state.heroRepeats);
     setText('surface-eyebrow', state.eyebrow);
     setText('surface-headline', state.headline);
     if (this.subEl) {

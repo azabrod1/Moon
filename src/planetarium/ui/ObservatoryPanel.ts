@@ -549,6 +549,28 @@ export function observatoryPhaseText(
 }
 
 /**
+ * The surface HUD's line for a lit body it tracks that is not the subject the
+ * hero describes (Phobos from Mars, Europa from Io): "Crescent Phobos",
+ * "Phobos · 12% lit", named the way the hero names a moon-phase subject. A
+ * body in its planet's shadow says so instead (`shadowOf`): a full phase over
+ * a disc gone dark would read as a fault. The headline is the engine's own
+ * label for the event.
+ */
+export function trackedBodyPhaseText(
+  bodyName: string,
+  illumination: number,
+  shadowOf: string | null = null,
+): { headline: string; meta: string } {
+  if (shadowOf) {
+    return { headline: `${bodyName} eclipsed by ${shadowOf}`, meta: `${bodyName} · in ${shadowOf}'s shadow` };
+  }
+  return {
+    headline: `${genericPhaseName(illumination)} ${bodyName}`,
+    meta: `${bodyName} · ${Math.round(illumination * 100)}% lit`,
+  };
+}
+
+/**
  * SVG path for the phase glyph's LIT region: the sunward semicircle closed by
  * the elliptical terminator (semi-minor axis ∝ |2f − 1|). Crescent (f < ½)
  * bows the terminator into the lit side; gibbous bows it back. Disc: r=19

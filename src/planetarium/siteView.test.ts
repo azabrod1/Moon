@@ -13,8 +13,10 @@ import {
   altAz,
   directionFromAltAz,
   findAltitudeCrossing,
+  formatSiteCoordinates,
   horizonDipDeg,
   siteFrame,
+  siteRiseText,
   type Site,
 } from './siteView';
 import golden from './siteView.goldens.json';
@@ -73,5 +75,14 @@ describe('sites', () => {
     const altitudeAt = (utcMs: number) => -5 + utcMs / 3_600_000;
     expect(findAltitudeCrossing(altitudeAt, 0, -0.833, 'rise', 3_600_000, 48)! / 1000).toBeCloseTo(4.167 * 3600, -0.5);
     expect(findAltitudeCrossing(altitudeAt, 0, -0.833, 'set', 3_600_000, 48)).toBeNull();
+  });
+
+  it('word a rise and a place the way the HUD prints them', () => {
+    expect(siteRiseText(0, 30 * 60_000)).toBe('rises in 30 min');
+    expect(siteRiseText(0, 5 * 3_600_000)).toBe('rises in 5 hours');
+    expect(siteRiseText(0, 3 * 86_400_000)).toBe('rises in 3 days');
+    expect(siteRiseText(0, null)).toBe('it does not rise here in the next month');
+    expect(formatSiteCoordinates({ body: 'Moon', latitudeDeg: 0.6741, longitudeDeg: 23.473, heightKm: 0.002 })).toBe('0.67° N 23.47° E');
+    expect(formatSiteCoordinates({ body: 'Moon', latitudeDeg: -26.1, longitudeDeg: -3.6, heightKm: 0.002 })).toBe('26.10° S 3.60° W');
   });
 });

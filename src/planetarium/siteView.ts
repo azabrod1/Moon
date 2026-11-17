@@ -18,6 +18,10 @@ import { geodeticToBodyFrameKm } from '../astronomy/earthShape';
 
 const DEG = Math.PI / 180;
 
+/** Where the gaze holds, degrees above the horizon, while the tracked
+ *  target is below it: the view never looks into the ground. */
+export const SITE_GAZE_ABOVE_HORIZON_DEG = 10;
+
 export interface Site {
   /** The body stood on: a planet's or a moon's catalog name. */
   body: string;
@@ -152,4 +156,24 @@ export function findAltitudeCrossing(
     previous = next;
   }
   return null;
+}
+
+/** "rises in 5 hours", the Observatory's countdown wording, or the plain
+ *  truth when the search found no rise: some bodies never rise at a site
+ *  (Earth from the Moon's far side). */
+export function siteRiseText(nowMs: number, riseMs: number | null): string {
+  if (riseMs === null) return 'it does not rise here in the next month';
+  const totalMinutes = Math.max(1, Math.floor((riseMs - nowMs) / 60_000));
+  if (totalMinutes < 60) return `rises in ${totalMinutes} min`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 48) return `rises in ${totalHours} ${totalHours === 1 ? 'hour' : 'hours'}`;
+  const totalDays = Math.floor(totalHours / 24);
+  return `rises in ${totalDays} ${totalDays === 1 ? 'day' : 'days'}`;
+}
+
+/** "0.67° N 23.47° E": a site's place as the HUD prints it. */
+export function formatSiteCoordinates(site: Site): string {
+  const latitude = `${Math.abs(site.latitudeDeg).toFixed(2)}° ${site.latitudeDeg >= 0 ? 'N' : 'S'}`;
+  const longitude = `${Math.abs(site.longitudeDeg).toFixed(2)}° ${site.longitudeDeg >= 0 ? 'E' : 'W'}`;
+  return `${latitude} ${longitude}`;
 }

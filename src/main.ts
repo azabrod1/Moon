@@ -4097,6 +4097,13 @@ function installDevHooks() {
     surfaceDensity: () => planetariumMode?.devSurfaceDensity() ?? [],
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
+    // Stand at a site on the Moon (latitude, east longitude, eye metres) and
+    // look up; standAt(null) clears it. siteProbe reads a body's altitude and
+    // azimuth there off the drawn objects (the camera, the Moon's drawn
+    // orientation, the body's drawn place).
+    standAt: (latitudeDeg: number | null, longitudeDeg?: number, heightM?: number) =>
+      planetariumMode?.devStandAt(latitudeDeg, longitudeDeg, heightM) ?? false,
+    siteProbe: (name: string) => planetariumMode?.devSiteProbe(name) ?? null,
     exitSurface: () => planetariumMode?.devExitSurface(),
     openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
     setSheetPark: (park: string) => planetariumMode?.devSetSheetPark(park as never),

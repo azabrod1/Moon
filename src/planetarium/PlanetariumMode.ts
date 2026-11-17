@@ -63,6 +63,8 @@ import { loadFittedEphemeris } from './world/ephemerisLoader';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
+  computeMoonGeocentricEquatorialAU,
+  ttJDFromUtcMs,
   computeBodyState,
   computeBodyStateInto,
   type BodyState,
@@ -121,7 +123,7 @@ import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import { bodyShape } from '../astronomy/bodyShape';
 import { projectedOutlineRadius, type SpheroidShape } from '../astronomy/spheroid';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
-import { SUN_LIGHT_BASELINE } from './sunLight';
+import { SUN_LIGHT_BASELINE, SUN_LIGHT_INTENSITY, SUN_LIGHT_LINEAR } from './sunLight';
 import { HighlightMeter, type HighlightContext, type HighlightTelemetry } from './highlightMeter';
 import { EarthSurfaceMaps } from './world/surfaceMaps';
 import { writeShadedAlbedo } from './world/albedoGrade';
@@ -154,6 +156,21 @@ import {
   type PlanetPointVisual,
 } from './planetPoints';
 import { STAR_POINT_MAPPING } from './world/starPointMapping';
+import { SITE_GROUND_ALBEDO_LINEAR, SiteGround } from './world/siteGround';
+import { lunarOrientationQuaternion } from '../astronomy/lunarOrientation';
+import {
+  altAz,
+  createSiteFrame,
+  directionFromAltAz,
+  findAltitudeCrossing,
+  horizonDipDeg,
+  SITE_GAZE_ABOVE_HORIZON_DEG,
+  siteFrame,
+  formatSiteCoordinates,
+  siteRiseText,
+  type Site,
+  type SiteFrame,
+} from './siteView';
 import { planetMagnitudeFromPositions } from '../astronomy/planetMagnitude';
 import { BLOOM_THRESHOLD } from '../app/bloomConfig';
 import {
@@ -1751,6 +1768,34 @@ export class PlanetariumMode {
    *  view, blank everywhere else. */
   private planetPoints: MoonDots | null = null;
   private planetPointsFilled = false;
+  /** The surface view's site (stage 2): where on the landed body the eye
+   *  stands, a few metres up. Session state, cleared with the landing like
+   *  the picked target; null keeps the sliding vantage. Moon only for now
+   *  (devStandAt). */
+  private surfaceSite: Site | null = null;
+  /** The ground under the site (world/siteGround.ts), built at activation so
+   *  the boot warm-up compiles it; drawn only while a site is stood on. */
+  private siteGround: SiteGround | null = null;
+  private surfaceSiteFrameScratch: SiteFrame = createSiteFrame();
+  /** This frame's site frame, or null: the label passes read it to hide what
+   *  is under the horizon. */
+  private surfaceSiteStanding: SiteFrame | null = null;
+  private siteGroundRadiance = new THREE.Color();
+  private tmpSiteSunDirection = new THREE.Vector3();
+  private tmpSiteLook = new THREE.Vector3();
+  private tmpSiteRiseEarth = new THREE.Vector3();
+  private tmpSiteRiseMoon = new THREE.Vector3();
+  private tmpSiteRiseTarget = new THREE.Vector3();
+  private tmpSiteRiseQuaternion = new THREE.Quaternion();
+  private siteRiseFrame: SiteFrame = createSiteFrame();
+  /** The tracked target's altitude at the site this frame (degrees), and
+   *  whether it is below the horizon; null without a site. */
+  private surfaceSiteTargetAltitudeDeg: number | null = null;
+  private surfaceSiteTargetDown = false;
+  /** When the tracked target next rises at the site: [target key, clock it
+   *  was searched from, rise time or null for never]. Searched once per
+   *  target and clock jump, not per frame. */
+  private surfaceSiteRiseCache: { key: string; fromMs: number; riseMs: number | null } | null = null;
   /** The planets plainly visible as points this frame (PLANET_LABEL_MIN_LIGHT),
    *  less the tracked one (the HUD names it): the surface view's labels name
    *  these and no others. */
@@ -3569,6 +3614,10 @@ export class PlanetariumMode {
         this.planetPointsFilled = false;
         this.scene.add(this.planetPoints.points);
       }
+      if (!this.siteGround) {
+        this.siteGround = new SiteGround();
+        this.scene.add(this.siteGround.mesh);
+      }
 
       // The ☰ preferences come from their own keys, with a save from before
       // the keys existed read once more as the fallback and copied onto them.
@@ -5255,6 +5304,11 @@ export class PlanetariumMode {
       this.planetPoints.dispose();
       this.planetPoints = null;
     }
+    if (this.siteGround) {
+      this.scene.remove(this.siteGround.mesh);
+      this.siteGround.dispose();
+      this.siteGround = null;
+    }
 
     if (this.moonLabelContainer) {
       this.moonLabelContainer.style.display = 'none';
@@ -6622,7 +6676,11 @@ export class PlanetariumMode {
       }
       // Named only while the point is plainly there: the glare the shader
       // fades it by (last frame's mask, a sub-pixel lag) included.
-      if (name !== trackedPlanetName) {
+      // A planet under a site's horizon is painted over by the ground; its
+      // name, a DOM label, has to be left out by hand.
+      const underHorizon = this.surfaceSiteStanding !== null
+        && this.tmpSiteLook.copy(position).sub(cameraPosition).dot(this.surfaceSiteStanding.zenith) < 0;
+      if (name !== trackedPlanetName && !underHorizon) {
         let glare = 0;
         if (this.sunGlareMaskParams.active) {
           const screen = projectToScreen(
@@ -20195,9 +20253,23 @@ export class PlanetariumMode {
       }
     }
 
+    // At a site: the target's altitude, or where it went when it is down.
+    const site = this.activeSurfaceSite();
+    if (site && this.surfaceSiteTargetAltitudeDeg !== null) {
+      if (this.surfaceSiteTargetDown) {
+        discNote = null;
+        subText = this.siteBelowHorizonText(site, now);
+        subWarm = null;
+      } else if (discNote) {
+        discNote += ` · ${Math.round(this.surfaceSiteTargetAltitudeDeg)}° up`;
+      }
+    }
+
     const companion = this.swapCompanionTarget();
     const state: SurfaceHudState = {
-      eyebrow: `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
+      eyebrow: site
+        ? `Standing on ${bodyDisplayName(this.landedOn.name)} · ${formatSiteCoordinates(site)}`
+        : `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
       heroRepeats,
       subText,
@@ -20974,6 +21046,8 @@ export class PlanetariumMode {
     this.starGain = 1;
     if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.updatePlanetPointsForCamera(); // blanks the planet points
+    this.siteGround?.setVisible(false);
+    this.surfaceSiteStanding = null;
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceSpotPosed = null;
@@ -21078,6 +21152,155 @@ export class PlanetariumMode {
    * track the target while tracking is on. Runs at the end of updateLanded
    * so this frame's moon positions are already in place.
    */
+  /** Under the site's horizon: a sky direction (from the scene's origin,
+   *  where the landed body stands) below level by more than nothing at all —
+   *  the dip of a few metres is a twentieth of a degree. */
+  private readonly siteBelowHorizon = (direction: THREE.Vector3): boolean =>
+    this.surfaceSiteStanding !== null && direction.dot(this.surfaceSiteStanding.zenith) < 0;
+
+  /** The surface view's site, while the landing is on its body. */
+  private activeSurfaceSite(): Site | null {
+    const site = this.surfaceSite;
+    if (!site || !this.landedOn || this.landedOn.name !== site.body) return null;
+    return site;
+  }
+
+  /** The landed body's orientation as drawn (the Moon's from the lunar
+   *  model via the moon seam, a planet's from its pole and spin). */
+  private landedBodyOrientation(): THREE.Quaternion | null {
+    const landed = this.landedOn;
+    if (!landed) return null;
+    if (landed.type === 'moon') return this.moonMeshByName.get(landed.name)?.mesh.quaternion ?? null;
+    return this.planetMeshByName.get(landed.name)?.group.quaternion ?? null;
+  }
+
+  /** Where the tracked target stands at the site: its altitude, and whether
+   *  all of its disc is under the horizon. */
+  private measureSiteTarget(standing: SiteFrame, site: Site, targetPos: THREE.Vector3): void {
+    const toTarget = this.tmpSiteLook.copy(targetPos).sub(this.camera.position);
+    const distance = toTarget.length();
+    const aim = altAz(toTarget, standing);
+    const radiusAU = this.surfaceTargetRadiusAU(this.surfaceTarget);
+    const angularRadiusDeg = distance > radiusAU ? Math.asin(radiusAU / distance) * RAD2DEG : 90;
+    const dipDeg = horizonDipDeg(this.getLandedBodyRadiusAU() * KM_PER_AU, site.heightKm);
+    this.surfaceSiteTargetAltitudeDeg = aim.altitudeDeg;
+    this.surfaceSiteTargetDown = aim.altitudeDeg + angularRadiusDeg < -dipDeg;
+  }
+
+  /** Track from a site: the horizon level (up is the zenith), and a target
+   *  under it never looked at through the ground — the gaze holds a little
+   *  above the horizon at its azimuth while the HUD says where it went. */
+  private aimFromSite(standing: SiteFrame, forward: THREE.Vector3): void {
+    const aim = altAz(forward, standing);
+    const lookAltitude = this.surfaceSiteTargetDown ? SITE_GAZE_ABOVE_HORIZON_DEG : aim.altitudeDeg;
+    const look = directionFromAltAz(lookAltitude, aim.azimuthDeg, standing, this.tmpSiteLook);
+    this.camera.up.copy(Math.abs(look.dot(standing.zenith)) > 0.999 ? standing.north : standing.zenith);
+    this.camera.lookAt(this.tmpSiteSunDirection.copy(this.camera.position).add(look));
+  }
+
+  /** The ground under the site, this frame: the Sun's direction from the eye,
+   *  the horizon's dip, and the regolith's radiance in the scene's own units
+   *  (albedo × SUN_LIGHT_INTENSITY / π × the Sun's colour, as a white Lambert
+   *  disc under the Sun reads), dimmed by the body's eclipse shade. */
+  private updateSiteGround(standing: SiteFrame | null, site: Site | null): void {
+    const ground = this.siteGround;
+    if (!ground) return;
+    const albedo = site ? SITE_GROUND_ALBEDO_LINEAR[site.body] : undefined;
+    if (!standing || !site || !albedo || !this.solarSystem) {
+      ground.setVisible(false);
+      return;
+    }
+    const toSun = this.tmpSiteSunDirection.copy(this.solarSystem.sun.position).sub(this.camera.position);
+    const shade = this.landedOn?.type === 'moon' ? this.moonMeshByName.get(this.landedOn.name)?.shadeSmoothed ?? 1 : 1;
+    const scale = (SUN_LIGHT_INTENSITY / Math.PI) * shade;
+    this.siteGroundRadiance.setRGB(
+      albedo[0] * SUN_LIGHT_LINEAR[0] * scale,
+      albedo[1] * SUN_LIGHT_LINEAR[1] * scale,
+      albedo[2] * SUN_LIGHT_LINEAR[2] * scale,
+    );
+    const dipRad = horizonDipDeg(this.getLandedBodyRadiusAU() * KM_PER_AU, site.heightKm) * DEG2RAD;
+    ground.update(standing.zenith, toSun, dipRad, this.siteGroundRadiance);
+    ground.setVisible(true);
+  }
+
+  /** The tracked target's altitude at the site at any instant, from the
+   *  astronomy seams rather than the scene: the Moon (the only site body so
+   *  far), the Sun, Earth and the planets. NaN for a target it cannot pose. */
+  private siteTargetAltitudeAt(site: Site, radiusKm: number, target: SurfaceTarget, utcMs: number): number {
+    if (site.body !== 'Moon') return Number.NaN;
+    const earthBody = PLANETS.find((planet) => planet.name === 'Earth');
+    if (!earthBody) return Number.NaN;
+    const jdTT = ttJDFromUtcMs(utcMs);
+    const earthPosition = computeBodyPositionAU(earthBody, utcMs, this.tmpSiteRiseEarth);
+    const moonPosition = computeMoonGeocentricEquatorialAU(jdTT, this.tmpSiteRiseMoon).add(earthPosition);
+    const frame = siteFrame(site, radiusKm, lunarOrientationQuaternion(jdTT, this.tmpSiteRiseQuaternion), this.siteRiseFrame);
+    const eye = moonPosition.addScaledVector(frame.offsetKm, 1 / KM_PER_AU);
+    let targetPosition: THREE.Vector3;
+    if (target.kind === 'sun' || target.kind === 'sun-from-spot') targetPosition = this.tmpSiteRiseTarget.set(0, 0, 0);
+    else if (target.kind === 'parent') targetPosition = earthPosition;
+    else if (target.kind === 'planet') {
+      const body = PLANETS.find((planet) => planet.name === target.planetName);
+      if (!body) return Number.NaN;
+      targetPosition = computeBodyPositionAU(body, utcMs, this.tmpSiteRiseTarget);
+    } else return Number.NaN;
+    return altAz(this.tmpSiteRiseTarget.copy(targetPosition).sub(eye), frame).altitudeDeg;
+  }
+
+  /** The HUD's line for a target under the site's horizon: when it next
+   *  rises (searched an hour at a time for a month, once per target and
+   *  clock jump), or that it does not. */
+  private siteBelowHorizonText(site: Site, now: number): string {
+    const name = this.surfaceTargetDisplayName(this.surfaceTarget);
+    const key = surfaceTargetKey(this.surfaceTarget);
+    const cache = this.surfaceSiteRiseCache;
+    const fresh = cache && cache.key === key && now >= cache.fromMs && (cache.riseMs === null
+      ? now - cache.fromMs < 3_600_000
+      : now < cache.riseMs);
+    if (!fresh) {
+      const radiusKm = this.getLandedBodyRadiusAU() * KM_PER_AU;
+      const dipDeg = horizonDipDeg(radiusKm, site.heightKm);
+      const riseMs = findAltitudeCrossing(
+        (utcMs) => this.siteTargetAltitudeAt(site, radiusKm, this.surfaceTarget, utcMs) + dipDeg,
+        now,
+        0,
+        'rise',
+        3_600_000,
+        24 * 30,
+      );
+      this.surfaceSiteRiseCache = { key, fromMs: now, riseMs };
+    }
+    const label = name.charAt(0).toUpperCase() + name.slice(1);
+    return `${label} is below the horizon — ${siteRiseText(now, this.surfaceSiteRiseCache!.riseMs)}`;
+  }
+
+  /** DEV: stand at a site on the Moon (latitude, east longitude, eye height
+   *  in metres) and look up; null clears it. True when the site took. */
+  devStandAt(latitudeDeg: number | null, longitudeDeg = 0, heightM = 2): boolean {
+    if (latitudeDeg === null) {
+      this.surfaceSite = null;
+      return true;
+    }
+    if (this.landedOn?.name !== 'Moon') return false;
+    this.surfaceSite = { body: 'Moon', latitudeDeg, longitudeDeg, heightKm: heightM / 1000 };
+    this.surfaceSiteRiseCache = null;
+    this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
+    return true;
+  }
+
+  /** DEV: a body's altitude and azimuth at the site, read off the drawn
+   *  objects (the camera, the landed body's drawn orientation, the body's
+   *  drawn position) — the wiring under test, not the astronomy. */
+  devSiteProbe(name: string): { altitudeDeg: number; azimuthDeg: number } | null {
+    const standing = this.surfaceSiteStanding;
+    if (!standing || !this.solarSystem) return null;
+    const position = name === 'Sun'
+      ? this.solarSystem.sun.position
+      : this.planetMeshByName.get(name)?.group.position;
+    if (!position) return null;
+    const seen = altAz(this.tmpSiteLook.copy(position).sub(this.camera.position), standing);
+    return { altitudeDeg: seen.altitudeDeg, azimuthDeg: seen.azimuthDeg };
+  }
+
   private updateSurfaceCamera(dt: number, willDraw = true) {
     const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
     if (!targetPos) {
@@ -21090,9 +21313,18 @@ export class PlanetariumMode {
 
     const radiusAU = this.getLandedBodyRadiusAU(); // true radius — planetScale is 1
     const vantage = this.tmpSurfaceVantage;
+    // A site: the eye stands where it was put, carried round with the body's
+    // spin; the sliding vantage and the eclipse spot step aside.
+    const site = this.activeSurfaceSite();
+    const bodyOrientation = site ? this.landedBodyOrientation() : null;
+    const standing = site && bodyOrientation
+      ? siteFrame(site, radiusAU * KM_PER_AU, bodyOrientation, this.surfaceSiteFrameScratch)
+      : null;
+    this.surfaceSiteStanding = standing;
+    if (standing) vantage.copy(standing.offsetKm).multiplyScalar(1 / KM_PER_AU);
     let spotPosed = false;
     const target = this.surfaceTarget;
-    if (target.kind === 'sun-from-spot' && this.landedOn?.type === 'planet') {
+    if (!standing && target.kind === 'sun-from-spot' && this.landedOn?.type === 'planet') {
       // Stand still and let the eclipse come to you: while the eclipse is the
       // sky's story, the vantage is the peak's shadow-spot point carried in
       // the planet's rotating frame. Re-deriving the point from the live
@@ -21123,7 +21355,7 @@ export class PlanetariumMode {
       this.noteSunViewDiscontinuity();
     }
     this.surfaceSpotPosed = spotPosed;
-    if (!spotPosed) {
+    if (!spotPosed && !standing) {
       // Moons: refresh the orbit-normal pole reference (planets cached theirs
       // at landing). Cheap — one element propagation; Earth's Moon is a copy.
       if (this.landedOn?.type === 'moon') {
@@ -21183,11 +21415,20 @@ export class PlanetariumMode {
     // tracking never starts with a roll snap.
     this.surfaceAimLiftAppliedPx +=
       (this.surfaceAimLiftGoalPx - this.surfaceAimLiftAppliedPx) * (1 - Math.exp(-dt / SURFACE_AIM_EASE_S));
+    if (standing && site) this.measureSiteTarget(standing, site, targetPos);
+    else {
+      this.surfaceSiteTargetAltitudeDeg = null;
+      this.surfaceSiteTargetDown = false;
+    }
     if (this.surfaceTracking) {
       const forward = this.tmpSurfaceZenith.copy(targetPos).sub(this.camera.position);
       if (forward.lengthSq() > 0) forward.normalize();
-      this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
-      this.camera.lookAt(targetPos);
+      if (standing) {
+        this.aimFromSite(standing, forward);
+      } else {
+        this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
+        this.camera.lookAt(targetPos);
+      }
       // The lift: turn the camera down by the view angle that shows the
       // target that far up the finished frame, through the lens map the
       // picture is drawn with. Recomputed every frame from the live FOV, so a
@@ -21211,12 +21452,18 @@ export class PlanetariumMode {
     // refresh matrixWorldInverse until render time, so a projection off the raw
     // lookAt/position would lag a frame while tracking or dragging the look.
     this.camera.updateMatrixWorld();
+    this.updateSiteGround(standing, site);
 
     // From here down is presentation: the HUD's own bracket, reticle and
     // chevron sit on the target's projection, so they are written on the
     // ticks that draw and on no others. A bracket placed on a tick nothing
     // drew would sit one period away from the disc under it.
     if (!willDraw) return;
+    // Under a site's horizon there is nothing to mark: the HUD says so.
+    if (standing && this.surfaceSiteTargetDown) {
+      this.observatoryHud.updateMarker({ mode: 'hidden' });
+      return;
+    }
 
     // Marker over the tracked target (per-frame screen projection): brackets
     // for a resolvable disc, the hairline reticle for sub-pixel specks (the
@@ -21802,6 +22049,7 @@ export class PlanetariumMode {
     // target both describe the vantage being left behind.
     this.closeSurfaceTargetMenu();
     this.surfacePickedTarget = null;
+    this.surfaceSite = null;
     this.landedOn = target;
     // The landed system's moons are about to be drawn up close: mark them
     // warm-eligible (late-arriving photos/normals queue on arrival) and queue
@@ -22340,6 +22588,7 @@ export class PlanetariumMode {
     // Takeoff supersedes the map (a commit re-enters here); no restore.
     this.closeMap({ restore: false });
     this.surfacePickedTarget = null;
+    this.surfaceSite = null;
     // Teardown path: restore FOV/controls/labels instantly — the code below
     // reconfigures the controls and camera for flight anyway.
     this.exitSurfaceView(true);
@@ -22537,6 +22786,7 @@ export class PlanetariumMode {
         this.camera,
         this.renderer.domElement.clientWidth,
         this.renderer.domElement.clientHeight,
+        this.surfaceSiteStanding ? this.siteBelowHorizon : undefined,
       );
     }
     this.updateOrbitLineVisibility();

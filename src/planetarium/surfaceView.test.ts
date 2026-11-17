@@ -682,6 +682,9 @@ describe('Look-at menu choices', () => {
       planet('Jupiter', -2.4),
     ]);
     expect(ordered.map((c) => c.name)).toEqual(['the Sun', 'Moon', 'Venus', 'Jupiter', 'Saturn']);
+    // Moons too small to resolve pool below the planets.
+    const fromIo = orderSurfaceTargetChoices([moon('Kale', 0.001), planet('Saturn', 0.4), moon('Europa', 0.5)]);
+    expect(fromIo.map((c) => c.name)).toEqual(['Europa', 'Saturn', 'Kale']);
     expect(planet('Neptune', 7.8).resolvable).toBe(true);
     expect(formatMagnitude(-2.43)).toBe('mag −2.4');
     expect(formatMagnitude(0.04)).toBe('mag 0.0');

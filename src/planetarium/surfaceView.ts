@@ -810,19 +810,30 @@ export function surfaceTargetKey(target: SurfaceTarget): string {
 /**
  * Look-at menu order: pinned leads first — the parent (only present standing
  * on a moon), then the Sun — then the moons by descending apparent size, so
- * a big system reads Galileans-first with the irregular specks pooled at the
- * scrollable bottom, then the other planets, brightest first. Equal-size
+ * a big system reads Galileans-first, then the other planets, brightest
+ * first, and the moons too small to resolve pooled at the scrollable bottom
+ * below them: from Io, Venus and Saturn come before a dozen specks. Equal-size
  * moons keep input order.
  */
 export function orderSurfaceTargetChoices(choices: SurfaceTargetChoice[]): SurfaceTargetChoice[] {
-  const rank = (c: SurfaceTargetChoice) =>
-    c.target.kind === 'parent' ? 0 : c.target.kind === 'moon' ? 2 : c.target.kind === 'planet' ? 3 : 1;
+  const rank = (c: SurfaceTargetChoice) => {
+    switch (c.target.kind) {
+      case 'parent':
+        return 0;
+      case 'moon':
+        return c.resolvable ? 2 : 4;
+      case 'planet':
+        return 3;
+      default:
+        return 1;
+    }
+  };
   return [...choices].sort((a, b) => {
     const ra = rank(a);
     const rb = rank(b);
     if (ra !== rb) return ra - rb;
     if (ra === 3) return (a.magnitude ?? Infinity) - (b.magnitude ?? Infinity);
-    return ra === 2 ? b.discDeg - a.discDeg : 0;
+    return ra === 2 || ra === 4 ? b.discDeg - a.discDeg : 0;
   });
 }
 

@@ -3377,19 +3377,23 @@ export class PlanetariumMode {
         if (this.cloudFieldStart) await this.cloudFieldStart;
         performance.mark('plm:solar-system:start');
         try {
-          // Every body's position comes from the fitted ephemeris, and the
-          // build below samples the orbit lines from those positions, so it
-          // waits for the file (main.ts kicked the load at init; the loader
-          // never rejects, falling back to the analytic models instead).
-          await loadFittedEphemeris();
           // The star catalog rides the same gate as the solar system: awaiting
           // it HERE (not later, next to the starfield build) keeps the star data
           // in place before anything draws with it. main.ts kicked the load at
           // init; this await usually finds it already settled.
+          //
+          // Every body's position comes from the fitted ephemeris, and the
+          // build samples the orbit lines from those positions, so the build
+          // waits for that file (also kicked at init; its loader never
+          // rejects, falling back to the analytic models instead). Chained
+          // onto the build alone, so a star catalog that fails still fails
+          // the gate at once, not after the ephemeris has had its full wait.
           const [solarSystem] = await Promise.all([
-            createSolarSystem((progress) => {
-              reportActivationProgress(progress.completedUnits);
-            }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
+            loadFittedEphemeris().then(() =>
+              createSolarSystem((progress) => {
+                reportActivationProgress(progress.completedUnits);
+              }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
+            ),
             loadBrightStarCatalog(),
           ]);
           this.solarSystem = solarSystem;

@@ -15,24 +15,27 @@
  * installed or once the ladder gives up.
  *
  * The first attempt drinks the boot fetch-warm started at HTML parse
- * (index.html), which cannot be aborted from here and is abandoned at its
- * deadline. The deadlines are sized for the file on a slow phone link (1.8 MB
- * at 1 Mbit/s is 15 s), well beyond the star catalog's. Worst case about
- * 25 + 1 + 20 = 46 s before the fallback, on a link that delivers nothing.
+ * (index.html). A download is judged by its progress, not by a deadline: on
+ * a slow phone link it shares the line with the boot textures, and a fixed
+ * timeout would abandon a download that was still arriving and start a
+ * second one against it. It is given up when no bytes have arrived for
+ * STALL_MS, or past TOTAL_MS (1.8 MB in 2 minutes is 120 kbit/s). On a link
+ * that delivers nothing the fallback comes after 15 + 1 + 15 = 31 s; the star
+ * catalog's own ladder has failed the boot well before that.
  */
 import { FITTED_EPHEMERIS_FILE, parseFittedEphemeris, setFittedEphemeris } from '../../astronomy/fittedEphemeris';
 import { takeBootWarmResponse } from './textureBitmapLoader';
 import { debugWarn } from '../../shared/debug';
 
-const WARM_ATTEMPT_MS = 25_000;
-const RETRY_TIMEOUT_MS = 20_000;
+const STALL_MS = 15_000;
+const TOTAL_MS = 120_000;
 const RETRY_BACKOFF_MS = [1_000];
 
 let loadPromise: Promise<void> | null = null;
 
 function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new Error(`${what} after ${ms}ms`)), ms);
     promise.then(
       (value) => { clearTimeout(timer); resolve(value); },
       (err) => { clearTimeout(timer); reject(err); },
@@ -40,25 +43,43 @@ function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise
   });
 }
 
-async function fetchOnce(url: string, attempt: number): Promise<ArrayBuffer> {
-  if (attempt === 0) {
-    return withDeadline((async () => {
-      const response = await (takeBootWarmResponse(url) ?? fetch(url));
-      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-      return response.arrayBuffer();
-    })(), WARM_ATTEMPT_MS, 'ephemeris warm fetch');
+/** A response's body, read chunk by chunk: given up only when a chunk takes
+ *  longer than STALL_MS to arrive or the whole read passes TOTAL_MS. */
+async function readBody(response: Response): Promise<ArrayBuffer> {
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${response.url}`);
+  const reader = response.body?.getReader();
+  if (!reader) return withDeadline(response.arrayBuffer(), TOTAL_MS, 'ephemeris read took too long');
+  const startedMs = performance.now();
+  const chunks: Uint8Array[] = [];
+  let byteCount = 0;
+  try {
+    for (;;) {
+      const { done, value } = await withDeadline(reader.read(), STALL_MS, 'ephemeris download stalled');
+      if (done) break;
+      chunks.push(value);
+      byteCount += value.byteLength;
+      if (performance.now() - startedMs > TOTAL_MS) throw new Error('ephemeris download too slow');
+    }
+  } catch (err) {
+    void reader.cancel().catch(() => {});
+    throw err;
   }
+  const bytes = new Uint8Array(byteCount);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes.buffer;
+}
+
+async function fetchOnce(url: string, attempt: number): Promise<ArrayBuffer> {
   // A retry bypasses the HTTP cache: if the first attempt died parsing a
   // complete-but-corrupt 200, the cache may hold those same bytes.
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), RETRY_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { cache: 'reload', signal: abort.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-    return await response.arrayBuffer();
-  } finally {
-    clearTimeout(timer);
-  }
+  const request = attempt === 0
+    ? takeBootWarmResponse(url) ?? fetch(url)
+    : fetch(url, { cache: 'reload' });
+  return readBody(await withDeadline(request, STALL_MS, 'ephemeris request stalled'));
 }
 
 /** Load and install the ephemeris. Idempotent; never rejects. */

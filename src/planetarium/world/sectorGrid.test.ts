@@ -248,6 +248,9 @@ describe('sector geometry', () => {
     for (let i = 0; i < basePos.count; i++) {
       byPos.set(key(basePos.getX(i), basePos.getY(i), basePos.getZ(i)), [baseUv.getX(i), baseUv.getY(i)]);
     }
+    // Vertices that break either rule, gathered and held to none once: an
+    // expect per coordinate was 13,000 calls.
+    const wrong: string[] = [];
     for (const s of [{ c: 1, r: 1 }, { c: 6, r: 2 }]) {
       const geo = sectorSphereGeometry(R, G, s, 32);
       const pos = geo.getAttribute('position');
@@ -256,19 +259,19 @@ describe('sector geometry', () => {
       for (let i = 0; i < pos.count; i++) {
         const u = uv.getX(i);
         const v = uv.getY(i);
-        expect(u).toBeGreaterThanOrEqual(rect.u0 - 1e-12);
-        expect(u).toBeLessThanOrEqual(rect.u1 + 1e-12);
-        expect(v).toBeGreaterThanOrEqual(rect.v0 - 1e-12);
-        expect(v).toBeLessThanOrEqual(rect.v1 + 1e-12);
+        const inRect = u >= rect.u0 - 1e-12 && u <= rect.u1 + 1e-12 && v >= rect.v0 - 1e-12 && v <= rect.v1 + 1e-12;
+        if (!inRect && wrong.length < 10) wrong.push(`sector ${s.c}_${s.r} vertex ${i}: uv (${u}, ${v}) outside its rect`);
         // Interior vertices (not on the seam column, where the base sphere's
-        // duplicate seam vertex holds u=1) match the base sphere's uv exactly.
+        // duplicate seam vertex holds u=1) match the base sphere's uv exactly:
+        // toBeCloseTo's 12 digits, closer than half of 1e-12.
         const b = byPos.get(key(pos.getX(i), pos.getY(i), pos.getZ(i)));
         if (b && b[0] < 1 && u < 1) {
-          expect(u).toBeCloseTo(b[0], 12);
-          expect(v).toBeCloseTo(b[1], 12);
+          const matches = Math.abs(b[0] - u) < 0.5e-12 && Math.abs(b[1] - v) < 0.5e-12;
+          if (!matches && wrong.length < 10) wrong.push(`sector ${s.c}_${s.r} vertex ${i}: uv (${u}, ${v}), the base sphere's (${b[0]}, ${b[1]})`);
         }
       }
     }
+    expect(wrong).toEqual([]);
   });
 
   it('keeps three\'s half-texel pole shift on the polar rows only', () => {
@@ -301,15 +304,19 @@ describe('sector directions and extents', () => {
 
   it('bounding sphere contains every vertex of the sector geometry', () => {
     const R = 2.5;
+    // Vertices outside their sector's sphere, gathered and held to none once:
+    // an expect per vertex was 35,000 calls.
+    const outside: string[] = [];
     for (const s of allSectors()) {
       const centre = new THREE.Vector3();
       const bs = sectorBoundingSphere(G, s, R, centre);
       const pos = sectorSphereGeometry(R, G, s, 32).getAttribute('position');
       for (let i = 0; i < pos.count; i++) {
         const d = Math.hypot(pos.getX(i) - bs.centre.x, pos.getY(i) - bs.centre.y, pos.getZ(i) - bs.centre.z);
-        expect(d).toBeLessThanOrEqual(bs.radius * (1 + 1e-9));
+        if (!(d <= bs.radius * (1 + 1e-9)) && outside.length < 10) outside.push(`sector ${s.c}_${s.r} vertex ${i}: ${d} from the centre, radius ${bs.radius}`);
       }
     }
+    expect(outside).toEqual([]);
   });
 });
 

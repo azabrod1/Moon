@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   blurMono, coverageFill, detailDeficit, findEdges, latScaledRadii, levelEdges, smearRunsOf,
   traceCurves, valueNoise, wrappingCell,
-} from '../../tools/surfaceGrain.mjs';
+} from './surfaceGrain.mjs';
 
 // tools/surfaceGrain.mjs is what gives the moon maps their texture: it decides
 // where a mosaic stopped carrying detail, how much grain that ground is short

@@ -162,6 +162,10 @@ describe('the box’s taps against the downsample’s rule', () => {
   };
 
   it('reads every texel the downsample read, at the weight it read it', () => {
+    // The pixels that disagree are gathered and held to none once, the first
+    // ten named: an expect per texel was 157,000 calls and most of the time.
+    const disagreements: string[] = [];
+    const note = (line: string) => { if (disagreements.length < 10) disagreements.push(line); };
     for (const [inSize, outSize] of PAIRS) {
       for (const filter of FILTERS) {
         const taps = fusedBoxTaps(inSize, outSize, filter);
@@ -170,26 +174,36 @@ describe('the box’s taps against the downsample’s rule', () => {
           const want = fetched(ref.weights.map((w, k) => [Math.min(Math.max(ref.base + k - 1, 0), inSize - 1), w]));
           const got = fusedBoxAxis(inSize, outSize, out, filter, taps);
           const have = fetched(got.weights.map((w, k) => [got.fetch[k], w]));
-          const label = `${inSize}/${outSize} ${filter} at ${out}`;
-          expect([...have.keys()].sort(), label).toEqual([...want.keys()].sort());
-          for (const [i, w] of want) expect(have.get(i)!, label).toBeCloseTo(w, 12);
+          const haveTexels = [...have.keys()].sort();
+          const wantTexels = [...want.keys()].sort();
+          if (haveTexels.length !== wantTexels.length || haveTexels.some((texel, n) => !Object.is(texel, wantTexels[n]))) {
+            note(`${inSize}/${outSize} ${filter} at ${out}: reads texels ${haveTexels}, the downsample ${wantTexels}`);
+            continue;
+          }
+          // toBeCloseTo's 12 digits: closer than half of 1e-12.
+          for (const [i, w] of want) {
+            if (!(Math.abs(w - have.get(i)!) < 0.5e-12)) note(`${inSize}/${outSize} ${filter} at ${out}: texel ${i} at ${have.get(i)}, the downsample's ${w}`);
+          }
         }
       }
     }
+    expect(disagreements).toEqual([]);
   });
 
   it('reads two taps per axis where the ratio is 1.5 or 1.25, none of them empty', () => {
     // Four finishes a pixel at High and at Dynamic's 2.5 on an even window,
     // and no tap that carries nothing.
+    const wrong: string[] = [];
     for (const [inSize, outSize] of [[5184, 3456], [3351, 2234], [4320, 3456], [3, 2], [5, 4]] as const) {
       expect(fusedBoxTaps(inSize, outSize, 'box')).toBe(2);
       for (let out = 0; out < outSize; out++) {
         const { weights } = fusedBoxAxis(inSize, outSize, out, 'box', 2);
-        expect(weights[0]).toBeGreaterThan(0);
-        expect(weights[1]).toBeGreaterThan(0);
-        expect(weights[2]).toBe(0);
+        if (!(weights[0] > 0 && weights[1] > 0 && Object.is(weights[2], 0)) && wrong.length < 10) {
+          wrong.push(`${inSize}/${outSize} at ${out}: weights ${weights.join(', ')}`);
+        }
       }
     }
+    expect(wrong).toEqual([]);
   });
 
   it('keeps the downsample’s three where two would miss a texel or float could', () => {

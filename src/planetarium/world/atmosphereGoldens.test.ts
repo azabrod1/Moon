@@ -207,14 +207,14 @@ describe('the atmosphere goldens', () => {
       // straight past it.
       expect(golden.limbScan, name).toHaveLength(41);
       expect(golden.limbScanX, name).toHaveLength(41);
-      for (const rgb of [...golden.samples, ...golden.limbScan]) {
-        expect(rgb).toHaveLength(3);
-        for (const channel of rgb) {
-          expect(Number.isInteger(channel)).toBe(true);
-          expect(channel).toBeGreaterThanOrEqual(0);
-          expect(channel).toBeLessThanOrEqual(255);
-        }
+      // Every sample three whole bytes, the ones that are not gathered and held
+      // to none once: an expect per channel was 21,000 calls.
+      const notBytes: string[] = [];
+      for (const [n, rgb] of [...golden.samples, ...golden.limbScan].entries()) {
+        const bytes = rgb.length === 3 && rgb.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+        if (!bytes && notBytes.length < 10) notBytes.push(`sample ${n}: ${JSON.stringify(rgb)}`);
       }
+      expect(notBytes, name).toEqual([]);
     }
   });
 

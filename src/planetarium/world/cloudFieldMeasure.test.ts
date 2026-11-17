@@ -224,21 +224,46 @@ describe('a released page', () => {
     console.log(`release safety (${label}): ${poses} poses, ${run.checkedPages} released pages in frame, ${run.checkedPoints} points, lowest in-frame T ${run.lowestT.toFixed(2)}`);
   }
 
+  const keepN = Number(env('CLOUD_FIELD_KEEP_N') ?? CLOUD_FIELD_KEEP_GRID);
+  const keepMargin = env('CLOUD_FIELD_KEEP_MARGIN') !== undefined ? Number(env('CLOUD_FIELD_KEEP_MARGIN')) : undefined;
+  const release = Number(env('CLOUD_FIELD_RELEASE') ?? CLOUD_FIELD_RELEASE_TEXELS);
+  const raysEnv = env('CLOUD_FIELD_KEEP_RAYS');
+  const keepRays: [number, number] = raysEnv === undefined ? [...CLOUD_FIELD_KEEP_RAYS] as [number, number]
+    : raysEnv === '0' ? [0, 0] : raysEnv.split(',').map(Number) as [number, number];
+  const referenceKeeps = (cam: FieldCamera) => cloudPageKeepTexelsAll(cam, keepN, keepMargin, keepRays);
+
   it('draws with no weight anywhere it is in frame, over random poses, rungs and lenses', () => {
-    const keepN = Number(env('CLOUD_FIELD_KEEP_N') ?? CLOUD_FIELD_KEEP_GRID);
-    const keepMargin = env('CLOUD_FIELD_KEEP_MARGIN') !== undefined ? Number(env('CLOUD_FIELD_KEEP_MARGIN')) : undefined;
-    const release = Number(env('CLOUD_FIELD_RELEASE') ?? CLOUD_FIELD_RELEASE_TEXELS);
-    const raysEnv = env('CLOUD_FIELD_KEEP_RAYS');
-    const keepRays: [number, number] = raysEnv === undefined ? [...CLOUD_FIELD_KEEP_RAYS] as [number, number]
-      : raysEnv === '0' ? [0, 0] : raysEnv.split(',').map(Number) as [number, number];
-    expectSafe(releaseSafety(poses, seed, (cam) => cloudPageKeepTexelsAll(cam, keepN, keepMargin, keepRays), release), 'reference');
+    expectSafe(releaseSafety(poses, seed, referenceKeeps, release), 'reference');
   }, timeout);
 
-  it('...and so does every page the per-frame measure releases', () => {
+  it('...and so does every page the per-frame measure releases, because the reference released it too', () => {
+    // The per-frame measure's own sweep would be the battery above run again:
+    // the same poses, the same 25 x 25 points on a page, the same weights, and
+    // only the choice of pages could differ. So it is enough that every page
+    // the per-frame measure releases, the reference released too, on the
+    // battery's own poses: then the battery has already checked it. Run in
+    // full, the two sweeps logged the same 5,835 pages and 2,708,234 points;
+    // this is a tenth of the cost of the second.
+    const r = rng(seed);
     const measure = new CloudFieldMeasure();
     const sun: V = [1, 0, 0];
-    expectSafe(releaseSafety(poses, seed, (cam) => { measure.measure(cam, sun); return measure.keepTexels; },
-      CLOUD_FIELD_RELEASE_TEXELS), 'per-frame');
+    let released = 0;
+    const unchecked: string[] = [];
+    for (let pose = 0; pose < poses; pose++) {
+      const { cam } = randomPose(r);
+      const reference = referenceKeeps(cam);
+      measure.measure(cam, sun);
+      for (let p = 0; p < reference.length; p++) {
+        if (!(measure.keepTexels[p] > CLOUD_FIELD_RELEASE_TEXELS)) continue;
+        released += 1;
+        if (!(reference[p] > release) && unchecked.length < 5) {
+          unchecked.push(`pose ${pose} page ${p}: per-frame keep ${measure.keepTexels[p]}, reference ${reference[p]}`);
+        }
+      }
+    }
+    expect(unchecked).toEqual([]);
+    expect(released).toBeGreaterThan(poses);
+    console.log(`release safety (per-frame): ${released} pages released over ${poses} poses, every one released by the reference too`);
   }, timeout);
 });
 

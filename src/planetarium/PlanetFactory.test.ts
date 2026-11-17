@@ -60,9 +60,9 @@ import {
   releaseDue,
   releaseDwellMs,
   releaseExpired,
-  releaseLandsOnContainer,
+  releaseCandidate,
   releaseOffer,
-  RestoreQueue,
+  SwapSlot,
   abandonReleaseWithoutReason,
   releaseTargetTier,
   releaseUpgradeSource,
@@ -130,6 +130,9 @@ import {
   withMaxTextureSize,
   type StandardUpgrade,
 } from './testing/upgradeHarness';
+
+/** What takeRestoreRefetch took: the handle, and the reason it was taken for. */
+const took = (r: ReturnType<typeof takeRestoreRefetch>) => r && { up: r.entry.up, reason: r.reason };
 
 beforeEach(() => {
   withMaxTextureSize(8192);
@@ -1991,20 +1994,56 @@ describe('the ladder against the sector memory envelope', () => {
    *  the ladder at all and the two with a webp twin cost four times as much.
    *  `appliedTierGpuBytes` reads the texture, so the maps here are what the
    *  rungs really put on the GPU. */
-  function ladderWorstCaseBytes(touch: boolean, transcoder: boolean): number {
+  type Held = Array<{ up: TextureUpgrade; material: THREE.MeshStandardMaterial }>;
+  /** The handles behind that, each with its material. `bandFor` gives each
+   *  key's screen fraction for its release band (0, far away, by default),
+   *  tracked at time 0. */
+  function heaviestLadder(touch: boolean, transcoder: boolean, bandFor: (key: string) => number = () => 0): Held {
     bindKtx2TierLoader(transcoder ? () => {} : null, transcoder);
     withMaxTextureSize(16384, touch);
-    let bytes = 0;
+    const held: Held = [];
     for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
-      const material = new THREE.MeshStandardMaterial();
-      trackMaterial(material);
+      const material = trackMaterial(new THREE.MeshStandardMaterial());
       const up = makeTextureUpgrade(key, material);
       if (!up) continue; // every rung of this key ships only as a container
       up.appliedTier = up.effectiveMaxTier;
       material.map = rungTexture(key, up.appliedTier);
-      bytes += appliedTierGpuBytes(up);
+      trackReleaseBand(up, bandFor(key), 0);
+      held.push({ up, material });
     }
-    return bytes;
+    return held;
+  }
+  const bytesOf = (held: Held) => held.reduce((sum, h) => sum + appliedTierGpuBytes(h.up), 0);
+  function ladderWorstCaseBytes(touch: boolean, transcoder: boolean): number {
+    return bytesOf(heaviestLadder(touch, transcoder));
+  }
+
+  /** The tiles' shortfall planning one release at a time over `held` on the
+   *  desktop row, pool held, every swap landing at once, until `done` or
+   *  nothing may go. Returns what it took, as "key tier". Every release must
+   *  drop to a container: never a webp, never the boot map. */
+  function releaseUntil(held: Held, done: () => boolean): string[] {
+    const profile = UNMEASURED_DESKTOP_PROFILE;
+    const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
+    const nowMs = 60_000; // past every dwell, compressed or not
+    const taken: string[] = [];
+    while (!done()) {
+      const candidates = held.flatMap((h, i) => {
+        const low = releaseOffer(h.up, nowMs, false);
+        return low ? [releaseCandidate(h.up, low, String(i), i)] : [];
+      });
+      const victim = planRelease(candidates, {
+        ladderBytes: bytesOf(held), envelopeBytes: profile.envelopeBytes - pool, containersOnly: true,
+      });
+      if (!victim) break;
+      const { up, material } = held[Number(victim.id)];
+      const low = releaseTargetTier(up)!;
+      expect(`${up.key} -> ${resolveTierFile(up.key, low)}`).toMatch(/\.ktx2$/);
+      taken.push(`${up.key} ${up.appliedTier}`);
+      up.appliedTier = low; // the swap lands
+      material.map = rungTexture(up.key, low);
+    }
+    return taken;
   }
 
   it('sums the heaviest a desktop ladder can be, and what that leaves the tiles', () => {
@@ -2079,46 +2118,15 @@ describe('the ladder against the sector memory envelope', () => {
 
   it('gives out-of-band containers back until the tiles hold their working set', () => {
     // The heaviest desktop ladder above, every body far away and past its
-    // dwell, the pool held: the tiles' shortfall plans one release at a time
-    // until the tiles have their working set back or nothing may go.
+    // dwell, the pool held.
     const profile = UNMEASURED_DESKTOP_PROFILE;
     const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
     const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
-    bindKtx2TierLoader(() => {}, true);
-    withMaxTextureSize(16384, false);
-    const held: Array<{ up: TextureUpgrade; material: THREE.MeshStandardMaterial }> = [];
-    for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
-      const material = trackMaterial(new THREE.MeshStandardMaterial());
-      const up = makeTextureUpgrade(key, material);
-      if (!up) continue;
-      up.appliedTier = up.effectiveMaxTier;
-      material.map = rungTexture(key, up.appliedTier);
-      trackReleaseBand(up, 0, 0);
-      held.push({ up, material });
-    }
-    const nowMs = 60_000; // past every dwell, compressed or not
-    const ladder = () => held.reduce((sum, h) => sum + appliedTierGpuBytes(h.up), 0);
-    const sets = () => sectorBudgetBytes(profile, ladder(), profile.sectorFloorBytes, pool) / set;
-    const start = ladder();
+    const held = heaviestLadder(false, true);
+    const sets = () => sectorBudgetBytes(profile, bytesOf(held), profile.sectorFloorBytes, pool) / set;
+    const start = bytesOf(held);
     expect(sets()).toBeLessThan(profile.residentCap);
-    const taken: string[] = [];
-    while (sets() < profile.residentCap) {
-      const candidates = held.flatMap((h, i) => {
-        const offer = releaseOffer(h.up, nowMs, false);
-        return offer ? [{ id: String(i), distance: i, ...offer }] : [];
-      });
-      const victim = planRelease(candidates, {
-        ladderBytes: ladder(), envelopeBytes: profile.envelopeBytes - pool, containersOnly: true,
-      });
-      if (!victim) break;
-      const { up, material } = held[Number(victim.id)];
-      const low = releaseTargetTier(up)!;
-      // Never a webp, never the boot map.
-      expect(`${up.key} -> ${resolveTierFile(up.key, low)}`).toMatch(/\.ktx2$/);
-      taken.push(`${up.key} ${up.appliedTier}`);
-      up.appliedTier = low; // the swap lands
-      material.map = rungTexture(up.key, low);
-    }
+    const taken = releaseUntil(held, () => sets() >= profile.residentCap);
     expect(sets()).toBeGreaterThanOrEqual(profile.residentCap);
     // Each of these is an 8K container giving way to its 4K one, 32 MiB
     // apiece, and it takes as many as the shortfall needs and no more.
@@ -2137,40 +2145,13 @@ describe('the ladder against the sector memory envelope', () => {
     const profile = UNMEASURED_DESKTOP_PROFILE;
     const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
     const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
-    bindKtx2TierLoader(() => {}, true);
-    withMaxTextureSize(16384, false);
     const earth = new Set(['earthDay', 'earthClouds', 'earthNight']);
-    const held: Array<{ up: TextureUpgrade; material: THREE.MeshStandardMaterial }> = [];
-    for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
-      const material = trackMaterial(new THREE.MeshStandardMaterial());
-      const up = makeTextureUpgrade(key, material);
-      if (!up) continue;
-      up.appliedTier = up.effectiveMaxTier;
-      material.map = rungTexture(key, up.appliedTier);
-      trackReleaseBand(up, earth.has(key) ? 1 : 0, 0);
-      held.push({ up, material });
-    }
-    const nowMs = 60_000;
-    const ladder = () => held.reduce((sum, h) => sum + appliedTierGpuBytes(h.up), 0);
-    const budget = () => sectorBudgetBytes(profile, ladder(), profile.sectorFloorBytes, pool);
-    const start = ladder();
-    const taken: string[] = [];
-    while (budget() / set < profile.residentCap) {
-      const candidates = held.flatMap((h, i) => {
-        const offer = releaseOffer(h.up, nowMs, false);
-        return offer ? [{ id: String(i), distance: i, ...offer }] : [];
-      });
-      const victim = planRelease(candidates, {
-        ladderBytes: ladder(), envelopeBytes: profile.envelopeBytes - pool, containersOnly: true,
-      });
-      if (!victim) break;
-      const { up, material } = held[Number(victim.id)];
-      taken.push(up.key);
-      const low = releaseTargetTier(up)!;
-      up.appliedTier = low;
-      material.map = rungTexture(up.key, low);
-    }
-    expect(taken.sort()).toEqual(['callisto', 'dione', 'enceladus', 'mercury', 'moon', 'pluto', 'tethys']);
+    const held = heaviestLadder(false, true, (key) => (earth.has(key) ? 1 : 0));
+    const budget = () => sectorBudgetBytes(profile, bytesOf(held), profile.sectorFloorBytes, pool);
+    const start = bytesOf(held);
+    const taken = releaseUntil(held, () => budget() / set >= profile.residentCap);
+    expect(taken.map((t) => t.split(' ')[0]).sort())
+      .toEqual(['callisto', 'dione', 'enceladus', 'mercury', 'moon', 'pluto', 'tethys']);
     // All seven are needed, and they leave the tiles exactly their working
     // set, with what is left of the envelope after the pool and the ladder:
     const step = equirectMapGpuBytes(8192, true) - equirectMapGpuBytes(4096, true);
@@ -2200,11 +2181,11 @@ describe('the ladder against the sector memory envelope', () => {
       up.appliedTier = '8k';
       (up.material as THREE.MeshStandardMaterial).map = mapTexture(8192);
       trackReleaseBand(up, 0, 0);
-      expect(releaseLandsOnContainer(up), key).toBe(false);
-      const offer = releaseOffer(up, 60_000, false);
-      if (offer) {
-        expect(offer.lowIsContainer, key).toBe(false);
-        candidates.push({ id: key, distance: 1, ...offer });
+      const low = releaseOffer(up, 60_000, false);
+      if (low) {
+        const candidate = releaseCandidate(up, low, key, 1);
+        expect(candidate.lowIsContainer, key).toBe(false);
+        candidates.push(candidate);
       }
     }
     expect(candidates.length).toBeGreaterThan(0);
@@ -2234,8 +2215,8 @@ describe('the ladder against the sector memory envelope', () => {
       [far, 1, false], [inBand, 4, false], [guarded, 3, true], [boot, 2, false],
     ];
     const candidates = offered.flatMap(([up, distance, isGuarded]) => {
-      const offer = releaseOffer(up, nowMs, isGuarded);
-      return offer ? [{ id: up.key, distance, ...offer }] : [];
+      const low = releaseOffer(up, nowMs, isGuarded);
+      return low ? [releaseCandidate(up, low, up.key, distance)] : [];
     });
     // Neither the body in its band nor the protected one is offered at all.
     expect(candidates.map((c) => c.id)).toEqual(['dione', 'jupiter']);
@@ -2282,7 +2263,9 @@ describe('the ladder against the sector memory envelope', () => {
         const up = ladderHandle(key);
         up.appliedTier = '8k';
         up.material.map = container(8192, bytesPerTexel);
-        if (!releaseLandsOnContainer(up)) continue;
+        trackReleaseBand(up, 0, 0);
+        const low = releaseOffer(up, 60_000, false);
+        if (!low || !releaseCandidate(up, low, key, 0).lowIsContainer) continue;
         takeable.push(key);
         const transient = textureGpuBytes(container(4096, bytesPerTexel), 4096);
         const freed = appliedTierGpuBytes(up) - transient;
@@ -2910,82 +2893,153 @@ describe('what a release puts on the material', () => {
     expect(uploaded).not.toContain(low);
   });
 
-  it('abandons a hand-back the tiles asked for, and puts its entry back on the queue', () => {
+  it('ends every swap through the slot, which pays each duty however it ends', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const entry = onStandin('moon');
-      const queue = new RestoreQueue();
-      queue.entries.push(entry);
-      bindTierAdmission(() => 'admit');
-      // Taken while the tiles were short and the body far: a release like any
-      // other, so not one the body needs.
-      const next = queue.take(() => true, 1_000)!;
-      expect(next).toEqual({ up: entry.up, restore: false, necessary: false });
-      trackReleaseBand(entry.up, 0, 0);
-      startTierRelease(entry.up, 1_000, { restore: next.restore, necessary: next.necessary });
-      // The player turns toward it: a 4K must not land on a body growing on
-      // screen, and the body is still on its stand-in, so it waits its turn.
-      trackReleaseBand(entry.up, 1, 2_000);
-      expect(abandonReleaseWithoutReason(entry.up, false)).toBe(true);
-      queue.ended(entry.up, false);
-      expect(queue.entries).toEqual([entry]);
+      let ledger = 0;
+      let trouble = 0;
+      const slot = new SwapSlot({ onLedgerChange: () => { ledger++; }, onTrouble: () => { trouble++; } });
+      const far = () => {
+        const up = onFourK();
+        trackReleaseBand(up, 0, 0);
+        return up;
+      };
+
+      // Landed: the slot frees, the tiles' dwell restarts (once per pass),
+      // and the failure and timeout counts start over.
+      let up = far();
+      slot.failures = 2;
+      slot.timeouts = 1;
+      expect(slot.start(up, 'pressure', 1_000)).toBe(true);
+      expect(slot.inFlight).toBe(up);
+      expect(slot.start(far(), 'pressure', 1_000)).toBe(false); // one at a time
+      pending[0].onLoad(new THREE.Texture());
+      await settleRungUpload();
+      expect(slot.inFlight).toBeNull();
+      expect(slot.takeEnded()).toBe(true);
+      expect(slot.takeEnded()).toBe(false);
+      expect([slot.failures, slot.timeouts]).toEqual([0, 0]);
+
+      // Failed: the slot frees, the dwell restarts, the failure is counted.
+      up = far();
+      slot.start(up, 'pressure', 2_000);
+      pending[1].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(slot.inFlight).toBeNull();
+      expect(slot.takeEnded()).toBe(true);
+      expect([slot.failures, trouble]).toEqual([1, 1]);
+
+      // Abandoned, its body back in view: the slot frees, the dwell restarts,
+      // and the ledger's new figure goes out at once.
+      up = far();
+      slot.start(up, 'tiles', 3_000);
+      let before = ledger;
+      trackReleaseBand(up, 1, 3_100);
+      expect(abandonReleaseWithoutReason(up, false)).toBe(true);
+      expect(slot.inFlight).toBeNull();
+      expect(slot.takeEnded()).toBe(true);
+      expect(ledger).toBe(before + 1);
+
+      // Expired: all of that, and the timeout is counted.
+      up = far();
+      slot.start(up, 'pressure', 4_000);
+      before = ledger;
+      expireTierRelease(up, 4_000 + RELEASE_ATTEMPT_TIMEOUT_MS + 1);
+      expect(slot.inFlight).toBeNull();
+      expect(slot.takeEnded()).toBe(true);
+      expect(ledger).toBe(before + 1);
+      expect([slot.timeouts, trouble]).toEqual([1, 2]);
     } finally {
-      bindTierAdmission(null);
+      warn.mockRestore();
     }
   });
 
-  it('never abandons a restore at the stand-in\'s own tier, or a hand-back the ladder can never fit', () => {
+  it('ends a restore-queue swap by its reason: on the queue, uncounted, and a dwell only for a hand-back', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      for (const admission of ['admit', 'refuse'] as const) {
-        const entry = onStandin('moon');
-        const queue = new RestoreQueue();
-        queue.entries.push(entry);
-        bindTierAdmission(() => admission);
-        const next = queue.take(undefined, 1_000)!;
-        expect(next).toEqual({ up: entry.up, restore: admission === 'admit', necessary: true });
-        trackReleaseBand(entry.up, 1, 0);
-        startTierRelease(entry.up, 1_000, { restore: next.restore, necessary: next.necessary });
-        expect(abandonReleaseWithoutReason(entry.up, true)).toBe(false);
-        expect(entry.up.release).toBeDefined();
-      }
+      const slot = new SwapSlot({ onLedgerChange: () => {} });
+      const a = onStandin('moon');
+      const b = onStandin('mars');
+      slot.restores.entries.push(a, b);
+      bindTierAdmission(() => 'admit');
+      // A restore at its own tier fails: to the back of the queue, no failure
+      // counted toward the warning, and no dwell restarted.
+      expect(slot.startRestore(undefined, 1_000)).toBe(true);
+      expect(a.up.release?.reason).toBe('restore');
+      pending[0].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(slot.restores.entries).toEqual([b, a]);
+      expect(slot.failures).toBe(0);
+      expect(slot.takeEnded()).toBe(false);
+      // The next one is necessary whatever the view does...
+      expect(slot.startRestore(undefined, 1_000)).toBe(true);
+      expect(abandonReleaseWithoutReason(b.up, true)).toBe(false);
+      // ...but a teleport may cut it short: to the FRONT, since its body is
+      // the one the player is heading for.
+      cancelTierRelease(b.up);
+      expect(slot.inFlight).toBeNull();
+      expect(slot.restores.entries).toEqual([b, a]);
+      // A hand-back the tiles asked for is a release like any other: its body
+      // growing back on screen abandons it, it goes to the front, and the
+      // tiles' dwell restarts.
+      expect(slot.startRestore((up) => up === b.up, 1_000)).toBe(true);
+      expect(b.up.release?.reason).toBe('tiles');
+      trackReleaseBand(b.up, 1, 1_100);
+      expect(abandonReleaseWithoutReason(b.up, false)).toBe(true);
+      expect(slot.restores.entries).toEqual([b, a]);
+      expect(slot.takeEnded()).toBe(true);
     } finally {
       bindTierAdmission(null);
+      warn.mockRestore();
+    }
+  });
+
+  it('forgets the swap in the air when the restore queue is rebuilt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const slot = new SwapSlot({ onLedgerChange: () => {} });
+      const old = onStandin('moon');
+      slot.restores.entries.push(old);
+      bindTierAdmission(() => 'admit');
+      expect(slot.startRestore(undefined, 1_000)).toBe(true);
+      // Another lost context: a new queue, and the old swap then fails.
+      const fresh = onStandin('mars');
+      slot.restores.rebuild([{ up: fresh.up, tex: fresh.tex, distance: 0 }]);
+      pending[0].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(slot.restores.entries.map((e) => e.up)).toEqual([fresh.up]);
+      expect(slot.inFlight).toBeNull();
+    } finally {
+      bindTierAdmission(null);
+      warn.mockRestore();
     }
   });
 
   it('puts a failed hand-back back on the restore queue, asked again after the cooldown', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
+      const slot = new SwapSlot({ onLedgerChange: () => {} });
       const entry = onStandin('moon');
-      const queue = new RestoreQueue();
-      queue.entries.push(entry);
-      // A rung that can never fit again is handed back rather than restored.
+      slot.restores.entries.push(entry);
+      // A rung that can never fit again is handed back rather than restored,
+      // and that is necessary whatever the view does.
       bindTierAdmission(() => 'refuse');
-      const next = queue.take(undefined, 1_000)!;
-      expect(next).toEqual({ up: entry.up, restore: false, necessary: true });
-      expect(queue.length).toBe(0);
-      const settled: boolean[] = [];
-      startTierRelease(entry.up, 1_000, {
-        restore: next.restore,
-        necessary: next.necessary,
-        onSettled: (ok) => {
-          settled.push(ok);
-          queue.ended(entry.up, ok);
-        },
-      });
+      expect(slot.startRestore(undefined, 1_000)).toBe(true);
+      expect(entry.up.release?.reason).toBe('neverFits');
+      expect(abandonReleaseWithoutReason(entry.up, true)).toBe(false);
       pending[0].onError(new Error('offline'));
       await settleRungUpload();
-      expect(settled).toEqual([false]);
       expect(entry.up.material.map).toBe(entry.tex); // still on the stand-in
-      expect(queue.entries).toEqual([entry]);
+      expect(slot.restores.entries).toEqual([entry]);
       // It waits out the handle's cooldown, then is asked again.
-      expect(queue.take(undefined, 1_001)).toBeNull();
-      expect(queue.length).toBe(1);
-      expect(queue.take(undefined, entry.up.releaseRetryAtMs!))
-        .toEqual({ up: entry.up, restore: false, necessary: true });
+      expect(slot.startRestore(undefined, 1_001)).toBe(false);
+      expect(slot.restores.length).toBe(1);
+      expect(slot.startRestore(undefined, entry.up.releaseRetryAtMs!)).toBe(true);
       // An entry whose body has a real map again is answered, not re-queued.
       entry.up.material.map = mapTexture(4096);
-      queue.ended(entry.up, false);
-      expect(queue.length).toBe(0);
+      pending[1].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(slot.restores.length).toBe(0);
     } finally {
       bindTierAdmission(null);
       warn.mockRestore();
@@ -3040,7 +3094,7 @@ describe('what a release puts on the material', () => {
     // context has nothing to re-upload from: the map is fetched again at the
     // tier the body already had.
     const up = onFourK();
-    expect(startTierRelease(up, 1_000, { restore: true })).toBe(true);
+    expect(startTierRelease(up, 1_000, { reason: 'restore' })).toBe(true);
     expect(pending[0].url).toMatch(/textures\/4k\/moon\.webp$/);
     const again = new THREE.Texture();
     pending[0].onLoad(again);
@@ -3486,9 +3540,9 @@ describe('fetching the maps back after a lost context', () => {
     const near = onStandin('moon');
     const far = onStandin('mars');
     const queue = [near, far];
-    expect(takeRestoreRefetch(queue)).toEqual({ up: near.up, restore: true });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up: near.up, reason: 'restore' });
     expect(queue).toHaveLength(1);
-    expect(takeRestoreRefetch(queue)).toEqual({ up: far.up, restore: true });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up: far.up, reason: 'restore' });
     expect(queue).toHaveLength(0);
     expect(takeRestoreRefetch(queue)).toBeNull();
   });
@@ -3500,13 +3554,13 @@ describe('fetching the maps back after a lost context', () => {
     const queue = [busy, free];
     // The busy handle is skipped, not dropped: a fetch in flight is the one
     // moment a context is most likely to be lost.
-    expect(takeRestoreRefetch(queue)).toEqual({ up: free.up, restore: true });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up: free.up, reason: 'restore' });
     expect(queue).toEqual([busy]);
     expect(takeRestoreRefetch(queue)).toBeNull();
     // The upgrade fails, leaving the stand-in on the material. Nothing else
     // would ever re-drive the re-fetch, so the queue still has to.
     cancelTextureUpgrade(busy.up, 'discard');
-    expect(takeRestoreRefetch(queue)).toEqual({ up: busy.up, restore: true });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up: busy.up, reason: 'restore' });
   });
 
   it('waits on a squeeze and gives the rung back where it can never fit', () => {
@@ -3520,7 +3574,7 @@ describe('fetching the maps back after a lost context', () => {
     bindTierAdmission(() => 'refuse');
     // Nothing can make room for this rung again — so it is handed back
     // instead, which fetches a smaller real map over the stand-in.
-    expect(takeRestoreRefetch(queue)).toEqual({ up: blocked.up, restore: false });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up: blocked.up, reason: 'neverFits' });
     expect(queue).toHaveLength(0);
   });
 
@@ -3533,8 +3587,8 @@ describe('fetching the maps back after a lost context', () => {
     const far = onStandin('earthClouds');
     const queue = [near, far];
     bindTierAdmission(() => 'admit');
-    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: near.up, restore: true });
-    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: far.up, restore: false, forTiles: true });
+    expect(took(takeRestoreRefetch(queue, (up) => up === far.up))).toEqual({ up: near.up, reason: 'restore' });
+    expect(took(takeRestoreRefetch(queue, (up) => up === far.up))).toEqual({ up: far.up, reason: 'tiles' });
     expect(queue).toHaveLength(0);
   });
 
@@ -3985,10 +4039,10 @@ describe('trimming a compressed rung\'s mip chain once its upload is paid', () =
     await settleRungUpload();
     const queue = buildRestoreQueue([{ up, tex: materialColorMap(up.material), distance: 0 }]);
     expect(queue).toEqual([{ up, tex }]);
-    expect(takeRestoreRefetch(queue)).toEqual({ up, restore: true });
+    expect(took(takeRestoreRefetch(queue))).toEqual({ up, reason: 'restore' });
     // The re-fetch asks the same loader for the same container, at the tier
     // the body already had, and swaps the full chain in over the tail.
-    expect(startTierRelease(up, 0, { restore: true })).toBe(true);
+    expect(startTierRelease(up, 0, { reason: 'restore' })).toBe(true);
     expect(pending).toHaveLength(2);
     expect(pending[1].url).toBe(pending[0].url);
     const back = container();

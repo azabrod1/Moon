@@ -29,10 +29,10 @@
  *
  * The streamer cannot take memory from the globe maps — its budget is what the
  * envelope leaves over them — but it says when they are what it is short of
- * (`tilesShort`): a set it wants is still waiting, the working set has a place
- * for it, and it fits what the tiles may hold with no map on the ladder but not
- * what the maps leave them now. That is the signal the ladder's release pass
- * answers by giving back far rungs (world/ladderPressure); the tiles' own
+ * (`tilesShortFor`): a set it wants is still waiting, the working set has a
+ * place for it, and it fits what the tiles may hold with no map on the ladder
+ * but not what the maps leave them now. That is the signal the ladder's release
+ * pass answers by giving back far rungs (world/ladderPressure); the tiles' own
  * ceiling, the draw-call cap and the network are never reasons for it.
  *
  * A tile is drawn only once it is resident on the GPU: the fetch decodes off
@@ -1084,7 +1084,7 @@ export class SectorStreamer {
   /** The one envelope the tiles and the globe maps spend between them. */
   private readonly envelope: MemoryEnvelope;
   private warnedNoBudget = false;
-  /** The last reconcile's answer to `tilesShort`, and the globe maps' bytes
+  /** The last reconcile's answer to `tilesShortFor`, and the globe maps' bytes
    *  it was taken against (`tilesShortFor`). */
   private short = false;
   private shortAgainst = 0;
@@ -1826,9 +1826,12 @@ export class SectorStreamer {
    */
   private shortOfMaps(candidates: ReadonlyArray<{ body: SectorBody; slot: SectorSlot }>): boolean {
     if (candidates.length === 0 || this.liveCount() >= this.residentCap) return false;
-    const held = this.heldBytes();
     const budget = this.budget();
     const unsqueezed = sectorBudgetBytes(this.envelope, 0, this.envelope.floorBytes, this.envelope.fixedBytes);
+    // The maps leave the tiles all an empty ladder would, so no set can be
+    // short of them — the common case, and no slot need be visited.
+    if (budget >= unsqueezed) return false;
+    const held = this.heldBytes();
     for (const { body, slot } of candidates) {
       if (slot.state !== 'idle') continue;
       if (this.loadFetchCount(body, slot) > this.fetchPool) continue;
@@ -1845,10 +1848,11 @@ export class SectorStreamer {
   }
 
   /**
-   * True when the last reconcile left a wanted set out for want of memory the
-   * globe maps hold, and only then (see shortOfMaps). Cleared on every frame
-   * that reconciles nothing — the chart's `maintain`, a suspended body,
-   * `dropAll` — since nothing is wanted there.
+   * The test view of the last answer, ledger aside: true when the last
+   * reconcile left a wanted set out for want of memory the globe maps hold,
+   * and only then (see shortOfMaps). Cleared on every frame that reconciles
+   * nothing — the chart's `maintain`, a suspended body, `dropAll` — since
+   * nothing is wanted there. The release pass reads `tilesShortFor`.
    */
   tilesShort(): boolean {
     return this.short;

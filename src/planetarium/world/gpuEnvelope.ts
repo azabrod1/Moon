@@ -468,7 +468,7 @@ export function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
 // Above the floor the maps come first and the tiles take what is left, which
 // after a long tour can be less than the tiles' working set. What gives it
 // back is the ladder's release pass: the streamer says when the maps are what
-// it is short of (SectorStreamer.tilesShort), and the pass hands back far
+// it is short of (SectorStreamer.tilesShortFor), and the pass hands back far
 // rungs whose release lands on a compressed container, farthest first, until
 // the tiles hold their working set or nothing is left that may go
 // (world/ladderPressure).
@@ -645,8 +645,8 @@ export interface ReleaseCandidate {
    *  and is the one a return trip re-earns from the cache anyway. */
   distance: number;
   /** The map it drops to is a compressed container (textureLadder's
-   *  releaseLandsOnContainer): the only kind of release the tiles' shortfall
-   *  may ask for. */
+   *  landsCompressed): the only kind of release the tiles' shortfall may ask
+   *  for. */
   lowIsContainer?: boolean;
 }
 
@@ -661,9 +661,7 @@ export interface ReleaseCandidate {
  *
  * `containersOnly` is the tiles' shortfall asking rather than the ladder's own
  * pressure (world/ladderPressure): then only a rung that drops to a compressed
- * container is a candidate. A drop to a webp or to the boot map would pay an
- * unsliceable upload, and the 4096 boot maps of Earth's globe and of Io,
- * Europa and Ganymede are no smaller than what they replace.
+ * container is a candidate (why, at textureLadder's landsCompressed).
  */
 export function planRelease(
   candidates: readonly ReleaseCandidate[],

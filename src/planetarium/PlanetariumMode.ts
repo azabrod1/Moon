@@ -38,7 +38,7 @@ import {
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, prebuildGeometryStep, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, wantsGeometryPrebuild, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
-import { PLANET_TEXTURE_FILES, RestoreQueue, abandonReleaseWithoutReason, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseLandsOnContainer, releaseOffer, resolveTierFile, resolveUpgradeTier, startTierRelease, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
+import { PLANET_TEXTURE_FILES, SwapSlot, abandonReleaseWithoutReason, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseCandidate, releaseExpired, releaseOffer, resolveTierFile, resolveUpgradeTier, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { AIR_LOOKUP_RADIUS, MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
@@ -1543,26 +1543,16 @@ export class PlanetariumMode {
    *  would take back, and the protection is the STATE "this is where the ship
    *  is going" rather than any pump's progress through it. */
   private travelProtect: { ups: TextureUpgrade[]; doneAtMs: number | null } | null = null;
-  /** The one swap in flight, a release or a restore re-fetch alike. Either
-   *  transiently holds two maps, so several at once would raise the peak they
-   *  exist to lower — and a restore answers a memory signal, which is the
+  /** The one swap down in flight, a release or a restore re-fetch alike, and
+   *  everything its end owes (world/textureLadder's SwapSlot): its restore
+   *  queue, the tiles' dwell, the ledger, and the failure and timeout counts
+   *  behind warnNoRelease. A restore answers a memory signal, which is the
    *  worst moment to decode every globe map at once. */
-  private releasing: TextureUpgrade | null = null;
-  private releaseFailures = 0;
-  /** Swaps abandoned for taking too long. A hung fetch means the same thing
-   *  to the player as a refused one — the maps are not coming back — so both
-   *  reach the same warning. */
-  private releaseTimeouts = 0;
+  private readonly swaps = new SwapSlot({
+    onLedgerChange: () => this.onLadderLedgerChange(),
+    onTrouble: () => this.warnNoRelease(this.memory.ladderCeiling()),
+  });
   private warnedNoRelease = false;
-  /** Rungs waiting to re-fetch the map a lost GL context took, nearest body
-   *  first, each with the stand-in texture it is waiting to replace. Drained
-   *  one at a time; an entry stays until its handle is free and the ledger
-   *  admits it, so nothing is left on a stand-in for the session. */
-  private readonly restoreQueue = new RestoreQueue();
-  /** A swap that gave a map back has ended since the last pressure pass
-   *  (ladderPressure's `swapEnded`): set wherever one settles, is abandoned
-   *  or expires, consumed by the next pass. */
-  private swapEndedSincePass = false;
   private readonly sectorCamLocal = new THREE.Vector3();
   private readonly sectorWorldCentre = new THREE.Vector3();
   private readonly sectorWorldScale = new THREE.Vector3();
@@ -4406,7 +4396,7 @@ export class PlanetariumMode {
    * see, and the Moon is hidden at cruise distances exactly when its 8K rung
    * is the one worth taking back). Demand that cannot be met is what counts
    * as pressure, along with maps already past the ladder's share — and,
-   * apart from both, the tiles' own demand (the streamer's tilesShort, from
+   * apart from both, the tiles' own demand (the streamer's tilesShortFor, from
    * last frame's reconcile), which may take only a rung that drops to a
    * compressed container and never ends an arrival's warm goals. And the
    * bodies that are eligible — a rung to give, its release band served,
@@ -4436,6 +4426,9 @@ export class PlanetariumMode {
     let blockedDemand = false;
     const candidates: ReleaseCandidate[] = [];
     const victims = new Map<string, TextureUpgrade>();
+    // The handles whose release would drop to a compressed container: the
+    // only ones the tiles may take, planned or handed back.
+    const tilesMayTake = new Set<TextureUpgrade>();
 
     this.forEachLadderBody((name, ups, mesh, radiusAU, drawn) => {
       if (ups.length === 0) return;
@@ -4449,21 +4442,17 @@ export class PlanetariumMode {
         ? estimateSphereScreenDiameterPx(this.bodyLODTmp, radiusAU, this.camera, canvasW, canvasH) / canvasH
         : 0;
       for (const up of ups) {
-        if (releaseExpired(up, nowMs)) {
-          // The dwell is still served, so without a cooldown the same body
-          // starts a fresh fetch on the very next frame — one abandoned
-          // transfer every twenty seconds for as long as the link is stalled.
-          const gaveBack = up.release?.restore !== true;
-          expireTierRelease(up, nowMs);
-          this.swapEndedUnlanded(up, gaveBack);
-          this.releaseTimeouts++;
-          this.warnNoRelease(ceiling);
-        }
+        const isGuarded = guarded.has(up);
+        // A swap that hung is ended, with a cooldown: the dwell is still
+        // served, so without one the same body starts a fresh fetch on the
+        // very next frame — one abandoned transfer every twenty seconds for as
+        // long as the link is stalled. What its end owes is the swap slot's.
+        if (releaseExpired(up, nowMs)) expireTierRelease(up, nowMs);
         trackReleaseBand(up, fraction, nowMs);
         // A swap down already in the air whose body has since become one no
         // pressure may take from, or has grown back past its band, is not
         // allowed to land (a necessary one always is).
-        if (abandonReleaseWithoutReason(up, guarded.has(up))) this.swapEndedUnlanded(up, true);
+        abandonReleaseWithoutReason(up, isGuarded);
         if (!blockedDemand) {
           // A rung this body is earning — or the one its committed arrival
           // is warming — that the ladder cannot fit is the pressure this
@@ -4474,11 +4463,12 @@ export class PlanetariumMode {
             blockedDemand = true;
           }
         }
-        const offer = releaseOffer(up, nowMs, guarded.has(up));
-        if (!offer) continue;
-        const id = `${name}:${up.key}`;
-        candidates.push({ id, distance, ...offer });
-        victims.set(id, up);
+        const low = releaseOffer(up, nowMs, isGuarded);
+        if (!low) continue;
+        const candidate = releaseCandidate(up, low, `${name}:${up.key}`, distance);
+        candidates.push(candidate);
+        victims.set(candidate.id, up);
+        if (candidate.lowIsContainer) tilesMayTake.add(up);
       }
     });
 
@@ -4489,16 +4479,15 @@ export class PlanetariumMode {
       blockedDemand,
       pressureSinceMs: this.pressureSinceMs,
       nowMs,
-      swapInFlight: this.releasing !== null,
-      restoreQueued: this.restoreQueue.length > 0,
+      swapInFlight: this.swaps.inFlight !== null,
+      restoreQueued: this.swaps.restores.length > 0,
       // The tiles answered at the end of the last world frame; the answer
       // counts only while the ledger is the one it was taken against.
       tilesShort: this.sectors ? this.sectors.tilesShortFor(ladderBytes) : false,
       tilesShortSinceMs: this.tilesShortSinceMs,
       drawing,
-      swapEnded: this.swapEndedSincePass,
+      swapEnded: this.swaps.takeEnded(),
     });
-    this.swapEndedSincePass = false;
     this.pressureSinceMs = plan.pressureSinceMs;
     this.tilesShortSinceMs = plan.tilesShortSinceMs;
     // Ahead of any discretionary release: a globe on a stand-in is one the
@@ -4506,38 +4495,22 @@ export class PlanetariumMode {
     // While only the tiles are short, a stand-in the pass would give back for
     // them anyway is handed back rather than fetched at its own tier first.
     if (plan.restoreFirst) {
-      this.pumpRestoreRefetch(nowMs, plan.tilesReleaseDue
-        ? (up) => !guarded.has(up) && releaseDue(up, nowMs) && releaseLandsOnContainer(up)
-        : undefined);
+      this.pumpRestoreRefetch(nowMs, plan.tilesReleaseDue ? (up) => tilesMayTake.has(up) : undefined);
     }
     // Which the restore may just have taken. The tiles' shortfall plans from
     // the rungs that drop to a compressed container only; the ladder's own
     // pressure from every candidate, as it always has.
-    if ((!plan.releaseDue && !plan.tilesReleaseDue) || this.releasing) return;
+    if ((!plan.releaseDue && !plan.tilesReleaseDue) || this.swaps.inFlight) return;
     const victim = planRelease(candidates, {
       ladderBytes,
       envelopeBytes: this.memory.availableBytes(),
-      containersOnly: !plan.releaseDue,
+      containersOnly: plan.tilesReleaseDue,
     });
     const up = victim ? victims.get(victim.id) : undefined;
     if (!victim || !up) return;
-    this.releasing = up;
-    const started = startTierRelease(up, nowMs, {
-      onLedgerChange: this.onLadderLedgerChange,
-      onSettled: (released) => {
-        if (this.releasing === up) this.releasing = null;
-        this.swapEndedSincePass = true;
-        if (released) {
-          this.releaseFailures = 0;
-          this.releaseTimeouts = 0;
-          return;
-        }
-        // A swap that cannot be fetched leaves the map where it is.
-        this.releaseFailures++;
-        this.warnNoRelease(ceiling);
-      },
-    });
-    if (!started) this.releasing = null;
+    // A swap that cannot be fetched leaves the map where it is; the slot
+    // counts it toward warnNoRelease.
+    this.swaps.start(up, plan.releaseDue ? 'pressure' : 'tiles', nowMs);
   }
 
   /** Say once that the maps are staying where they are — after enough tries
@@ -4545,13 +4518,13 @@ export class PlanetariumMode {
    *  refusal: from either the tiles keep their floor and nothing more. */
   private warnNoRelease(ceilingBytes: number): void {
     if (this.warnedNoRelease) return;
-    if (this.releaseFailures < 3 && this.releaseTimeouts < 3) return;
+    if (this.swaps.failures < 3 && this.swaps.timeouts < 3) return;
     this.warnedNoRelease = true;
     debugWarn('The globe maps cannot be given back: surface tiles stay at their floor', {
       globeMapsMiB: Math.round(this.liveGlobalMapBytes() / (1024 * 1024)),
       ladderShareMiB: Math.round(ceilingBytes / (1024 * 1024)),
-      failures: this.releaseFailures,
-      timeouts: this.releaseTimeouts,
+      failures: this.swaps.failures,
+      timeouts: this.swaps.timeouts,
     });
   }
 
@@ -4577,7 +4550,7 @@ export class PlanetariumMode {
       const distance = this.bodyLODTmp.length();
       for (const up of ups) entries.push({ up, tex: materialColorMap(up.material), distance });
     });
-    this.restoreQueue.rebuild(entries);
+    this.swaps.restores.rebuild(entries);
   }
 
   /**
@@ -4591,42 +4564,16 @@ export class PlanetariumMode {
    * instead, which fetches a smaller real map in place of the stand-in. An
    * entry whose handle is busy also stays queued, so an upgrade that fails
    * mid-restore leaves nothing stranded on a stand-in for the session.
+   *
+   * `handBack`, passed only while the tiles alone are short and their dwell
+   * is served, names the stand-ins the release pass would give back for them
+   * anyway (a far rung that drops to a compressed container): those are
+   * handed back at once rather than fetched at their own tier first and then
+   * swapped straight down.
    */
   private pumpRestoreRefetch(nowMs: number, handBack?: (up: TextureUpgrade) => boolean): void {
-    if (this.releasing || this.restoreQueue.length === 0) return;
-    const next = this.restoreQueue.take(handBack, nowMs);
-    if (!next) return;
-    const up = next.up;
-    this.releasing = up;
-    const started = startTierRelease(up, nowMs, {
-      restore: next.restore,
-      necessary: next.necessary,
-      onLedgerChange: this.onLadderLedgerChange,
-      onSettled: (released) => {
-        if (this.releasing === up) this.releasing = null;
-        this.restoreQueue.ended(up, released);
-        // A hand-back gave a map back; a restore at the stand-in's own tier
-        // did not, and does not restart the tiles' dwell (ladderPressure).
-        if (!next.restore) this.swapEndedSincePass = true;
-      },
-    });
-    if (!started) {
-      this.releasing = null;
-      this.restoreQueue.ended(up, false);
-    }
-  }
-
-  /** What a swap that ended without landing — abandoned, expired, cut short by
-   *  a teleport — is owed, after cancelTierRelease: the one-in-flight slot,
-   *  its restore entry back on the queue if it was one, the ledger's new
-   *  figure for the tiles, and, if it was giving a map back (`gaveBack`:
-   *  anything but a restore at a stand-in's own tier), the tiles' fresh
-   *  dwell. */
-  private swapEndedUnlanded(up: TextureUpgrade, gaveBack: boolean): void {
-    if (this.releasing === up) this.releasing = null;
-    this.restoreQueue.ended(up, false);
-    if (gaveBack) this.swapEndedSincePass = true;
-    this.onLadderLedgerChange();
+    if (this.swaps.restores.length === 0) return;
+    this.swaps.startRestore(handBack, nowMs);
   }
 
   /** Hand the sector streamer the ladder's figure now rather than next frame.
@@ -5012,11 +4959,11 @@ export class PlanetariumMode {
       envelopeBytes: this.memory.envelopeBytes,
       fixedBytes: this.memory.fixedBytes,
       availableBytes: this.memory.availableBytes(),
-      releasing: this.releasing?.key ?? null,
+      releasing: this.swaps.inFlight?.key ?? null,
       // Rungs still waiting to fetch back the map a lost context took. Above
       // zero only between a restore and the last re-fetch landing; a figure
       // that stays up is a body left on its stand-in.
-      restoreQueued: this.restoreQueue.length,
+      restoreQueued: this.swaps.restores.length,
       rungs,
     };
   }
@@ -21260,11 +21207,9 @@ export class PlanetariumMode {
         disarmArrivalWarmGoal(up);
       } else if (up.release) {
         // A swap down started before the commit must not land on the body
-        // the player is arriving at. One replacing a stand-in goes back on
-        // the queue, so the body is not left on it.
-        const gaveBack = up.release.restore !== true;
+        // the player is arriving at. What its end owes, a stand-in's entry
+        // back at the front of the queue included, is the swap slot's.
         cancelTierRelease(up);
-        this.swapEndedUnlanded(up, gaveBack);
       }
     }
     // Every sector tile goes now, destination included: a tile upload for

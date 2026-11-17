@@ -11,20 +11,27 @@
  *    exactly fills its share would sit there refusing every new rung forever.
  *    The tiles' demand counts too, on a latch of its own: a set the streamer
  *    wants that does not fit what the maps leave it, but would fit if they
- *    left it everything (SectorStreamer.tilesShort). The ladder's share is
- *    the envelope less the tiles' FLOOR, so it can sit inside that share and
- *    still hold the tiles under their working set, with nothing else to give
- *    a map back for them. Kept apart from the ladder's own pressure for two
- *    reasons. It may take less: only a rung whose release lands on a
- *    compressed container (the caller's filter), never a drop to a webp or
- *    the boot map, which would cost an unsliceable upload to free memory the
- *    tiles are owed only by preference. And it stays out of
- *    `pressureSinceMs`, which is also what cuts a committed arrival's warm
- *    goals short: tiles short at Earth must not end Earth's own climb. The
- *    tiles answer once a frame, after this pass has run, so an answer is
- *    acted on only while the ledger is the one it was taken against, never
- *    under the chart (where nothing is wanted), and every swap that gives a
- *    map back restarts the dwell when it ends, however it ends.
+ *    left it everything (SectorStreamer.tilesShortFor). The ladder's share
+ *    is the envelope less the tiles' FLOOR, so it can sit inside that share
+ *    and still hold the tiles under their working set, with nothing else to
+ *    give a map back for them. Kept apart from the ladder's own pressure for
+ *    two reasons. It may take less: only a rung whose release lands on a
+ *    compressed container (the caller's filter; why, at textureLadder's
+ *    landsCompressed). And it stays out of `pressureSinceMs`, which is also
+ *    what cuts a committed arrival's warm goals short: tiles short at Earth
+ *    must not end Earth's own climb.
+ *
+ *    The tiles' latch has three rules of its own, because the tiles answer
+ *    once a frame, after this pass has run. A "short" is acted on only while
+ *    the ledger is the one it was taken against; an answer about another
+ *    ledger is no answer, and carries the latch as it is rather than
+ *    clearing it — clearing it on every landing would let a queue of
+ *    restores landing back to back hold a hand-back off for ever. Under the
+ *    chart nothing is wanted, so nothing is short. And every swap that gives
+ *    a map back restarts the latch when it ends, however it ends
+ *    (`swapEnded`), so the slot it frees is never taken on the frame it
+ *    frees, on an answer from before; a restore at a stand-in's own tier
+ *    gives nothing back and does not count.
  * 2. Pressure is a state, not a frame. It must hold for a dwell before
  *    anything is released — a rung applying holds its decoded source for the
  *    frame or two before the upload is paid and the source closed, and a body
@@ -67,11 +74,7 @@ export interface LadderPressureState {
    *  tiles want nothing whatever the last world frame's reconcile said. */
   drawing: boolean;
   /** A swap that gave a map back has ended since the last pass — settled,
-   *  abandoned or expired — which frees the one-in-flight slot. The tiles'
-   *  latch restarts: the next release for them waits a full dwell of answers
-   *  taken after it, never the frame the slot frees on. A restore that
-   *  re-fetches a stand-in's own tier gives nothing back and does not count,
-   *  or a queue of them landing back to back would hold a hand-back off. */
+   *  abandoned or expired. Restarts the tiles' latch (rule 1 above). */
   swapEnded: boolean;
 }
 
@@ -100,11 +103,7 @@ export function planLadderPressure(state: LadderPressureState): LadderPressurePl
   const pressure = state.ladderBytes > state.ceilingBytes || state.blockedDemand;
   const pressureSinceMs = pressure ? state.pressureSinceMs ?? state.nowMs : null;
   const dwellServed = pressureSinceMs !== null && state.nowMs - pressureSinceMs >= dwellMs;
-  // An answer about another ledger is no answer: the latch is carried as it
-  // is, neither started nor cleared, and nothing comes due on it. Clearing
-  // it would make every landing restart the dwell — and a queue of restores
-  // landing back to back would then never let a hand-back come due. What
-  // restarts it is `swapEnded`.
+  // The tiles' latch: rule 1 in the header says why each of these holds.
   const tiles = state.drawing ? state.tilesShort : false;
   const carried = state.swapEnded ? null : state.tilesShortSinceMs;
   const tilesShortSinceMs = tiles === null ? carried

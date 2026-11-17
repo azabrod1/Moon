@@ -48,6 +48,7 @@ import { queueTextureWarm } from './textureWarmer';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './textureBytes';
 import { restoreAlbedoGrade } from './albedoGrade';
+import type { ReleaseCandidate } from './gpuEnvelope';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
@@ -202,18 +203,19 @@ export interface TextureUpgrade {
    *  climbing, and never the other way round. `abort` ends the transfer when
    *  the swap is abandoned: a swap given up on has no reader left, and a
    *  stalled link is exactly where one abandoned transfer per timeout would
-   *  otherwise accumulate for the session. `necessary` marks a swap no
-   *  change of view may abandon (releaseLostItsReason). `pending` is the low
-   *  map once it has decoded and is waiting for its upload, so abandoning the
-   *  swap can drop it unuploaded. */
+   *  otherwise accumulate for the session. `reason` is why it was started
+   *  (ReleaseReason). `pending` is the low map once it has decoded and is
+   *  waiting for its upload, so abandoning the swap can drop it unuploaded.
+   *  `onAbandoned` is the starter's, called when the swap is cut short
+   *  (cancelTierRelease) rather than settled. */
   release?: {
     toTier: TextureTier;
     generation: number;
     startedAtMs: number;
-    restore?: boolean;
-    necessary?: boolean;
+    reason: ReleaseReason;
     pending?: THREE.Texture;
     abort?: AbortController;
+    onAbandoned?: (how: 'abandoned' | 'expired') => void;
   };
   /** GPU bytes the map a swap DOWN has decoded but not yet assigned will
    *  hold. Between the decode and the assignment both maps are on the device,
@@ -706,8 +708,7 @@ export function ladderMapReferenceWidth(up: TextureUpgrade): number {
  * anything.
  */
 export function tierUploadBytes(key: string, tier: TextureTier): number {
-  const compressed = resolveTierFile(key, tier).endsWith('.ktx2') && ktx2CompressedTarget;
-  return equirectMapGpuBytes(TIER_MAP_WIDTH[tier], compressed);
+  return equirectMapGpuBytes(TIER_MAP_WIDTH[tier], landsCompressed(key, tier));
 }
 
 // A hung fetch must not own a handle for the session: past this age a fresh
@@ -1275,7 +1276,7 @@ export function releaseExpired(up: TextureUpgrade, nowMs: number): boolean {
  *  the full timeout to learn. */
 export function expireTierRelease(up: TextureUpgrade, nowMs = performance.now()): void {
   if (!up.release) return;
-  cancelTierRelease(up);
+  cancelTierRelease(up, 'expired');
   const streak = (up.releaseTimeouts ?? 0) + 1;
   up.releaseTimeouts = streak;
   up.releaseRetryAtMs = nowMs
@@ -1300,11 +1301,17 @@ export function trackReleaseBand(up: TextureUpgrade, fraction: number, nowMs: nu
  *  order and every protection are the planner's business. */
 export function releaseDue(up: TextureUpgrade, nowMs: number): boolean {
   if (!up.appliedTier || up.release || up.attempt) return false;
-  if (up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs) return false;
+  if (releaseCoolingDown(up, nowMs)) return false;
   if (up.belowBandSinceMs === undefined) return false;
   const compressed = (materialColorMap(up.material) as THREE.Texture & { isCompressedTexture?: boolean } | null)
     ?.isCompressedTexture === true;
   return nowMs - up.belowBandSinceMs >= releaseDwellMs(up.appliedTier, compressed);
+}
+
+/** A swap of this handle failed or hung lately, and its cooldown has not run
+ *  out: nothing asks it for another, planned or restored. */
+function releaseCoolingDown(up: TextureUpgrade, nowMs: number): boolean {
+  return up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs;
 }
 
 /** The tier a release drops to: the highest rung below the one held whose
@@ -1336,64 +1343,72 @@ export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
 /** The tier a body's first-paint map is fetched at. */
 const BOOT_TIER: TextureTier = '2k';
 
-/** Whether this handle's release lands on a compressed upload ON THIS
- *  DEVICE: the map below is fetched as a .ktx2 (TIER_FILE_OVERRIDES, with a
- *  loader bound) and the transcoder has a compressed format to target. The
- *  only release the tiles' shortfall may ask for (world/ladderPressure): a
- *  container's upload is a banded memcpy, while a webp's is one unsliceable
- *  sRGB conversion, and the 4096 boot maps of Earth's globe and of Io, Europa
- *  and Ganymede free nothing against the container above them. With no
- *  target the container lands as RGBA — a 4K at 42.7 MiB, a transient of two
- *  sets — so the filename alone is not enough. */
-export function releaseLandsOnContainer(up: TextureUpgrade): boolean {
-  const low = releaseTargetTier(up);
-  return low !== null && landsCompressed(up.key, low);
-}
-
-/** The tier's fetch is a container this device keeps compressed. */
+/** The tier's fetch is a container this device keeps compressed: a .ktx2
+ *  (TIER_FILE_OVERRIDES, with a loader bound) AND a compressed format for the
+ *  transcoder to target. With no target three transcodes to RGBA and the
+ *  container costs four times as much, so the filename alone is not enough.
+ *
+ *  It is also the only kind of release the tiles' shortfall may ask for
+ *  (world/ladderPressure): a container's upload is a banded memcpy, while a
+ *  webp's is one unsliceable sRGB conversion, and the 4096 boot maps of
+ *  Earth's globe and of Io, Europa and Ganymede free nothing against the
+ *  container above them. A 4K landing as RGBA is 42.7 MiB, a transient of
+ *  two sets. */
 function landsCompressed(key: string, tier: TextureTier): boolean {
   return ktx2CompressedTarget && resolveTierFile(key, tier).endsWith('.ktx2');
 }
 
+/** Why a swap down was started, which decides what may end it early and what
+ *  its end owes (SwapSlot):
+ *  - 'restore' re-fetches a stand-in's own tier after a lost context;
+ *  - 'neverFits' hands back a stand-in whose rung can never fit again;
+ *  - 'tiles' gives a map back because the tiles are short of it, planned or
+ *    handed back from the restore queue;
+ *  - 'pressure' gives one back for the ladder's own pressure.
+ *  The first two are necessary: the body needs them whatever the view does.
+ *  The last two are not. */
+export type ReleaseReason = 'restore' | 'neverFits' | 'tiles' | 'pressure';
+
+/** How a swap down ended. */
+export type SwapOutcome = 'landed' | 'failed' | 'abandoned' | 'expired';
+
 /** Whether a swap down already in the air has lost the reason it was started
- *  for: its body is now one no pressure may take a map from (`guarded`), or
- *  has grown back past its release band. Starting a release checks both;
- *  without this, one already running would land anyway, on a body the player
- *  is flying to or looking at. A `necessary` swap never loses its reason. A
- *  hand-back the tiles asked for is not necessary: abandoned, its restore
- *  entry goes back on the queue (RestoreQueue.ended). */
+ *  for: it gives a map back by choice ('tiles', 'pressure'), and its body is
+ *  now one no pressure may take a map from (`guarded`), or has grown back
+ *  past its release band. Starting a release checks both; without this, one
+ *  already running would land anyway, on a body the player is flying to or
+ *  looking at. */
 function releaseLostItsReason(up: TextureUpgrade, guarded: boolean): boolean {
-  if (!up.release || up.release.necessary) return false;
+  const reason = up.release?.reason;
+  if (reason !== 'tiles' && reason !== 'pressure') return false;
   return guarded || up.belowBandSinceMs === undefined;
 }
 
 /** Abandon this handle's swap down if it has lost its reason
- *  (releaseLostItsReason), and say whether it did. The caller then owes what
- *  any ended swap is owed: the one-in-flight slot, the ledger's new figure,
- *  the restore entry if it was one, and the tiles' fresh dwell. */
+ *  (releaseLostItsReason), and say whether it did. What the end owes is the
+ *  starter's, through the swap's own onAbandoned (SwapSlot). */
 export function abandonReleaseWithoutReason(up: TextureUpgrade, guarded: boolean): boolean {
   if (!releaseLostItsReason(up, guarded)) return false;
   cancelTierRelease(up);
   return true;
 }
 
-/**
- * What this handle offers the release planner this frame, or null when it
- * offers nothing: a body the player is protected on (`guarded`), and one
- * still inside its release band or short of its dwell.
- * The planner's ReleaseCandidate, less the id and the distance only the scene
- * knows.
- */
-export function releaseOffer(
-  up: TextureUpgrade,
-  nowMs: number,
-  guarded: boolean,
-): { heldBytes: number; lowBytes: number; lowIsContainer: boolean } | null {
+/** The tier this handle offers to drop to this frame, or null when it offers
+ *  nothing: a body the player is protected on (`guarded`), and one still
+ *  inside its release band or short of its dwell. */
+export function releaseOffer(up: TextureUpgrade, nowMs: number, guarded: boolean): TextureTier | null {
   if (guarded || !releaseDue(up, nowMs)) return null;
   // releaseDue holds only for a handle with a tier applied, which always has
   // one below it: the boot map at least.
-  const low = releaseTargetTier(up)!;
+  return releaseTargetTier(up);
+}
+
+/** The planner's candidate for an offer: what the handle holds, what the tier
+ *  below will, and whether that is a compressed container (landsCompressed). */
+export function releaseCandidate(up: TextureUpgrade, low: TextureTier, id: string, distance: number): ReleaseCandidate {
   return {
+    id,
+    distance,
     heldBytes: appliedTierHeldBytes(up),
     lowBytes: tierUploadBytes(up.key, low),
     lowIsContainer: landsCompressed(up.key, low),
@@ -1429,20 +1444,20 @@ export function releaseColorTier(mat: THREE.Material, tex: THREE.Texture, rank: 
  * release is invisible except as a softening, and never re-opens the arrival
  * cover: the material keeps a real map and `photoLoaded` through every step.
  *
- * `restore` re-fetches the SAME tier instead of the one below: the rung's
- * decoded source is closed once its upload is paid, so a lost GL context has
- * nothing to re-upload from and the map is fetched again.
+ * `reason` 'restore' re-fetches the SAME tier instead of the one below: the
+ * rung's decoded source is closed once its upload is paid, so a lost GL
+ * context has nothing to re-upload from and the map is fetched again.
  */
 export function startTierRelease(
   up: TextureUpgrade,
   nowMs = performance.now(),
   opts: {
-    restore?: boolean;
-    /** A swap the body needs whatever the view does: a restore re-fetching a
-     *  stand-in's own tier, or a hand-back for a rung that can never fit
-     *  again. Never abandoned by releaseLostItsReason. */
-    necessary?: boolean;
+    /** Why the swap is started (ReleaseReason); 'pressure' where not said. */
+    reason?: ReleaseReason;
     onSettled?: (released: boolean) => void;
+    /** Called when the swap is cut short instead (cancelTierRelease, or its
+     *  expiry), after its charge has left the ledger. */
+    onAbandoned?: (how: 'abandoned' | 'expired') => void;
     /** Called the moment the low map's bytes enter (and leave) the ledger, so
      *  a caller that shares the envelope with another manager can hand it the
      *  new figure before anything is drawn or admitted against it. */
@@ -1450,11 +1465,12 @@ export function startTierRelease(
   } = {},
 ): boolean {
   if (!up.appliedTier || up.release || up.attempt) return false;
-  const toTier = opts.restore ? up.appliedTier : releaseTargetTier(up);
+  const reason = opts.reason ?? 'pressure';
+  const toTier = reason === 'restore' ? up.appliedTier : releaseTargetTier(up);
   if (!toTier) return false;
   const generation = ++upgradeGeneration;
   const abort = typeof AbortController === 'function' ? new AbortController() : undefined;
-  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, necessary: opts.necessary, abort };
+  up.release = { toTier, generation, startedAtMs: nowMs, reason, abort, onAbandoned: opts.onAbandoned };
   const abandoned = () => up.release?.generation !== generation;
   const ktx2 = ktx2TierLoader;
   const file = resolveTierFile(up.key, toTier);
@@ -1511,7 +1527,7 @@ export function startTierRelease(
           up.releaseFailures = undefined;
           up.releaseTimeouts = undefined;
           up.releaseRetryAtMs = undefined;
-          if (!opts.restore) {
+          if (reason !== 'restore') {
             up.appliedTier = up.tiers.includes(toTier) ? toTier : null;
             // A goal aimed above the rung just given back would climb straight
             // back up; the arrival it was armed for is over.
@@ -1588,68 +1604,62 @@ export function buildRestoreQueue(
     .map((e) => ({ up: e.up, tex: e.tex }));
 }
 
+/** An entry its body no longer needs: the rung is gone, or a map arrived by
+ *  another route and the stand-in it was for is no longer drawn. */
+function restoreEntryStale(entry: RestoreRefetchEntry): boolean {
+  return !entry.up.appliedTier || materialColorMap(entry.up.material) !== entry.tex;
+}
+
 /**
  * Take the next stand-in that may fetch its real map back, dropping the
- * entries that no longer need one.
+ * entries that no longer need one (restoreEntryStale).
  *
  * One at a time and only what the ledger admits: a context is lost because
  * the system reclaimed memory, so the answer to it must not be every globe
- * map decoding at once. A handle that is busy, and a rung the ledger cannot
- * fit today, both stay queued — an upgrade that fails mid-restore, or a
- * squeeze that passes, must not leave a body on a stand-in for the session.
- * A rung that can never fit again is taken from the queue with `restore`
- * false: it is handed back instead, which fetches a smaller real map in place
- * of the stand-in. So is one `handBack` names — the release pass asks for
- * that while the tiles are short and the rung is one it would give back for
- * them anyway, rather than fetch a far 8K only to swap it straight down.
- * An entry whose swap failed is put back (RestoreQueue.ended), and waits out
- * its handle's cooldown here before it is asked again.
+ * map decoding at once. A handle that is busy or cooling down after a failed
+ * swap, and a rung the ledger cannot fit today, all stay queued — an upgrade
+ * that fails mid-restore, or a squeeze that passes, must not leave a body on
+ * a stand-in for the session. The reason it is taken with (ReleaseReason):
+ * 'restore' fetches its own tier back; 'neverFits', for a rung that can never
+ * fit again, hands it back instead, which fetches a smaller real map in place
+ * of the stand-in; 'tiles' does the same for one `handBack` names — the
+ * release pass asks for that while the tiles are short and the rung is one it
+ * would give back for them anyway, rather than fetch a far 8K only to swap it
+ * straight down.
  */
 export function takeRestoreRefetch(
   queue: RestoreRefetchEntry[],
   handBack?: (up: TextureUpgrade) => boolean,
   nowMs = performance.now(),
-): { up: TextureUpgrade; restore: boolean; forTiles?: true } | null {
+): { entry: RestoreRefetchEntry; reason: 'restore' | 'neverFits' | 'tiles' } | null {
   for (let i = 0; i < queue.length; i++) {
-    const { up, tex } = queue[i];
-    if (!up.appliedTier || materialColorMap(up.material) !== tex) {
+    const entry = queue[i];
+    if (restoreEntryStale(entry)) {
       queue.splice(i, 1);
       i--;
       continue;
     }
-    if (up.attempt || up.release) continue;
-    // A swap of this handle failed lately: the entry was put back to try
-    // again, after the same cooldown any failed swap waits out.
-    if (up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs) continue;
+    const { up } = entry;
+    if (up.attempt || up.release || releaseCoolingDown(up, nowMs)) continue;
     if (handBack?.(up)) {
       queue.splice(i, 1);
-      return { up, restore: false, forTiles: true };
+      return { entry, reason: 'tiles' };
     }
-    const room = tierAdmission(up, up.appliedTier);
+    const room = tierAdmission(up, up.appliedTier!);
     if (room === 'blocked') continue;
     queue.splice(i, 1);
-    return { up, restore: room === 'admit' };
+    return { entry, reason: room === 'admit' ? 'restore' : 'neverFits' };
   }
   return null;
 }
 
-/** Put a restore entry whose swap failed, hung or was cut short back on the
- *  queue — only if its body still draws the stand-in the entry was for, since
- *  a map that arrived by any other route has answered it. It then waits out
- *  its handle's cooldown in takeRestoreRefetch before it is asked again, so
- *  a body is never left on a stand-in for the session by one bad fetch.
- *  True when it was put back. */
-export function requeueRestoreEntry(queue: RestoreRefetchEntry[], entry: RestoreRefetchEntry): boolean {
-  if (!entry.up.appliedTier || materialColorMap(entry.up.material) !== entry.tex) return false;
-  if (!queue.includes(entry)) queue.push(entry);
-  return true;
-}
-
 /**
- * The restore queue and the one entry whose swap is in the air, as one object
- * so the bookkeeping a swap's end owes is in one place: an entry whose swap
- * lands is answered; one whose swap fails, hangs or is abandoned goes back on
- * the queue (requeueRestoreEntry) and waits out its handle's cooldown.
+ * The restore queue and the one entry whose swap is in the air. An entry
+ * whose swap lands is answered. One whose swap fails or hangs goes to the
+ * back of the queue and waits out its handle's cooldown. One cut short —
+ * abandoned because its body came back into view or under protection, or by
+ * a teleport — goes to the front, since its body is the one the player
+ * turned toward. Either way only while its body still draws the stand-in.
  */
 export class RestoreQueue {
   readonly entries: RestoreRefetchEntry[] = [];
@@ -1659,7 +1669,8 @@ export class RestoreQueue {
     return this.entries.length;
   }
 
-  /** Start over from a lost context's entries (buildRestoreQueue). */
+  /** Start over from a lost context's entries (buildRestoreQueue); a swap
+   *  still in the air from the old queue is no longer one of its own. */
   rebuild(entries: readonly { up: TextureUpgrade; tex: THREE.Texture | null; distance: number }[]): void {
     this.entries.length = 0;
     this.inFlight = null;
@@ -1667,25 +1678,105 @@ export class RestoreQueue {
   }
 
   /** The next entry to start (takeRestoreRefetch), remembered as the one in
-   *  the air. `necessary` is what the swap is started with: everything but a
-   *  hand-back the tiles asked for. */
+   *  the air. */
   take(
     handBack?: (up: TextureUpgrade) => boolean,
     nowMs = performance.now(),
-  ): { up: TextureUpgrade; restore: boolean; necessary: boolean } | null {
+  ): { entry: RestoreRefetchEntry; reason: 'restore' | 'neverFits' | 'tiles' } | null {
     const next = takeRestoreRefetch(this.entries, handBack, nowMs);
-    if (!next) return null;
-    const tex = materialColorMap(next.up.material);
-    this.inFlight = tex ? { up: next.up, tex } : null;
-    return { up: next.up, restore: next.restore, necessary: next.forTiles !== true };
+    this.inFlight = next?.entry ?? null;
+    return next;
   }
 
-  /** The swap of `up` has ended, landed or not. A no-op for any other handle. */
-  ended(up: TextureUpgrade, landed: boolean): void {
+  /** The swap of `up` has ended. True when it was this queue's entry; a
+   *  no-op, and false, for any other handle. */
+  ended(up: TextureUpgrade, outcome: SwapOutcome): boolean {
     const entry = this.inFlight;
-    if (!entry || entry.up !== up) return;
+    if (!entry || entry.up !== up) return false;
     this.inFlight = null;
-    if (!landed) requeueRestoreEntry(this.entries, entry);
+    if (outcome !== 'landed' && !restoreEntryStale(entry)) {
+      if (outcome === 'abandoned') this.entries.unshift(entry);
+      else this.entries.push(entry);
+    }
+    return true;
+  }
+}
+
+/**
+ * The one swap down the ladder lets be in the air, a planned release or a
+ * restore-queue swap alike — each transiently holds two maps, so several at
+ * once would raise the peak they exist to lower — and everything its end
+ * owes, in one place whichever way it ends: the slot freed; the restore
+ * entry answered or put back (RestoreQueue.ended); for a swap that gave a
+ * map back, the tiles' fresh dwell (`takeEnded`, ladderPressure's
+ * `swapEnded`); for one cut short, the ledger's new figure pushed at once;
+ * and for a planned release, the failure and timeout counts behind the
+ * "maps cannot be given back" warning.
+ */
+export class SwapSlot {
+  /** The handle whose swap is in the air, or null. */
+  inFlight: TextureUpgrade | null = null;
+  readonly restores = new RestoreQueue();
+  /** Planned releases that failed in a row, and swaps that hung. */
+  failures = 0;
+  timeouts = 0;
+  private endedSincePass = false;
+
+  constructor(private readonly hooks: {
+    /** Hand the envelope's other manager the ladder's new figure. */
+    onLedgerChange: () => void;
+    /** A failure or a timeout was counted. */
+    onTrouble?: () => void;
+  }) {}
+
+  /** Start a swap down of `up` for `reason`, if the slot is free and the
+   *  handle can. */
+  start(up: TextureUpgrade, reason: ReleaseReason, nowMs: number): boolean {
+    if (this.inFlight) return false;
+    this.inFlight = up;
+    const started = startTierRelease(up, nowMs, {
+      reason,
+      onLedgerChange: this.hooks.onLedgerChange,
+      onSettled: (landed) => this.end(up, reason, landed ? 'landed' : 'failed'),
+      onAbandoned: (how) => this.end(up, reason, how),
+    });
+    if (!started) {
+      this.inFlight = null;
+      this.restores.ended(up, 'failed');
+    }
+    return started;
+  }
+
+  /** Start the next restore-queue swap (RestoreQueue.take), if any. */
+  startRestore(handBack?: (up: TextureUpgrade) => boolean, nowMs = performance.now()): boolean {
+    if (this.inFlight) return false;
+    const next = this.restores.take(handBack, nowMs);
+    return next ? this.start(next.entry.up, next.reason, nowMs) : false;
+  }
+
+  /** Whether a swap that gave a map back has ended since this was last
+   *  asked — once per pressure pass. */
+  takeEnded(): boolean {
+    const ended = this.endedSincePass;
+    this.endedSincePass = false;
+    return ended;
+  }
+
+  private end(up: TextureUpgrade, reason: ReleaseReason, outcome: SwapOutcome): void {
+    if (this.inFlight === up) this.inFlight = null;
+    const queued = this.restores.ended(up, outcome);
+    if (reason !== 'restore') this.endedSincePass = true;
+    if (outcome === 'abandoned' || outcome === 'expired') this.hooks.onLedgerChange();
+    if (outcome === 'expired') {
+      this.timeouts++;
+      this.hooks.onTrouble?.();
+    } else if (!queued && outcome === 'landed') {
+      this.failures = 0;
+      this.timeouts = 0;
+    } else if (!queued && outcome === 'failed') {
+      this.failures++;
+      this.hooks.onTrouble?.();
+    }
   }
 }
 
@@ -1694,7 +1785,7 @@ export class RestoreQueue {
  *  reader it had is this handle, and it has stopped waiting. A KTX2 rung
  *  cannot be aborted (its loader takes no signal); it disposes itself on
  *  arrival instead. */
-export function cancelTierRelease(up: TextureUpgrade): void {
+export function cancelTierRelease(up: TextureUpgrade, how: 'abandoned' | 'expired' = 'abandoned'): void {
   const release = up.release;
   up.release = undefined;
   up.pendingReleaseBytes = undefined;
@@ -1703,6 +1794,7 @@ export function cancelTierRelease(up: TextureUpgrade): void {
   // it out unuploaded (textureWarmer), rather than paying an upload nobody
   // will draw and that the ledger no longer counts.
   release?.pending?.dispose();
+  release?.onAbandoned?.(how);
 }
 
 /** Longest side a released rung's stand-in image keeps. The width of the map

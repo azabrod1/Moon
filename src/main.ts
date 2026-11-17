@@ -3686,6 +3686,8 @@ function installDevHooks() {
       planetariumMode?.devSetLensRampBand(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
+    /** The live arrival look: `keepDeg` is how far the frame-keep floor turned the camera toward the destination on the last frame (planetarium/frameKeep.ts), `trackDeg` the tracking shot's own turn. Null once the look ends. */
+    arrivalLook: () => planetariumMode?.devArrivalLook() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     /** Lift off from a landed body the way the deck's own row does; false when not landed. */

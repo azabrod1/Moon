@@ -395,6 +395,7 @@ import {
   startArrivalLook,
   stepCruiseAim,
 } from './cruiseAim';
+import type { FrameKeepView } from './frameKeep';
 import {
   canStartTutorial,
   isStepSettled,
@@ -883,6 +884,14 @@ export class PlanetariumMode {
    *  float32 vertices translated by −ship — the A/B for any question about
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
+  /** `?framekeep=0`: no frame-keep floor under the arrival look
+   *  (frameKeep.ts), so a teleport arrives in the bare settled chase pose
+   *  even where that leaves the destination off the edge of a narrow
+   *  screen — the A/B for the floor, and its kill switch. */
+  private readonly frameKeepEnabled = new URLSearchParams(location.search).get('framekeep') !== '0';
+  /** The visible frame handed to the aim stage each cruise frame, refilled in
+   *  place from the camera (no per-frame allocation). */
+  private readonly aimFrameView: FrameKeepView = { designFovDeg: 60, aspect: 1, lensStrength: 0 };
 
   /** Fade the stereographic lens out as one body fills the view
    *  (shared/math/lensProximity.ts). Always on in the app; the dev console's
@@ -6233,6 +6242,20 @@ export class PlanetariumMode {
       }
     }
 
+    // The frame the floor fits the destination into: the DISPLAYED field
+    // (displayFovDeg, never camera.fov, which holds the lens overscan), the
+    // canvas aspect, and the lens's effective strength — the same numbers
+    // the lens pass draws with.
+    let frame: FrameKeepView | null = null;
+    if (this.frameKeepEnabled && look) {
+      const lens = this.camera.userData.lens as
+        | { strength: number; designFovDeg: number; effectiveStrength?: number }
+        | undefined;
+      this.aimFrameView.designFovDeg = displayFovDeg(this.camera);
+      this.aimFrameView.aspect = this.camera.aspect;
+      this.aimFrameView.lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+      frame = this.aimFrameView;
+    }
     stepCruiseAim(
       this.cruiseAim,
       this.camera.position,
@@ -6240,6 +6263,7 @@ export class PlanetariumMode {
       this.renderOriginAU,
       dt,
       this.tmpAimDir,
+      frame,
     );
     this.camera.lookAt(
       this.tmpAimTarget.copy(this.camera.position).add(this.tmpAimDir),
@@ -17021,7 +17045,7 @@ export class PlanetariumMode {
     const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
     startArrivalLook(
       this.cruiseAim,
-      { kind: 'planet', name: planet.name },
+      { kind: 'planet', name: planet.name, radiusAU: planet.radiusAU * this.planetScale },
       arrivalDistanceAU,
     );
     // Seed the governor with the WHOLE satellite system: in a cold system
@@ -17195,9 +17219,15 @@ export class PlanetariumMode {
       .copy(destination.bodyPosition)
       .sub(destination.position);
     const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    // The pose's own rendered size (the flyby anchor), which is also the disc
+    // the frame-keep floor fits on screen.
+    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
+    const renderedRForPose = parentForSize
+      ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
+      : moon.radiusAU;
     startArrivalLook(
       this.cruiseAim,
-      { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet },
+      { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet, radiusAU: renderedRForPose },
       arrivalDistanceAU,
     );
     // Catalog refs for the analytic per-frame moon position (the mesh is
@@ -17214,10 +17244,6 @@ export class PlanetariumMode {
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
     // in-system default would cross the whole standoff.
     this.governedMoonSeeds = [{ name: moon.name, parentPlanet: moon.parentPlanet }];
-    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
-    const renderedRForPose = parentForSize
-      ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
-      : moon.radiusAU;
     this.devLastArrivalPose = {
       body: moon.name,
       kind: 'moon',
@@ -18683,6 +18709,23 @@ export class PlanetariumMode {
   /** DEV: the authored pose of the last teleport arrival (see field). */
   devArrivalPose(): unknown {
     return this.devLastArrivalPose;
+  }
+
+  /** DEV: the live arrival look — whose it is, whether an input has
+   *  released it, and how far (degrees off the origin aim) the frame-keep
+   *  floor and the tracking shot each turned the camera on the last step.
+   *  Null once the look has ended. */
+  devArrivalLook(): unknown {
+    const look = this.cruiseAim.look;
+    if (!look) return null;
+    return {
+      kind: look.kind,
+      name: look.name,
+      released: look.releaseElapsedS !== null,
+      keepDeg: look.keepRad * RAD2DEG,
+      trackDeg: look.trackRad * RAD2DEG,
+      frameKeep: this.frameKeepEnabled,
+    };
   }
 
   /** DEV: which governed body owned the speed cap on the last cruise frame.

@@ -18,6 +18,10 @@ import {
   ARRIVAL_ENGAGE_START_RATIO,
   ARRIVAL_LOOK_RELEASE_S,
 } from './arrivalLogic';
+import { FLIGHT_UP_SCENE } from './flightFrame';
+import { discFitsFrame, type FrameKeepView } from './frameKeep';
+import { CHASE_CAM_LIFT_FRAC, CRUISE_CAM_DIST_AU } from './cruiseView';
+import { DEG2RAD } from '../shared/math/angles';
 
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const out = new THREE.Vector3();
@@ -645,6 +649,135 @@ describe('the post-pass hold (a travel ends on its destination)', () => {
   });
 });
 
+describe('the frame-keep floor (the destination stays on screen)', () => {
+  const DT = 1 / 60;
+  const PHONE: FrameKeepView = { designFovDeg: 60, aspect: 390 / 844, lensStrength: 1 };
+  const DESKTOP: FrameKeepView = { designFovDeg: 60, aspect: 1280 / 800, lensStrength: 1 };
+
+  // The real chase rig, level flight: the ship at the origin heading along a
+  // horizon direction, the camera one boom back and lifted on the cruise up.
+  const UP = FLIGHT_UP_SCENE.clone();
+  const FORWARD = new THREE.Vector3(0, UP.z, -UP.y).normalize(); // ⊥ UP
+  const RIGHT = new THREE.Vector3().crossVectors(FORWARD, UP).normalize();
+  const CAM = FORWARD.clone().multiplyScalar(-CRUISE_CAM_DIST_AU)
+    .addScaledVector(UP, CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC);
+  const BASE = CAM.clone().negate().normalize();
+
+  /** A planet arrival as measured: the body `rightDeg`/`upDeg` off the ship's
+   *  heading at the 8.83-radii standoff (a 6.5° disc). */
+  function planetArrival(rightDeg: number, upDeg: number, standoffAU = 1.3e-3) {
+    const dir = FORWARD.clone()
+      .addScaledVector(RIGHT, Math.tan(rightDeg * DEG2RAD))
+      .addScaledVector(UP, Math.tan(upDeg * DEG2RAD))
+      .normalize();
+    return { body: dir.multiplyScalar(standoffAU), radiusAU: standoffAU / 8.83 };
+  }
+
+  function arrive(state: CruiseAimState, body: THREE.Vector3, radiusAU: number) {
+    clearArrivalLook(state);
+    cutAim(state);
+    startArrivalLook(state, { kind: 'planet', name: 'Uranus', radiusAU }, body.distanceTo(CAM));
+  }
+
+  const fits = (aim: THREE.Vector3, body: THREE.Vector3, radiusAU: number, frame: FrameKeepView) => {
+    const toBody = body.clone().sub(CAM);
+    return discFitsFrame(aim, toBody.clone().normalize(), Math.asin(radiusAU / toBody.length()), UP, frame);
+  };
+
+  it('a destination that already fits arrives in the base aim exactly, as before', () => {
+    // A ringless planet (straight below the heading) on a phone, and Uranus's
+    // sideways arrival on a desktop window.
+    for (const [rightDeg, upDeg, frame] of [[0, -11.5, PHONE], [-10.9, -3.7, DESKTOP]] as const) {
+      const state = createCruiseAimState();
+      const { body, radiusAU } = planetArrival(rightDeg, upDeg);
+      arrive(state, body, radiusAU);
+      stepCruiseAim(state, CAM, body, ORIGIN, DT, out, frame);
+      expect(angleBetween(out, BASE)).toBeLessThan(1e-7);
+      expect(state.look!.keepRad).toBe(0);
+    }
+  });
+
+  it('a sideways destination on a phone arrives turned just far enough to show it', () => {
+    const { body, radiusAU } = planetArrival(-10.9, -3.7); // Uranus, 2026-11-17
+    expect(fits(BASE, body, radiusAU, PHONE)).toBe(false); // the bug, as arithmetic
+    const state = createCruiseAimState();
+    arrive(state, body, radiusAU);
+    stepCruiseAim(state, CAM, body, ORIGIN, DT, out, PHONE);
+    expect(fits(out, body, radiusAU, PHONE)).toBe(true);
+    const turn = angleBetween(out, BASE);
+    expect(turn).toBeGreaterThan(1 * DEG2RAD);
+    expect(turn).toBeCloseTo(state.look!.keepRad, 9);
+    // Fitted, not centred: the destination still sits well off the axis.
+    expect(angleBetween(out, body.clone().sub(CAM).normalize())).toBeGreaterThan(4 * DEG2RAD);
+  });
+
+  it('without a frame the same arrival is the bare base aim (the ?framekeep=0 arm)', () => {
+    const { body, radiusAU } = planetArrival(-10.9, -3.7);
+    const state = createCruiseAimState();
+    arrive(state, body, radiusAU);
+    stepCruiseAim(state, CAM, body, ORIGIN, DT, out);
+    expect(angleBetween(out, BASE)).toBeLessThan(1e-7);
+  });
+
+  it('holds the destination on screen as the hands-off approach carries it outward', () => {
+    // The flyby closes toward a pass 1.8 radii to the side: the off-axis angle
+    // grows as the ship nears, which is what carried Uranus off the phone.
+    const radiusAU = 1.3e-3 / 8.83;
+    const passOffset = RIGHT.clone().multiplyScalar(-1.8 * radiusAU)
+      .addScaledVector(UP, -0.6 * radiusAU);
+    const state = createCruiseAimState();
+    const start = FORWARD.clone().multiplyScalar(1.3e-3).add(passOffset);
+    arrive(state, start, radiusAU);
+    stepCruiseAim(state, CAM, start, ORIGIN, DT, out, PHONE);
+    let prev = out.clone();
+    // To just past the engage start, at a pace well under the warp release.
+    // Near the end the disc outgrows a phone's width (12.3° of radius at
+    // ~0.52 of the arrival distance), and from there it is held covering the
+    // width rather than fitted inside it.
+    const frames = 600;
+    let oversizedFrames = 0;
+    for (let i = 1; i <= frames; i++) {
+      const along = 1.3e-3 * (1 - 0.55 * (i / frames));
+      const body = FORWARD.clone().multiplyScalar(along).add(passOffset);
+      stepCruiseAim(state, CAM, body, ORIGIN, DT, out, PHONE);
+      expect(fits(out, body, radiusAU, PHONE)).toBe(true);
+      if (Math.asin(radiusAU / body.distanceTo(CAM)) > 12.4 * DEG2RAD) oversizedFrames++;
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * DT, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
+    expect(oversizedFrames).toBeGreaterThan(0); // both regimes were exercised
+    expect(oversizedFrames).toBeLessThan(frames / 4);
+    expect(state.look!.releaseElapsedS).toBeNull();
+  });
+
+  it('the first input hands the keep back over the release fade, C0, ending on the base aim', () => {
+    const { body, radiusAU } = planetArrival(-10.9, -3.7);
+    const state = createCruiseAimState();
+    arrive(state, body, radiusAU);
+    stepCruiseAim(state, CAM, body, ORIGIN, DT, out, PHONE);
+    releaseArrivalLook(state);
+    let prev = out.clone();
+    for (let i = 0; i < Math.ceil(ARRIVAL_LOOK_RELEASE_S / DT) + 2; i++) {
+      stepCruiseAim(state, CAM, body, ORIGIN, DT, out, PHONE);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * DT, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
+    expect(state.look).toBeNull();
+    expect(angleBetween(out, BASE)).toBeLessThan(1e-6);
+  });
+
+  it('a fully engaged pass is the tracking shot exactly: the floor never outranks it', () => {
+    const state = createCruiseAimState();
+    const { camPos, moonWorld } = engagedPass(state);
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, DT, out, PHONE);
+    expect(angleBetween(out, pointMixDir(camPos, moonWorld, 1))).toBeLessThan(1e-9);
+  });
+});
+
 describe('allocation discipline', () => {
   it('stepCruiseAim allocates nothing across owner-representative inputs', () => {
     const state = createCruiseAimState();
@@ -655,8 +788,9 @@ describe('allocation discipline', () => {
     // out-params and state vectors are the SAME objects across steps.
     const aimRef = state.aimDir;
     const baseRef = state.prevBaseDir;
+    const frame = { designFovDeg: 60, aspect: 390 / 844, lensStrength: 1 };
     for (let i = 0; i < 100; i++) {
-      stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
+      stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out, i % 2 ? frame : null);
     }
     expect(state.aimDir).toBe(aimRef);
     expect(state.prevBaseDir).toBe(baseRef);

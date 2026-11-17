@@ -1105,8 +1105,11 @@ export class ShadowVisuals {
     parentShape: SpheroidShape,
   ): void {
     const parentRadiusAU = parentRadiusKm / KM_PER_AU;
-    // Near-surface hit along the shadow ray — same helper the surface-view
-    // vantage stands on, so the spot and the observer agree by construction.
+    // Near-surface hit along the shadow ray — the helper the surface-view
+    // vantage stands on. On a round body the spot and the observer agree by
+    // construction; on a flattened giant the spot is on the spheroid while
+    // the vantage is still a sphere point (above the drawn ground), until the
+    // site layer replaces it.
     const tAU = shadowAxisSphereHitAU(moonOffsetAU, moonAxis, parentRadiusAU, parentShape);
     if (tAU === null) {
       spot.visible = false;

@@ -38,7 +38,7 @@ import {
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, prebuildGeometryStep, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, wantsGeometryPrebuild, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
-import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
+import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseLandsOnContainer, releaseOffer, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { AIR_LOOKUP_RADIUS, MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
@@ -1535,6 +1535,9 @@ export class PlanetariumMode {
   private static readonly TRAVEL_PROTECT_GRACE_MS = 10_000;
   /** When the ladder first went over its share, or null while it is not. */
   private pressureSinceMs: number | null = null;
+  /** The tiles' own latch (world/ladderPressure): kept apart from the
+   *  ladder's, which also times out arrival warm goals. */
+  private tilesShortSinceMs: number | null = null;
   /** The destination the player committed to, and when its arrival finished
    *  (null while it is still under way). Its maps are the last the ladder
    *  would take back, and the protection is the STATE "this is where the ship
@@ -4398,7 +4401,10 @@ export class PlanetariumMode {
    * (undrawn is 0 — a hidden moon is not an unknown, it is a moon nobody can
    * see, and the Moon is hidden at cruise distances exactly when its 8K rung
    * is the one worth taking back). Demand that cannot be met is what counts
-   * as pressure, along with maps already past the ladder's share. And the
+   * as pressure, along with maps already past the ladder's share — and,
+   * apart from both, the tiles' own demand (the streamer's tilesShort, from
+   * last frame's reconcile), which may take only a rung that drops to a
+   * compressed container and never ends an arrival's warm goals. And the
    * bodies that are eligible — a rung to give, its release band served,
    * nothing protecting them — become the candidates the farthest of which is
    * asked to hand its map back, one at a time.
@@ -4461,16 +4467,10 @@ export class PlanetariumMode {
             blockedDemand = true;
           }
         }
-        if (guarded.has(up) || !releaseDue(up, nowMs)) continue;
-        const low = releaseTargetTier(up);
-        if (!low) continue;
+        const offer = releaseOffer(up, nowMs, guarded.has(up));
+        if (!offer) continue;
         const id = `${name}:${up.key}`;
-        candidates.push({
-          id,
-          heldBytes: appliedTierHeldBytes(up),
-          lowBytes: tierUploadBytes(up.key, low),
-          distance,
-        });
+        candidates.push({ id, distance, ...offer });
         victims.set(id, up);
       }
     });
@@ -4483,16 +4483,28 @@ export class PlanetariumMode {
       nowMs,
       swapInFlight: this.releasing !== null,
       restoreQueued: this.restoreRefetch.length > 0,
+      tilesShort: this.sectors?.tilesShort() ?? false,
+      tilesShortSinceMs: this.tilesShortSinceMs,
     });
     this.pressureSinceMs = plan.pressureSinceMs;
+    this.tilesShortSinceMs = plan.tilesShortSinceMs;
     // Ahead of any discretionary release: a globe on a stand-in is one the
     // player can see is soft, and both take the same one-in-flight slot.
-    if (plan.restoreFirst) this.pumpRestoreRefetch(nowMs);
-    // Which the restore may just have taken.
-    if (!plan.releaseDue || this.releasing) return;
+    // While only the tiles are short, a stand-in the pass would give back for
+    // them anyway is handed back rather than fetched at its own tier first.
+    if (plan.restoreFirst) {
+      this.pumpRestoreRefetch(nowMs, plan.tilesReleaseDue
+        ? (up) => !guarded.has(up) && releaseDue(up, nowMs) && releaseLandsOnContainer(up)
+        : undefined);
+    }
+    // Which the restore may just have taken. The tiles' shortfall plans from
+    // the rungs that drop to a compressed container only; the ladder's own
+    // pressure from every candidate, as it always has.
+    if ((!plan.releaseDue && !plan.tilesReleaseDue) || this.releasing) return;
     const victim = planRelease(candidates, {
       ladderBytes,
       envelopeBytes: this.memory.availableBytes(),
+      containersOnly: !plan.releaseDue,
     });
     const up = victim ? victims.get(victim.id) : undefined;
     if (!victim || !up) return;
@@ -4567,9 +4579,9 @@ export class PlanetariumMode {
    * entry whose handle is busy also stays queued, so an upgrade that fails
    * mid-restore leaves nothing stranded on a stand-in for the session.
    */
-  private pumpRestoreRefetch(nowMs: number): void {
+  private pumpRestoreRefetch(nowMs: number, handBack?: (up: TextureUpgrade) => boolean): void {
     if (this.releasing || this.restoreRefetch.length === 0) return;
-    const next = takeRestoreRefetch(this.restoreRefetch);
+    const next = takeRestoreRefetch(this.restoreRefetch, handBack);
     if (!next) return;
     const up = next.up;
     this.releasing = up;

@@ -1328,6 +1328,40 @@ export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
 /** The tier a body's first-paint map is fetched at. */
 const BOOT_TIER: TextureTier = '2k';
 
+/** Whether this handle's release lands on a compressed container: the map
+ *  below is fetched as a .ktx2 (TIER_FILE_OVERRIDES, with a loader bound),
+ *  never a webp and never the boot map. The only release the tiles'
+ *  shortfall may ask for (world/ladderPressure): a container's upload is a
+ *  banded memcpy, while a webp's is one unsliceable sRGB conversion — and the
+ *  4096 boot maps of Earth's globe and of Io, Europa and Ganymede free
+ *  nothing against the container above them. */
+export function releaseLandsOnContainer(up: TextureUpgrade): boolean {
+  const low = releaseTargetTier(up);
+  return low !== null && resolveTierFile(up.key, low).endsWith('.ktx2');
+}
+
+/**
+ * What this handle offers the release planner this frame, or null when it
+ * offers nothing: a body the player is protected on (`guarded`), one still
+ * inside its release band or short of its dwell, and one with no tier below.
+ * The planner's ReleaseCandidate, less the id and the distance only the scene
+ * knows.
+ */
+export function releaseOffer(
+  up: TextureUpgrade,
+  nowMs: number,
+  guarded: boolean,
+): { heldBytes: number; lowBytes: number; lowIsContainer: boolean } | null {
+  if (guarded || !releaseDue(up, nowMs)) return null;
+  const low = releaseTargetTier(up);
+  if (!low) return null;
+  return {
+    heldBytes: appliedTierHeldBytes(up),
+    lowBytes: tierUploadBytes(up.key, low),
+    lowIsContainer: resolveTierFile(up.key, low).endsWith('.ktx2'),
+  };
+}
+
 /**
  * Put a LOWER map on a material on purpose — the swap down `applyColorTierTexture`
  * refuses by construction, since its rank guard exists to stop a late arrival
@@ -1522,10 +1556,13 @@ export function buildRestoreQueue(
  * squeeze that passes, must not leave a body on a stand-in for the session.
  * A rung that can never fit again is taken from the queue with `restore`
  * false: it is handed back instead, which fetches a smaller real map in place
- * of the stand-in.
+ * of the stand-in. So is one `handBack` names — the release pass asks for
+ * that while the tiles are short and the rung is one it would give back for
+ * them anyway, rather than fetch a far 8K only to swap it straight down.
  */
 export function takeRestoreRefetch(
   queue: RestoreRefetchEntry[],
+  handBack?: (up: TextureUpgrade) => boolean,
 ): { up: TextureUpgrade; restore: boolean } | null {
   for (let i = 0; i < queue.length; i++) {
     const { up, tex } = queue[i];
@@ -1535,6 +1572,10 @@ export function takeRestoreRefetch(
       continue;
     }
     if (up.attempt || up.release) continue;
+    if (handBack?.(up)) {
+      queue.splice(i, 1);
+      return { up, restore: false };
+    }
     const room = tierAdmission(up, up.appliedTier);
     if (room === 'blocked') continue;
     queue.splice(i, 1);

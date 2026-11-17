@@ -60,6 +60,8 @@ import {
   releaseDue,
   releaseDwellMs,
   releaseExpired,
+  releaseLandsOnContainer,
+  releaseOffer,
   releaseTargetTier,
   releaseUpgradeSource,
   startTierRelease,
@@ -90,9 +92,9 @@ import {
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
-import { ladderCeilingBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { ladderCeilingBytes, planRelease, sectorBudgetBytes, UNMEASURED_DESKTOP_PROFILE, UNMEASURED_TOUCH_PROFILE } from './world/gpuEnvelope';
 import { cloudFieldPoolBytes } from './world/cloudField';
-import { GROUND_LEAF_SEGMENTS, SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
+import { GROUND_LEAF_SEGMENTS, SECTOR_NIGHT_SETS, SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import {
   AIR_LOOKUP_RADIUS,
   applyNightLift,
@@ -2003,40 +2005,47 @@ describe('the ladder against the sector memory envelope', () => {
     return bytes;
   }
 
-  it('leaves a desktop\'s tiles their working set with every rung earned at once', () => {
+  it('sums the heaviest a desktop ladder can be, and what that leaves the tiles', () => {
     // What a desktop session could hold if it toured everything and gave
-    // nothing back: seven 4K containers at 10.7 MiB (the photo moons whose
-    // ladder stops at 4K), three 4K webp rungs at 42.7 (Venus, Saturn, and
-    // Mars, whose Tianwen-1 map is too rich in texture for a container to
-    // clear the wire cap its Viking map cleared), and eleven 8K containers at
-    // 42.7 — the Moon, the cloud deck, Earth's globe and its night lights,
-    // Mercury, Jupiter, and the five bodies with an 8K photo rung. Jupiter's
-    // 4K webp is climbed past, so it is not in the sum. The 4K containers the boot warm uses are
-    // not in this sum: the Moon, the deck and the night lights all reach 8K
-    // on a desktop, so the rung their container serves has been climbed past
-    // by the time the ladder is at its heaviest. They buy a frame, not
-    // memory, here; Mercury's 4K container is climbed past the same way.
+    // nothing back: four 4K containers at 10.7 MiB (the photo moons whose
+    // ladder stops at 4K: Mimas, Rhea, Iapetus and Charon), three 4K webp
+    // rungs at 42.7 (Venus, Saturn, and Mars, whose Tianwen-1 map is too rich
+    // in texture for a container to clear the wire cap its Viking map
+    // cleared), and fourteen 8K containers at 42.7 — the Moon, the cloud
+    // deck, Earth's globe and its night lights, Mercury, Jupiter, and the
+    // eight bodies with an 8K photo rung. Jupiter's 4K webp is climbed past,
+    // so it is not in the sum. The 4K containers the boot warm uses are not
+    // in this sum: the Moon, the deck and the night lights all reach 8K on a
+    // desktop, so the rung their container serves has been climbed past by
+    // the time the ladder is at its heaviest. They buy a frame, not memory,
+    // here; Mercury's and the 8K photo moons' 4K containers are climbed past
+    // the same way.
     const real = ladderWorstCaseBytes(false, true);
-    expect(mib(real)).toBeCloseTo(672.0, 1);
     expect(mib(real)).toBeCloseTo(
-      7 * mib(equirectMapGpuBytes(4096, true))
+      4 * mib(equirectMapGpuBytes(4096, true))
       + 3 * mib(equirectMapGpuBytes(4096))
-      + 11 * mib(equirectMapGpuBytes(8192, true)),
+      + 14 * mib(equirectMapGpuBytes(8192, true)),
       1,
     );
-    const budget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - real;
-    expect(mib(budget)).toBeCloseTo(352.0, 1);
-    // Twenty-one bodies with a ladder no longer leave the tiles the whole
-    // draw-call ceiling to spend, which is the price of the moons having real
-    // maps. What has to survive it is the working set: even at the heaviest
-    // the ladder can be, what is left over still holds every set the streamer
-    // is allowed to keep resident, so a tile is never evicted to pay for a
-    // globe. Mars's webp rung took 32 MiB off that margin; sixteen Earth sets
-    // still fit, with a few MiB to spare, and the next map to lose its
-    // container would be the one to break this.
-    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth))
-      .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
-    expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / sectorSetGpuBytes(SECTOR_SETS.Earth))
+    expect(mib(real)).toBeCloseTo(768.0, 1);
+    // The cloud field's pool comes off the top of the envelope before either
+    // spender: twelve 10.67 MiB pages on this row, held for the session.
+    const pool = cloudFieldPoolBytes(UNMEASURED_DESKTOP_PROFILE.cloudFieldLayers);
+    expect(mib(pool)).toBeCloseTo(12 * 10.67, 0);
+    const budget = sectorBudgetBytes(UNMEASURED_DESKTOP_PROFILE, real,
+      UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes, pool);
+    expect(mib(budget)).toBeCloseTo(1024 - mib(pool) - mib(real), 1);
+    // Twenty-one bodies with a ladder no longer leave the tiles their working
+    // set if every one of them is held at its top at once: under six Earth
+    // sets of the sixteen the streamer may keep (and it was already ten,
+    // short of sixteen, before these three moons took their 8K rungs, once
+    // the pool is counted). What answers it is the tiles' shortfall, which
+    // hands far containers back until the working set fits or nothing is
+    // left that may go (the test below); this sum is what it starts from.
+    const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
+    expect(Math.floor(budget / set)).toBe(5);
+    expect(budget).toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes);
+    expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / set)
       .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
 
     // And with no transcoder at all: the rungs that keep a webp twin cost
@@ -2052,18 +2061,140 @@ describe('the ladder against the sector memory envelope', () => {
     // ...with the cloud field's pool held out of the envelope too, as a session
     // that asked for the field holds it.
     expect(worst).toBeLessThanOrEqual(
-      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes,
-        cloudFieldPoolBytes(UNMEASURED_DESKTOP_PROFILE.cloudFieldLayers)),
+      ladderCeilingBytes(UNMEASURED_DESKTOP_PROFILE, UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes, pool),
     );
-    const worstBudget = UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst;
     // Without a transcoder Mercury has no rung at all (both of its rungs are
     // containers), which is one 4K webp fewer than this ladder used to hold.
-    expect(mib(worstBudget)).toBeCloseTo(469.3, 1);
-    // Even on that ladder — every map at its heaviest, no transcoder — what
-    // is left over still holds a whole working set, so the tiles are never
-    // squeezed by the globe maps on this row.
-    expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth))
-      .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
+    expect(mib(UNMEASURED_DESKTOP_PROFILE.envelopeBytes - worst)).toBeCloseTo(469.3, 1);
+    // Less the pool, that leaves fifteen whole sets: one short of the working
+    // set, on the one ladder the tiles' shortfall has nothing to take from —
+    // with no transcoder there is no container to drop to, and the webp
+    // rungs are not the tiles' to give back.
+    const worstBudget = sectorBudgetBytes(UNMEASURED_DESKTOP_PROFILE, worst,
+      UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes, pool);
+    expect(mib(worstBudget)).toBeCloseTo(1024 - mib(pool) - mib(worst), 1);
+    expect(Math.floor(worstBudget / set)).toBe(UNMEASURED_DESKTOP_PROFILE.residentCap - 1);
+  });
+
+  it('gives out-of-band containers back until the tiles hold their working set', () => {
+    // The heaviest desktop ladder above, every body far away and past its
+    // dwell, the pool held: the tiles' shortfall plans one release at a time
+    // until the tiles have their working set back or nothing may go.
+    const profile = UNMEASURED_DESKTOP_PROFILE;
+    const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
+    const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384, false);
+    const held: Array<{ up: TextureUpgrade; material: THREE.MeshStandardMaterial }> = [];
+    for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
+      const material = trackMaterial(new THREE.MeshStandardMaterial());
+      const up = makeTextureUpgrade(key, material);
+      if (!up) continue;
+      up.appliedTier = up.effectiveMaxTier;
+      material.map = rungTexture(key, up.appliedTier);
+      trackReleaseBand(up, 0, 0);
+      held.push({ up, material });
+    }
+    const nowMs = 60_000; // past every dwell, compressed or not
+    const ladder = () => held.reduce((sum, h) => sum + appliedTierGpuBytes(h.up), 0);
+    const sets = () => sectorBudgetBytes(profile, ladder(), profile.sectorFloorBytes, pool) / set;
+    const start = ladder();
+    expect(sets()).toBeLessThan(profile.residentCap);
+    const taken: string[] = [];
+    while (sets() < profile.residentCap) {
+      const candidates = held.flatMap((h, i) => {
+        const offer = releaseOffer(h.up, nowMs, false);
+        return offer ? [{ id: String(i), distance: i, ...offer }] : [];
+      });
+      const victim = planRelease(candidates, {
+        ladderBytes: ladder(), envelopeBytes: profile.envelopeBytes - pool, containersOnly: true,
+      });
+      if (!victim) break;
+      const { up, material } = held[Number(victim.id)];
+      const low = releaseTargetTier(up)!;
+      // Never a webp, never the boot map.
+      expect(`${up.key} -> ${resolveTierFile(up.key, low)}`).toMatch(/\.ktx2$/);
+      taken.push(`${up.key} ${up.appliedTier}`);
+      up.appliedTier = low; // the swap lands
+      material.map = rungTexture(up.key, low);
+    }
+    expect(sets()).toBeGreaterThanOrEqual(profile.residentCap);
+    // Each of these is an 8K container giving way to its 4K one, 32 MiB
+    // apiece, and it takes as many as the shortfall needs and no more.
+    const step = equirectMapGpuBytes(8192, true) - equirectMapGpuBytes(4096, true);
+    const owed = start + pool + profile.residentCap * set - profile.envelopeBytes;
+    expect(taken.length).toBe(Math.ceil(owed / step));
+    for (const t of taken) expect(t).toMatch(/ 8k$/);
+  });
+
+  it('never takes an in-band or protected rung for the tiles', () => {
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    const at8k = (key: string) => {
+      const up = ladderHandle(key);
+      up.appliedTier = '8k';
+      up.material.map = rungTexture(key, '8k');
+      return up;
+    };
+    const far = at8k('dione'); // out of band and past its dwell: the one to go
+    const inBand = at8k('tethys'); // still the size its band holds it at
+    const guarded = at8k('enceladus'); // the body the player is landed on
+    const boot = at8k('jupiter'); // drops past its 4K webp to the boot map
+    for (const up of [far, guarded, boot]) trackReleaseBand(up, 0, 0);
+    trackReleaseBand(inBand, 1, 0);
+    const nowMs = 60_000;
+    const offered: Array<[StandardUpgrade, number, boolean]> = [
+      [far, 1, false], [inBand, 4, false], [guarded, 3, true], [boot, 2, false],
+    ];
+    const candidates = offered.flatMap(([up, distance, isGuarded]) => {
+      const offer = releaseOffer(up, nowMs, isGuarded);
+      return offer ? [{ id: up.key, distance, ...offer }] : [];
+    });
+    // Neither the body in its band nor the protected one is offered at all.
+    expect(candidates.map((c) => c.id)).toEqual(['dione', 'jupiter']);
+    const roomy = { ladderBytes: 0, envelopeBytes: Number.POSITIVE_INFINITY };
+    // The tiles may take only the rung that drops to a container, though
+    // Jupiter is farther...
+    expect(planRelease(candidates, { ...roomy, containersOnly: true })?.id).toBe('dione');
+    // ...and nothing once that one has gone,
+    expect(planRelease(candidates.filter((c) => c.id !== 'dione'), { ...roomy, containersOnly: true }))
+      .toBeNull();
+    // while the ladder's own pressure takes the farthest, as it always has.
+    expect(planRelease(candidates, roomy)?.id).toBe('jupiter');
+  });
+
+  it('a release evicts at most one set and nets at least one', () => {
+    // A swap down holds both maps from the low one's decode until it lands,
+    // and the tiles are trimmed for that transient before it is spent
+    // (sectorStreamer.test.ts, "trims the tiles for both maps before the low
+    // one is assigned"). Not gated: for every rung the tiles' shortfall may
+    // take, the transient is a 4K container, no bigger than any one set a
+    // body streams, so it costs the tiles one set at most; and once it lands
+    // the ladder is lighter by more than the biggest set, so they come out
+    // at least one set up on where they started.
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    const sets = [...Object.values(SECTOR_SETS), ...Object.values(SECTOR_NIGHT_SETS)]
+      .map((spec) => sectorSetGpuBytes(spec));
+    const smallest = Math.min(...sets);
+    const largest = Math.max(...sets);
+    const takeable: string[] = [];
+    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+      if (!tiers.includes('8k')) continue;
+      const up = ladderHandle(key);
+      up.appliedTier = '8k';
+      up.material.map = rungTexture(key, '8k');
+      if (!releaseLandsOnContainer(up)) continue;
+      takeable.push(key);
+      const transient = tierUploadBytes(key, releaseTargetTier(up)!);
+      expect(transient, key).toBeLessThanOrEqual(smallest);
+      expect(appliedTierGpuBytes(up) - transient, key).toBeGreaterThanOrEqual(largest);
+    }
+    // The 8K containers above a 4K one: the Moon, the deck, the night lights,
+    // Mercury, Callisto, Pluto and the three Saturnians. Earth's globe,
+    // Jupiter and the three Galileans that boot at 4096 drop to a webp.
+    expect(takeable.sort()).toEqual(['callisto', 'dione', 'earthClouds', 'earthNight', 'enceladus',
+      'mercury', 'moon', 'pluto', 'tethys']);
   });
 
   it('never lets a phone reach its heaviest: the rung that would is refused', () => {
@@ -3155,6 +3286,20 @@ describe('fetching the maps back after a lost context', () => {
     // Nothing can make room for this rung again — so it is handed back
     // instead, which fetches a smaller real map over the stand-in.
     expect(takeRestoreRefetch(queue)).toEqual({ up: blocked.up, restore: false });
+    expect(queue).toHaveLength(0);
+  });
+
+  it('hands a stand-in back instead of fetching it at its own tier when the release pass names it', () => {
+    // While the tiles are short, a far rung on a stand-in would be fetched
+    // back at its own tier only to be swapped straight down for them: the
+    // pass names it, and the restore fetches the smaller map instead. The
+    // rest keep their turn.
+    const near = onStandin('moon');
+    const far = onStandin('earthClouds');
+    const queue = [near, far];
+    bindTierAdmission(() => 'admit');
+    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: near.up, restore: true });
+    expect(takeRestoreRefetch(queue, (up) => up === far.up)).toEqual({ up: far.up, restore: false });
     expect(queue).toHaveLength(0);
   });
 

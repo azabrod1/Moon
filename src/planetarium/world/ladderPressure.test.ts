@@ -12,6 +12,8 @@ function state(over: Partial<LadderPressureState> = {}): LadderPressureState {
     nowMs: 0,
     swapInFlight: false,
     restoreQueued: false,
+    tilesShort: false,
+    tilesShortSinceMs: null,
     ...over,
   };
 }
@@ -102,5 +104,51 @@ describe('a rung waiting on a stand-in comes first', () => {
 
   it('asks for nothing when the queue is empty', () => {
     expect(planLadderPressure(state()).restoreFirst).toBe(false);
+  });
+});
+
+describe('the tiles\' shortfall', () => {
+  it('counts the tiles\' shortfall as pressure after the dwell', () => {
+    // A ladder inside its own share, refusing nothing, while the tiles want a
+    // set only the maps' bytes keep out: nothing else would ever hand a map
+    // back for them.
+    const first = planLadderPressure(state({ tilesShort: true, nowMs: 5_000 }));
+    expect(first.tilesShortSinceMs).toBe(5_000);
+    expect(first.tilesReleaseDue).toBe(false);
+    const young = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 5_000, nowMs: 5_000 + RELEASE_PRESSURE_DWELL_MS - 1,
+    }));
+    expect(young.tilesShortSinceMs).toBe(5_000);
+    expect(young.tilesReleaseDue).toBe(false);
+    const served = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 5_000, nowMs: 5_000 + RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(served.tilesReleaseDue).toBe(true);
+    // ...one swap at a time, like any other release,
+    expect(planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 0, nowMs: RELEASE_PRESSURE_DWELL_MS, swapInFlight: true,
+    })).tilesReleaseDue).toBe(false);
+    // ...a fresh spell owes the dwell again,
+    expect(planLadderPressure(state({ tilesShortSinceMs: 5_000, nowMs: 9_000 })).tilesShortSinceMs).toBeNull();
+    // ...and where the ladder's own pressure is due it plans as it always
+    // has, from every candidate rather than the tiles' narrower set.
+    const both = planLadderPressure(state({
+      blockedDemand: true, pressureSinceMs: 0, tilesShort: true, tilesShortSinceMs: 0,
+      nowMs: RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(both.releaseDue).toBe(true);
+    expect(both.tilesReleaseDue).toBe(false);
+  });
+
+  it('keeps it out of the latch arrival goals read', () => {
+    // pressureSinceMs is also what cuts a committed arrival's warm goals
+    // short (arrivalWarmGoalsExpired): Earth's tiles short at Earth must not
+    // end the climb of Earth's own maps.
+    const plan = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(plan.tilesReleaseDue).toBe(true);
+    expect(plan.pressureSinceMs).toBeNull();
+    expect(plan.releaseDue).toBe(false);
   });
 });

@@ -27,6 +27,14 @@
  * nothing, so it is released a margin past its own light edge (see the gate
  * below).
  *
+ * The streamer cannot take memory from the globe maps — its budget is what the
+ * envelope leaves over them — but it says when they are what it is short of
+ * (`tilesShort`): a set it wants is still waiting, the working set has a place
+ * for it, and it fits what the tiles may hold with no map on the ladder but not
+ * what the maps leave them now. That is the signal the ladder's release pass
+ * answers by giving back far rungs (world/ladderPressure); the tiles' own
+ * ceiling, the draw-call cap and the network are never reasons for it.
+ *
  * A tile is drawn only once it is resident on the GPU: the fetch decodes off
  * the main thread, the warm pump uploads it on its budgeted frame, and the
  * sector mesh is created on the pump's 'warmed' outcome — nothing on the
@@ -186,7 +194,7 @@ import { applyTextureDefaults, maskBytesPerTexel, normalBytesPerTexel, resolveTi
 import { TIER_RANK } from './textureLadder';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
-import type { MemoryEnvelope, SectorStreamerLimits } from './gpuEnvelope';
+import { sectorBudgetBytes, type MemoryEnvelope, type SectorStreamerLimits } from './gpuEnvelope';
 import { layoutGpuBytes, textureGpuBytes } from './textureBytes';
 import { smoothTraceEvent } from '../smoothnessTrace';
 
@@ -1076,6 +1084,8 @@ export class SectorStreamer {
   /** The one envelope the tiles and the globe maps spend between them. */
   private readonly envelope: MemoryEnvelope;
   private warnedNoBudget = false;
+  /** The last reconcile's answer to `tilesShort`. */
+  private short = false;
   private generation = 0;
   private lastNowMs = 0;
   private batching = false;
@@ -1297,6 +1307,8 @@ export class SectorStreamer {
    */
   maintain(globalMapBytes: number, nowMs: number): void {
     this.lastNowMs = nowMs;
+    // Nothing is wanted on a frame nothing measures, so nothing is short.
+    this.short = false;
     this.setGlobalMapBytes(globalMapBytes);
     for (const body of this.bodies.values()) {
       for (const slot of body.slots) {
@@ -1366,6 +1378,9 @@ export class SectorStreamer {
     ) {
       for (const slot of slots) this.release(slot);
       body.admitting = false;
+      // No reconcile follows for this body, and a suspended frame wants
+      // nothing; the batch's reconcile, if there is one, answers afresh.
+      this.short = false;
       return;
     }
 
@@ -1558,6 +1573,11 @@ export class SectorStreamer {
       if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) continue;
       this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
+    // Its own pass over what the admissions left, never a flag set inside the
+    // loop above: that loop stops at the in-flight cap and skips a candidate
+    // the fetch pool cannot carry, and either would leave the answer to
+    // whichever candidate happened to be reached.
+    this.short = this.shortOfMaps(candidates);
     // Last, with every release and materialisation of the frame behind it:
     // the cover each family's ground draws until something changes again.
     for (const body of this.bodies.values()) if (body.cutDirty) this.applyCut(body);
@@ -1787,6 +1807,41 @@ export class SectorStreamer {
     return this.heldBytes() + need <= this.budget();
   }
 
+  /**
+   * Whether the globe maps are what keeps a wanted set out: one of this
+   * frame's candidates is still idle, the working set has a place for it, and
+   * it fits what the tiles may hold with an EMPTY ladder but not what they may
+   * hold now. Each condition rules out a shortfall the ladder cannot answer:
+   * at the draw-call cap a set is refused whatever the memory; where the
+   * tiles' own ceiling binds, an empty ladder leaves them no more room than
+   * they have; and a set that fits now is only waiting on the network. Read
+   * at the floor the same way — a ladder big enough to hold the tiles at
+   * their floor is the case this exists for.
+   */
+  private shortOfMaps(candidates: ReadonlyArray<{ body: SectorBody; slot: SectorSlot }>): boolean {
+    if (candidates.length === 0 || this.liveCount() >= this.residentCap) return false;
+    const held = this.heldBytes();
+    const budget = this.budget();
+    const unsqueezed = sectorBudgetBytes(this.envelope, 0, this.envelope.floorBytes, this.envelope.fixedBytes);
+    for (const { body, slot } of candidates) {
+      if (slot.state !== 'idle') continue;
+      const need = held + this.slotSetBytes(body, slot);
+      if (need > budget && need <= unsqueezed) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when the last reconcile left a wanted set out for want of memory the
+   * globe maps hold, and only then (see shortOfMaps). Cleared on every frame
+   * that reconciles nothing — the chart's `maintain`, a suspended body,
+   * `dropAll` — since nothing is wanted there. Read by the ladder's release
+   * pass, which runs before this frame's reconcile, so it reads the last one.
+   */
+  tilesShort(): boolean {
+    return this.short;
+  }
+
   /** Bytes held: what the resident sets draw plus what the loads in flight
    *  have reserved. The figure the budget bounds. */
   private heldBytes(): number {
@@ -1859,6 +1914,7 @@ export class SectorStreamer {
    *  cache when they were resident before. */
   dropAll(): void {
     for (const body of this.bodies.values()) for (const slot of body.slots) this.release(slot);
+    this.short = false;
     // Whatever frame was open is over: a batch left behind by a caller that
     // never reached its endFrame must not hold every later frame in
     // measure-only mode.

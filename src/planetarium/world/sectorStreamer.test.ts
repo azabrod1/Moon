@@ -2570,6 +2570,133 @@ describe('the envelope the tiles and the globe maps share', () => {
   });
 });
 
+describe('what the tiles say they are short of', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  const MiB = 1024 * 1024;
+  /** Six level-0 sectors over the equator, all past the want size. */
+  const sizes: Record<string, number> = {};
+  for (let c = 0; c < 6; c++) sizes[`${c}_1`] = 4 + 0.01 * c;
+  const inside = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+  });
+
+  /** A streamer on one row with Earth registered, the globe maps holding
+   *  `ladderBytes`, run for enough frames to fill what it may. */
+  function settled(limits: SectorStreamerLimits, ladderBytes: number, want = sizes, frames = 12): SectorStreamer {
+    const streamer = makeStreamer(limits, { load: loader.load, warm: warm.warm });
+    streamer.register(earthHandle());
+    streamer.setGlobalMapBytes(ladderBytes);
+    for (let f = 0; f < frames; f++) streamer.update('Earth', inside, measureOf(want), f * 16);
+    return streamer;
+  }
+
+  it('says it is short when a wanted set fits its ceiling but not what the maps leave', () => {
+    loader.auto = true;
+    // The maps leave two sets of a 512 MiB ceiling; six are wanted.
+    const streamer = settled(NO_FLOOR, NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES);
+    expect(streamer.stats().budget).toBe(2 * EARTH_SET_BYTES);
+    expect(streamer.stats().resident).toBe(2);
+    expect(streamer.tilesShort()).toBe(true);
+    // Given the room, it takes it and stops saying so.
+    streamer.setGlobalMapBytes(0);
+    for (let f = 0; f < 8; f++) streamer.update('Earth', inside, measureOf(sizes), 1_000 + f * 16);
+    expect(streamer.stats().resident).toBe(6);
+    expect(streamer.tilesShort()).toBe(false);
+  });
+
+  it('is not short at the resident cap', () => {
+    loader.auto = true;
+    // Twenty-four wanted, a ceiling that buys more than the cap of sixteen and
+    // no map on the ladder: the cap refuses the rest, which no release fixes.
+    const many: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) for (let r = 0; r < 3; r++) many[`${c}_${r}`] = 4 + 0.01 * (c + 8 * r);
+    const streamer = settled(NO_FLOOR, 0, many, 24);
+    expect(streamer.stats().resident).toBe(NO_FLOOR.residentCap);
+    expect(streamer.tilesShort()).toBe(false);
+  });
+
+  it('is not short when its own ceiling binds', () => {
+    loader.auto = true;
+    // The touch row's tiles may hold six Earth sets whatever the maps hold,
+    // under a cap of eight, and eight are wanted: an empty ladder would leave
+    // them no more room. (The limited row's ceiling binds the same way, but
+    // its fetch pool of two cannot carry an Earth set's three maps at all.)
+    const eight: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) eight[`${c}_1`] = 4 + 0.01 * c;
+    const streamer = settled(TOUCH, 0, eight, 24);
+    expect(streamer.stats().resident).toBe(EARTH_FITS_TOUCH);
+    expect(EARTH_FITS_TOUCH).toBeLessThan(TOUCH.residentCap);
+    expect(streamer.tilesShort()).toBe(false);
+    // Squeezed below that by the maps, it is short again.
+    streamer.setGlobalMapBytes(TOUCH.envelopeBytes);
+    for (let f = 0; f < 4; f++) streamer.update('Earth', inside, measureOf(eight), 1_000 + f * 16);
+    expect(streamer.stats().resident).toBeLessThan(EARTH_FITS_TOUCH);
+    expect(streamer.tilesShort()).toBe(true);
+  });
+
+  it('is not short with nothing wanted', () => {
+    loader.auto = true;
+    const streamer = settled(NO_FLOOR, NO_FLOOR.envelopeBytes - EARTH_SET_BYTES, {});
+    expect(streamer.stats().resident).toBe(0);
+    expect(streamer.tilesShort()).toBe(false);
+  });
+
+  it('is not short on a frame with no reconcile', () => {
+    loader.auto = true;
+    const squeezed = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
+    const streamer = settled(NO_FLOOR, squeezed);
+    expect(streamer.tilesShort()).toBe(true);
+    // The chart's frame measures nothing and wants nothing.
+    streamer.maintain(squeezed, 2_000);
+    expect(streamer.tilesShort()).toBe(false);
+    // Nor does a suspended one, which returns before any reconcile.
+    streamer.update('Earth', inside, measureOf(sizes), 2_016);
+    expect(streamer.tilesShort()).toBe(true);
+    streamer.update('Earth', inside, measureOf(sizes), 2_032, 'all');
+    expect(streamer.tilesShort()).toBe(false);
+    // Nor after everything is dropped.
+    streamer.update('Earth', inside, measureOf(sizes), 2_048);
+    expect(streamer.tilesShort()).toBe(true);
+    streamer.dropAll();
+    expect(streamer.tilesShort()).toBe(false);
+  });
+
+  it('stays short across a full in-flight allowance', () => {
+    // Nothing lands: the first frame starts as many loads as the allowance
+    // takes, and every frame after stops at it before reaching a candidate.
+    // The answer is its own pass over the candidates still waiting, so it
+    // does not depend on which of them the admission loop happened to reach.
+    const limits = { ...NO_FLOOR, inflightCap: 2 };
+    const streamer = settled(limits, limits.envelopeBytes - 2 * EARTH_SET_BYTES, sizes, 1);
+    expect(streamer.stats().inflight).toBe(2);
+    expect(streamer.tilesShort()).toBe(true);
+    for (let f = 1; f < 6; f++) {
+      streamer.update('Earth', inside, measureOf(sizes), f * 16);
+      expect(streamer.stats().inflight).toBe(2);
+      expect(streamer.tilesShort()).toBe(true);
+    }
+    // And a candidate that fits, waiting only on the allowance, is not short.
+    const roomy = settled(limits, 0, sizes, 1);
+    expect(roomy.stats().inflight).toBe(2);
+    expect(roomy.tilesShort()).toBe(false);
+  });
+
+  it('fires at the floor', () => {
+    loader.auto = true;
+    // Maps that would take the whole envelope leave the tiles their floor of
+    // three sets and no more; with an empty ladder all six would fit.
+    const streamer = settled(DESKTOP, DESKTOP.envelopeBytes);
+    expect(streamer.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+    expect(streamer.stats().resident).toBe(3);
+    expect(streamer.tilesShort()).toBe(true);
+    expect(DESKTOP.sectorFloorBytes / MiB).toBeLessThan(DESKTOP.ceilingBytes / MiB);
+  });
+});
+
 describe('the transient of a globe-map swap', () => {
   let loader: FakeLoader;
   let warm: FakeWarm;

@@ -9,6 +9,18 @@
  *    a body is earning that the ledger will not fit. Demand that cannot be met
  *    is the whole reason a map would be handed back: without it a ladder that
  *    exactly fills its share would sit there refusing every new rung forever.
+ *    The tiles' demand counts too, on a latch of its own: a set the streamer
+ *    wants that does not fit what the maps leave it, but would fit if they
+ *    left it everything (SectorStreamer.tilesShort). The ladder's share is
+ *    the envelope less the tiles' FLOOR, so it can sit inside that share and
+ *    still hold the tiles under their working set, with nothing else to give
+ *    a map back for them. Kept apart from the ladder's own pressure for two
+ *    reasons. It may take less: only a rung whose release lands on a
+ *    compressed container (the caller's filter), never a drop to a webp or
+ *    the boot map, which would cost an unsliceable upload to free memory the
+ *    tiles are owed only by preference. And it stays out of
+ *    `pressureSinceMs`, which is also what cuts a committed arrival's warm
+ *    goals short: tiles short at Earth must not end Earth's own climb.
  * 2. Pressure is a state, not a frame. It must hold for a dwell before
  *    anything is released — a rung applying holds its decoded source for the
  *    frame or two before the upload is paid and the source closed, and a body
@@ -40,6 +52,11 @@ export interface LadderPressureState {
   swapInFlight: boolean;
   /** A rung is waiting to fetch back the map a lost context took. */
   restoreQueued: boolean;
+  /** The tiles want a set the maps leave no room for and an empty ladder
+   *  would (SectorStreamer.tilesShort). */
+  tilesShort: boolean;
+  /** When the tiles first came up short, or null while they are not. */
+  tilesShortSinceMs: number | null;
 }
 
 export interface LadderPressurePlan {
@@ -51,17 +68,30 @@ export interface LadderPressurePlan {
   /** The dwell is served and nothing is in flight: a map may be planned for
    *  release. */
   releaseDue: boolean;
+  /** The tiles' latch, carried like `pressureSinceMs` and cleared the same
+   *  way. */
+  tilesShortSinceMs: number | null;
+  /** The tiles have been short for the dwell and nothing is in flight: a map
+   *  may be planned for release for them, from the candidates whose release
+   *  lands on a compressed container. False whenever `releaseDue` is true,
+   *  so the ladder's own pressure plans exactly as it always has. */
+  tilesReleaseDue: boolean;
 }
 
-/** Advance the pressure latch and say what this frame may do about it. */
+/** Advance the pressure latches and say what this frame may do about them. */
 export function planLadderPressure(state: LadderPressureState): LadderPressurePlan {
   const dwellMs = state.dwellMs ?? RELEASE_PRESSURE_DWELL_MS;
   const pressure = state.ladderBytes > state.ceilingBytes || state.blockedDemand;
   const pressureSinceMs = pressure ? state.pressureSinceMs ?? state.nowMs : null;
   const dwellServed = pressureSinceMs !== null && state.nowMs - pressureSinceMs >= dwellMs;
+  const tilesShortSinceMs = state.tilesShort ? state.tilesShortSinceMs ?? state.nowMs : null;
+  const tilesServed = tilesShortSinceMs !== null && state.nowMs - tilesShortSinceMs >= dwellMs;
+  const releaseDue = dwellServed && !state.swapInFlight;
   return {
     pressureSinceMs,
     restoreFirst: state.restoreQueued && !state.swapInFlight,
-    releaseDue: dwellServed && !state.swapInFlight,
+    releaseDue,
+    tilesShortSinceMs,
+    tilesReleaseDue: tilesServed && !state.swapInFlight && !releaseDue,
   };
 }

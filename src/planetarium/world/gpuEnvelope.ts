@@ -465,6 +465,14 @@ export function devEnvelopeOverride(profile: DeviceProfile): DeviceProfile {
 // allocator — each keeps its own admission rules, and neither can spend the
 // other's floor.
 //
+// Above the floor the maps come first and the tiles take what is left, which
+// after a long tour can be less than the tiles' working set. What gives it
+// back is the ladder's release pass: the streamer says when the maps are what
+// it is short of (SectorStreamer.tilesShort), and the pass hands back far
+// rungs whose release lands on a compressed container, farthest first, until
+// the tiles hold their working set or nothing is left that may go
+// (world/ladderPressure).
+//
 // The two functions here are the arithmetic; MemoryEnvelope below is what
 // callers hold. They stay exported and separately test-pinned because the
 // arithmetic is the part with the edge cases — a floor over the ceiling, a
@@ -636,6 +644,10 @@ export interface ReleaseCandidate {
   /** Scene distance from the camera. The farthest map is the least missed,
    *  and is the one a return trip re-earns from the cache anyway. */
   distance: number;
+  /** The map it drops to is a compressed container (textureLadder's
+   *  releaseLandsOnContainer): the only kind of release the tiles' shortfall
+   *  may ask for. */
+  lowIsContainer?: boolean;
 }
 
 /**
@@ -646,13 +658,20 @@ export interface ReleaseCandidate {
  * envelope — the sectors are trimmed synchronously if that is what it takes,
  * which is why the transient is measured against the whole envelope rather
  * than against the ladder's ceiling.
+ *
+ * `containersOnly` is the tiles' shortfall asking rather than the ladder's own
+ * pressure (world/ladderPressure): then only a rung that drops to a compressed
+ * container is a candidate. A drop to a webp or to the boot map would pay an
+ * unsliceable upload, and the 4096 boot maps of Earth's globe and of Io,
+ * Europa and Ganymede are no smaller than what they replace.
  */
 export function planRelease(
   candidates: readonly ReleaseCandidate[],
-  ctx: { ladderBytes: number; envelopeBytes: number },
+  ctx: { ladderBytes: number; envelopeBytes: number; containersOnly?: boolean },
 ): ReleaseCandidate | null {
   let best: ReleaseCandidate | null = null;
   for (const c of candidates) {
+    if (ctx.containersOnly && !c.lowIsContainer) continue;
     if (c.heldBytes <= c.lowBytes) continue; // nothing to gain
     if (ctx.ladderBytes + c.lowBytes > ctx.envelopeBytes) continue;
     if (!best || c.distance > best.distance) best = c;

@@ -15,10 +15,10 @@
  * new instants (fetch recipe in the goldens provenance), and update both the
  * sample vectors and instants — never hand-edit the engine's outputs in.
  *
- * Timing tolerances follow the measured-tolerance discipline: M3's per-moon
- * residuals (satelliteElements.ts header) convert via each moon's mean motion
- * — Io 1.06° ≈ 7 min, Titan 5.5° ≈ 4 h — and the fixture asserts are sized
- * above the measured drift with margin.
+ * Timing tolerances follow the measured-tolerance discipline. The moons are
+ * corrected to JPL (moonCorrections.ts, tens of km at worst: under a tenth of
+ * a minute of orbit), so a fixture instant drifting by minutes means the
+ * engine changed.
  */
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
@@ -346,47 +346,25 @@ describe('satellite events vs JPL Horizons vectors', () => {
     },
   );
 
-  // Phobos's shadow on Mars is about 40 km across, and the mean elements put
-  // Phobos up to 632 km from where JPL has it (satelliteElements.ts header),
-  // so for a grazing transit the engine can find the event at the right
-  // minute and still read the neighbouring class. Its 2026-06-12 transit is
-  // annular in JPL's geometry and partial in the engine's.
-  const CLASSIFICATION_BEYOND_THE_MOON_MODEL: Record<string, readonly string[]> = {
-    Phobos: ['annular', 'partial'],
-  };
-
   it.each(goldens.provenance.events)(
     '$spec.moonName $spec.kind: engine still reproduces the fixture instant',
     ({ spec, searchFromUtc, expectedClassification, peakSample }) => {
       const event = findShadowEvent(spec as ShadowEventSpec, Date.parse(searchFromUtc), 1);
       expect(event).not.toBeNull();
-      const allowed = CLASSIFICATION_BEYOND_THE_MOON_MODEL[spec.moonName] ?? [expectedClassification];
-      expect(allowed).toContain(event!.classification);
+      expect(event!.classification).toBe(expectedClassification);
       // The fixture instant IS a prior engine output verified against JPL —
       // this guards against silent drift; regenerate deliberately (header).
       expect(Math.abs(event!.peakUtcMs - Date.parse(samples[peakSample].utc))).toBeLessThan(10 * MIN);
     },
   );
 
-  it("Titan: engine peak lands inside JPL's eclipse window (±8 h residual bound)", () => {
-    // Titan's measured element residual (5.5° ≈ 6 h of orbit, see
-    // satelliteElements.ts) exceeds the ~5 h eclipse duration, so unlike the
-    // moons above its peak instant can't be pinned directly. Instead the
-    // 2 h-grid Horizons scan in the goldens locates JPL's true eclipse window
-    // and the engine peak must fall within 8 h (1.3× the residual drift).
+  it("Titan: the engine's eclipse window is JPL's on the scan's 2 h grid", () => {
+    // The mean elements alone put Titan up to 6 h of orbit off JPL, more than
+    // the eclipse lasts; corrected, it is within seconds. So at every sample
+    // of the 2 h-grid Horizons scan around the event, JPL's geometry has Titan
+    // in Saturn's shadow exactly when the engine's window says so.
     const saturnR = 60_268;
     const titanR = getMoonsByPlanet('Saturn').find((m) => m.name === 'Titan')!.radiusKm;
-    const inEclipse: number[] = [];
-    for (const row of goldens.titanEclipseScan) {
-      const saturn = new THREE.Vector3(...(row.Saturn as [number, number, number]));
-      const titan = new THREE.Vector3(...(row.Titan as [number, number, number]));
-      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch());
-      const c = classifyEclipse(g, titanR, circumstanceScratch());
-      if (c.classification !== 'none') inEclipse.push(Date.parse(row.utc));
-    }
-    expect(inEclipse.length).toBeGreaterThan(0); // JPL confirms an eclipse in the ±24 h window
-    const jplWindowMid = (inEclipse[0] + inEclipse[inEclipse.length - 1]) / 2;
-
     const event = findShadowEvent(
       { kind: 'eclipse', parentPlanet: 'Saturn', moonName: 'Titan' },
       Date.parse('2025-01-14T00:00:00Z'),
@@ -394,7 +372,17 @@ describe('satellite events vs JPL Horizons vectors', () => {
     );
     expect(event).not.toBeNull();
     expect(event!.classification).toBe('total');
-    expect(Math.abs(event!.peakUtcMs - jplWindowMid)).toBeLessThan(8 * HOUR);
+    let inEclipseSamples = 0;
+    for (const row of goldens.titanEclipseScan) {
+      const saturn = new THREE.Vector3(...(row.Saturn as [number, number, number]));
+      const titan = new THREE.Vector3(...(row.Titan as [number, number, number]));
+      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch());
+      const jplInEclipse = classifyEclipse(g, titanR, circumstanceScratch()).classification !== 'none';
+      const utcMs = Date.parse(row.utc);
+      expect(jplInEclipse, row.utc).toBe(utcMs >= event!.startUtcMs && utcMs <= event!.endUtcMs);
+      if (jplInEclipse) inEclipseSamples++;
+    }
+    expect(inEclipseSamples).toBeGreaterThan(0);
   });
 });
 

@@ -1,11 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadFittedEphemeris, resetEphemerisLoaderForTests } from './ephemerisLoader';
 import { fittedEphemerisInstalled, setFittedEphemeris } from '../../astronomy/fittedEphemeris';
-import { installFittedEphemerisFromDisk } from '../../astronomy/fittedEphemerisTestFile';
+import { installFittedEphemerisFromDisk, installMoonCorrectionsFromDisk } from '../../astronomy/fittedEphemerisTestFile';
+import { installMoonCorrections } from '../../astronomy/satellites';
 import mainSource from '../../main.ts?raw';
 import planetariumModeSource from '../PlanetariumMode.ts?raw';
 
 const URL_PATH = '/ephemeris/ephemeris.v1.bin';
+const MOON_CORRECTIONS_PATH = '/ephemeris/moon-corrections.v1.bin';
+
+/** A valid moon-corrections file that corrects no moon: the header alone. */
+function emptyMoonCorrections(): ArrayBuffer {
+  const buffer = new ArrayBuffer(64);
+  new Uint8Array(buffer).set(new TextEncoder().encode('MSCR'), 0);
+  new DataView(buffer).setUint16(4, 1, true);
+  return buffer;
+}
 
 /** A minimal valid v1 file: one body, one interval of two coefficients. */
 function tinyFile(): ArrayBuffer {
@@ -32,14 +42,16 @@ function tinyFile(): ArrayBuffer {
 beforeEach(() => {
   resetEphemerisLoaderForTests();
   setFittedEphemeris(null);
+  installMoonCorrections(null);
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   resetEphemerisLoaderForTests();
-  // Every other suite runs on the shipped file (fittedEphemerisSetup.ts).
+  // Every other suite runs on the shipped files (fittedEphemerisSetup.ts).
   installFittedEphemerisFromDisk();
+  installMoonCorrectionsFromDisk();
 });
 
 describe('boot wiring', () => {
@@ -58,11 +70,14 @@ describe('boot wiring', () => {
 });
 
 describe('loadFittedEphemeris', () => {
-  it('drinks the boot warm response and installs the file', async () => {
+  it('drinks the boot warm responses and installs the files', async () => {
     const fetchSpy = vi.fn();
     const release = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
-    vi.stubGlobal('__bootTexWarm', new Map([[URL_PATH, Promise.resolve(new Response(tinyFile()))]]));
+    vi.stubGlobal('__bootTexWarm', new Map([
+      [URL_PATH, Promise.resolve(new Response(tinyFile()))],
+      [MOON_CORRECTIONS_PATH, Promise.resolve(new Response(emptyMoonCorrections()))],
+    ]));
     const claim = vi.fn();
     vi.stubGlobal('__bootWarmRelease', release);
     vi.stubGlobal('__bootWarmClaim', claim);
@@ -71,8 +86,18 @@ describe('loadFittedEphemeris', () => {
     expect(claim).toHaveBeenCalledTimes(1);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(fittedEphemerisInstalled()).toBe(true);
-    // The held durable wave starts once the ephemeris is in.
+    // The held durable wave starts once both files are in.
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs each file on its own: a failed moon-corrections load leaves the ephemeris in', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 503 })));
+    vi.stubGlobal('__bootTexWarm', new Map([[URL_PATH, Promise.resolve(new Response(tinyFile()))]]));
+    vi.useFakeTimers();
+    const load = loadFittedEphemeris();
+    await vi.runAllTimersAsync();
+    await load;
+    expect(fittedEphemerisInstalled()).toBe(true);
   });
 
   it('resolves without installing when every attempt fails, so the session runs on the analytic models', async () => {
@@ -84,7 +109,8 @@ describe('loadFittedEphemeris', () => {
     const load = loadFittedEphemeris();
     await vi.runAllTimersAsync();
     await expect(load).resolves.toBeUndefined();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // Two attempts for each file.
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
     expect(fittedEphemerisInstalled()).toBe(false);
     // Given up, the held wave starts all the same.
     expect(release).toHaveBeenCalledTimes(1);

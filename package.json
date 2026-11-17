@@ -9,6 +9,7 @@
     "gen:stars": "node gen-stars.mjs",
     "gen:moons": "node gen-moons.mjs",
     "gen:ephemeris": "node gen-ephemeris.mjs",
+    "gen:moon-corrections": "python3 -I tools/moon-corrections/run.py",
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
     "gen:seawind": "node --max-old-space-size=6144 tools/gen-seawind.mjs",

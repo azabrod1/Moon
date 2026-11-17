@@ -7,10 +7,11 @@
  * Espenak–Meeus ΔT read at the middle of the date's month; placed Earth from
  * the apparent Meeus Sun (aberration and nutation both in); drew Earth's Moon
  * from the truncated Meeus series; and the planets from Standish elements.
- * Moons other than Earth's came from the same mean elements they still do,
- * read at that TT. Against today's positions it had the Moon up to 210 km and
- * Jupiter up to 2 million km away, so a ship it saved beside a body resumes
- * beside that body only if it is moved with it.
+ * Moons other than Earth's came from the bare mean elements, read at that TT,
+ * which today's seam corrects (moonCorrections.ts). Against today's positions
+ * it had the Moon up to 210 km, Titan up to 100,000 km and Jupiter up to
+ * 2 million km away, so a ship it saved beside a body resumes beside that
+ * body only if it is moved with it.
  *
  * Pinned to that build's own output in legacyPositions.test.ts.
  */
@@ -19,12 +20,10 @@ import { dateToJD, moonPosition, sunPosition } from './ephemeris';
 import { decimalYearFromDate, deltaTSeconds } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements } from './standish';
-import { computeKeplerPositionEquatorial, eclipticToEquatorial, ttJDFromUtcMs } from './planetary';
-import { computeMoonOffsetEquatorialAU } from './satellites';
+import { computeKeplerPositionEquatorial, eclipticToEquatorial } from './planetary';
+import { computeSatelliteOffsetEquatorialAU } from './satellites';
 import { DEG, KM_PER_AU } from './constants';
 import type { PlanetData } from '../planetarium/planets/planetData';
-
-const MS_PER_DAY = 86_400_000;
 
 /** That build's TT Julian Date for a clock instant. */
 export function legacyTtJd(utcMs: number): number {
@@ -64,12 +63,6 @@ export function legacyMoonOffsetAU(moonName: string, parentName: string, utcMs: 
       ),
     );
   }
-  // The elements are unchanged; only the TT they are read at moved. Shift
-  // the clock so today's conversion lands on that build's TT (to the
-  // millisecond the clock resolves: 17 m of Io's orbit).
-  let shiftedUtcMs = utcMs;
-  for (let iteration = 0; iteration < 3; iteration++) {
-    shiftedUtcMs = Math.round(shiftedUtcMs + (jd - ttJDFromUtcMs(shiftedUtcMs)) * MS_PER_DAY);
-  }
-  return computeMoonOffsetEquatorialAU(moonName, parentName, shiftedUtcMs, out);
+  // The bare elements, which have not changed, at that build's TT.
+  return computeSatelliteOffsetEquatorialAU(moonName, jd, out);
 }

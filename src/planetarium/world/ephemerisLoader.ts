@@ -1,6 +1,8 @@
 /**
  * Fetches the fitted ephemeris (public/ephemeris/ephemeris.v1.bin, 1.4 MB) and
- * installs it in astronomy/fittedEphemeris.ts. One shared, memoized load:
+ * the moon corrections (moon-corrections.v1.bin, 144 KB) side by side, and
+ * installs them in astronomy/fittedEphemeris.ts and astronomy/satellites.ts.
+ * One shared, memoized load:
  * main.ts kicks it at init so the fetch overlaps everything else, and
  * PlanetariumMode.activate awaits the same promise in the gate that lifts the
  * loading screen, beside the solar-system build, then samples the orbit lines
@@ -13,10 +15,11 @@
  *
  * Unlike the star catalog, a failed load is not a boot error. The analytic
  * models are a complete answer, only a less accurate one (the Moon within
- * 2′, the giant planets within 10′), so the session runs on them — for the
- * whole session: a file that arrived later would move every body at once,
- * mid-flight. So this promise never rejects; it resolves once the file is
- * installed or once the ladder gives up.
+ * 2′, the giant planets within 10′, the other moons' mean elements thousands
+ * of km out), so the session runs on them — for the whole session: a file
+ * that arrived later would move every body at once, mid-flight. Each file
+ * stands or falls on its own. So this promise never rejects; it resolves once
+ * both files are installed or their ladders have given up.
  *
  * The first attempt drinks the boot fetch-warm started at HTML parse
  * (index.html). A download is judged by its progress, not by a deadline: on
@@ -28,6 +31,8 @@
  * catalog's own ladder has failed the boot well before that.
  */
 import { FITTED_EPHEMERIS_FILE, parseFittedEphemeris, setFittedEphemeris } from '../../astronomy/fittedEphemeris';
+import { MOON_CORRECTIONS_FILE, parseMoonCorrections } from '../../astronomy/moonCorrections';
+import { installMoonCorrections } from '../../astronomy/satellites';
 import { claimBootWarmWave, releaseBootWarmWave, takeBootWarmResponse } from './textureBitmapLoader';
 import { debugWarn } from '../../shared/debug';
 
@@ -86,29 +91,49 @@ async function fetchOnce(url: string, attempt: number): Promise<ArrayBuffer> {
   return readBody(await withDeadline(request, STALL_MS, 'ephemeris request stalled'));
 }
 
-/** Load and install the ephemeris. Idempotent; never rejects. Once it has
- *  settled, either way, the boot warm's held durable wave starts (index.html):
- *  until then those maps would only slow this download down. */
+/** One file down its ladder: installed, or given up on with a warning. */
+async function loadOne(file: string, install: (bytes: ArrayBuffer) => void, fallback: string): Promise<void> {
+  const url = import.meta.env.BASE_URL + file;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      install(await fetchOnce(url, attempt));
+      return;
+    } catch (err) {
+      if (attempt >= RETRY_BACKOFF_MS.length) {
+        debugWarn(`${file} unavailable; ${fallback} this session`, { err: String(err) });
+        return;
+      }
+      debugWarn(`${file} fetch failed; retrying`, { attempt, err: String(err) });
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
+    }
+  }
+}
+
+/** Load and install the ephemeris and the moon corrections. Idempotent;
+ *  never rejects. Once both have settled, either way, the boot warm's held
+ *  durable wave starts (index.html): until then those maps would only slow
+ *  these downloads down. */
 export function loadFittedEphemeris(): Promise<void> {
   loadPromise ??= (async () => {
-    const url = import.meta.env.BASE_URL + FITTED_EPHEMERIS_FILE;
     // This load now owns the release; index.html's safety timer would fire
     // mid-download on a slow link.
     claimBootWarmWave();
     try {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          setFittedEphemeris(parseFittedEphemeris(await fetchOnce(url, attempt)));
-          return;
-        } catch (err) {
-          if (attempt >= RETRY_BACKOFF_MS.length) {
-            debugWarn('Ephemeris unavailable; positions use the analytic models this session', { err: String(err) });
-            return;
-          }
-          debugWarn('Ephemeris fetch failed; retrying', { attempt, err: String(err) });
-          await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
-        }
-      }
+      await Promise.all([
+        loadOne(
+          FITTED_EPHEMERIS_FILE,
+          (bytes) => setFittedEphemeris(parseFittedEphemeris(bytes)),
+          'positions use the analytic models',
+        ),
+        loadOne(
+          MOON_CORRECTIONS_FILE,
+          (bytes) => {
+            const rejected = installMoonCorrections(parseMoonCorrections(bytes));
+            if (rejected.length) debugWarn('Moon corrections fitted to other elements; left uncorrected', { rejected });
+          },
+          'the moons use their mean elements alone',
+        ),
+      ]);
     } finally {
       releaseBootWarmWave();
     }

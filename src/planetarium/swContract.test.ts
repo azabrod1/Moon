@@ -491,6 +491,7 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     }
     writeFileSync(join(dir, 'stardata', 'bright-stars.v1.bin'), 'records');
     writeFileSync(join(dir, 'ephemeris', 'ephemeris.v1.bin'), 'series');
+    writeFileSync(join(dir, 'ephemeris', 'moon-corrections.v1.bin'), 'terms');
     writeFileSync(join(dir, 'fonts', 'a.woff2'), 'font-a');
     writeFileSync(join(dir, 'fonts', 'b.woff2'), 'font-b');
     writeFileSync(
@@ -500,6 +501,7 @@ describe('service worker build plugin: tile origin and allowlist', () => {
         `for (let i = 0; i < files.length; i++) warm('/textures/' + files[i]);\n` +
         `warm('/stardata/bright-stars.v1.bin');\n` +
         `warm('/ephemeris/ephemeris.v1.bin');\n` +
+        `warm('/ephemeris/moon-corrections.v1.bin');\n` +
         `</script></body></html>\n`,
     );
     return dir;
@@ -576,6 +578,8 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     }
     expect(manifest['/probe.html']).toBeUndefined();
     expect(precache).not.toContain('/probe.html');
+    // Both ephemeris bins the boot waits for, not just the first one named.
+    expect(precache).toEqual(expect.arrayContaining(['/ephemeris/ephemeris.v1.bin', '/ephemeris/moon-corrections.v1.bin']));
   });
 
   it('allows nothing off-origin when no tile origin is configured', () => {

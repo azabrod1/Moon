@@ -157,9 +157,10 @@ export default function swPlugin() {
       // Each sidecar by its own directory: a bare first-'.bin' match would
       // take whichever the script happens to warm first.
       const starPath = script.match(/'([^']*stardata\/[^']+\.bin)'/)?.[1];
-      const ephemerisPath = script.match(/'([^']*ephemeris\/[^']+\.bin)'/)?.[1];
-      if (!texPrefix || !starPath || !ephemerisPath) {
-        throw new Error('sw: could not read the warm script\'s texture prefix, star bin or ephemeris bin path');
+      // Every ephemeris bin: the fitted ephemeris and the moon corrections.
+      const ephemerisPaths = [...script.matchAll(/'([^']*ephemeris\/[^']+\.bin)'/g)].map((m) => m[1]);
+      if (!texPrefix || !starPath || ephemerisPaths.length === 0) {
+        throw new Error('sw: could not read the warm script\'s texture prefix, star bin or ephemeris bin paths');
       }
       const textures = [...script.matchAll(/'([^']+\.webp)'/g)].map((m) => texPrefix + m[1]);
       if (textures.length < MIN_WARM_TEXTURES) {
@@ -174,7 +175,7 @@ export default function swPlugin() {
       const fonts = Object.keys(manifest).filter(
         (p) => p.startsWith(base + 'fonts/') && p.endsWith('.woff2'),
       );
-      const precache = [starPath, ephemerisPath, ...textures, ...fonts];
+      const precache = [starPath, ...ephemerisPaths, ...textures, ...fonts];
       for (const p of precache) {
         if (!(p in manifest)) {
           throw new Error(`sw: warm-script file is not in dist: ${p}`);
@@ -184,7 +185,7 @@ export default function swPlugin() {
       // harness, and they run on every build including CI's pre-deploy one.
       // A refactor that quietly emits an empty or gutted list must not ship.
       if (!precache.includes(starPath)) throw new Error('sw: star bin missing from precache');
-      if (!precache.includes(ephemerisPath)) throw new Error('sw: ephemeris bin missing from precache');
+      if (!ephemerisPaths.every((p) => precache.includes(p))) throw new Error('sw: an ephemeris bin is missing from precache');
       if (fonts.length < 2) throw new Error(`sw: expected the two boot fonts, found ${fonts.length}`);
       if (precache.length < MIN_WARM_TEXTURES + 4) {
         throw new Error(

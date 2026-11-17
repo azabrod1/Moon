@@ -128,6 +128,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { loadFittedEphemeris } from './planetarium/world/ephemerisLoader';
 import { fittedEphemerisInstalled } from './astronomy/fittedEphemeris';
+import { correctedMoonNames } from './astronomy/moonCorrections';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
 import { onFullscreenChange } from './app/fullscreen';
@@ -4524,11 +4525,13 @@ async function init() {
   if (buildEl && window.__dbgEnabled) {
     buildEl.textContent = `build ${__BUILD_TAG__}`;
     buildEl.style.display = 'block';
-    // And which positions this session runs on: a failed ephemeris load is
-    // otherwise silent (the analytic models answer instead).
+    // And which positions this session runs on: a failed ephemeris or
+    // moon-corrections load is otherwise silent (the analytic models answer
+    // instead).
     void loadFittedEphemeris().then(() => {
       buildEl.textContent =
-        `build ${__BUILD_TAG__} · ${fittedEphemerisInstalled() ? 'JPL ephemeris' : 'analytic positions'}`;
+        `build ${__BUILD_TAG__} · ${fittedEphemerisInstalled() ? 'JPL ephemeris' : 'analytic positions'}` +
+        ` · ${correctedMoonNames().length} moons corrected`;
     });
   }
 

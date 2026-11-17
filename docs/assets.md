@@ -3,6 +3,7 @@
 Each generator's header has its steps and prerequisites. Several need `npm i --no-save sharp@0.35.4` first.
 
 - `npm run gen:moons` and `npm run gen:maps`: see CLAUDE.md.
+- `npm run gen:moon-corrections`: the corrections to twenty moons' mean elements, `public/ephemeris/moon-corrections.v1.bin` (1900 to mid-2100, fitted to JPL Horizons; `tools/moon-corrections/run.py` explains the steps) and its golden `src/astronomy/moonCorrections.goldens.json`. Needs python3 with numpy, and a rerun after every `gen:moons`. A changed fit ships as `moon-corrections.v2.bin`.
 - `npm run gen:ephemeris`: the fitted ephemeris `public/ephemeris/ephemeris.v1.bin` (every planet and the Moon, 1900 to mid-2100, fitted to JPL Horizons) and its Horizons golden `src/astronomy/ephemeris.goldens.json`. It refuses to write a body that misses its accuracy target. A changed fit ships as `ephemeris.v2.bin`.
 - `npm run gen:stars`: the bright-star catalog `public/stardata/bright-stars.v1.bin` and its golden. `npm run gen:constellations`: `src/planetarium/data/constellations.ts`.
 - `npm run gen:moonmaps`: photo maps for the procedural moons (`tools/gen-moonmaps.mjs`).

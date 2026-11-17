@@ -18,3 +18,4 @@ http-test*.log
 .moon-data-cache/
 # internal planning docs / mockups / QA scratch — local-only
 planning/
+__pycache__/

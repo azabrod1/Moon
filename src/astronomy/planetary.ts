@@ -453,8 +453,8 @@ export function trajectoryLineBodyFraction(
  * moon orbit frames. W is measured easterly from that node, which in this RH
  * frame is a +W rotation about the pole.
  */
-function getBasePrimeDirection(planet: PlanetData, out?: THREE.Vector3): THREE.Vector3 {
-  return raDecToVector(planet.poleRaDeg + 90, 0, 1, out);
+function getBasePrimeDirection(poleRaDeg: number, out?: THREE.Vector3): THREE.Vector3 {
+  return raDecToVector(poleRaDeg + 90, 0, 1, out);
 }
 
 // Scratch for the pole basis: the per-frame planet pass builds nine of these
@@ -464,9 +464,14 @@ const primeScratch = new THREE.Vector3();
 const basisZScratch = new THREE.Vector3();
 const basisScratch = new THREE.Matrix4();
 
-function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number, out = new THREE.Quaternion()): THREE.Quaternion {
-  const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg, 1, poleScratch).normalize();
-  const primeDirection = getBasePrimeDirection(planet, primeScratch)
+function buildPoleBasisQuaternion(
+  poleRaDeg: number,
+  poleDecDeg: number,
+  primeMeridianDeg: number,
+  out = new THREE.Quaternion(),
+): THREE.Quaternion {
+  const poleDirection = raDecToVector(poleRaDeg, poleDecDeg, 1, poleScratch).normalize();
+  const primeDirection = getBasePrimeDirection(poleRaDeg, primeScratch)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
     .normalize();
   // Third basis column, prime×pole: holds *texture* longitude 90°W, not
@@ -492,18 +497,32 @@ export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number,
     return earthOrientationQuaternion(utcMsAtTtJD(jd), jd, out ?? new THREE.Quaternion());
   }
   const daysSinceJ2000 = getDaysSinceJ2000(jd);
-  const primeMeridianDeg =
+  let poleRaDeg = planet.poleRaDeg;
+  let poleDecDeg = planet.poleDecDeg;
+  let primeMeridianDeg =
     planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
-  return buildPoleBasisQuaternion(planet, primeMeridianDeg, out);
+  // The catalog holds the precession terms as they were at J2000; add their
+  // change since (Neptune's pole moves half a degree a century this way).
+  const precession = planet.rotationPrecession;
+  if (precession) {
+    const startRad = precession.argumentDegAtJ2000 * DEG;
+    const nowRad = startRad + (precession.argumentRateDegPerCentury * daysSinceJ2000 * DEG) / 36525;
+    const sineChange = Math.sin(nowRad) - Math.sin(startRad);
+    poleRaDeg += precession.raSinDeg * sineChange;
+    poleDecDeg += precession.decCosDeg * (Math.cos(nowRad) - Math.cos(startRad));
+    primeMeridianDeg += precession.meridianSinDeg * sineChange;
+  }
+  return buildPoleBasisQuaternion(poleRaDeg, poleDecDeg, primeMeridianDeg, out);
 }
 
 /**
  * Orientation of the body's equatorial frame without the daily spin.
- * Time-independent. (Moon positions propagate JPL element frames in
+ * Time-independent: a body with precession terms has its J2000 pole here.
+ * (Moon positions propagate JPL element frames in
  * satellites.ts; this pins the pole/spin-axis split for orientation work.)
  */
 export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion {
-  return buildPoleBasisQuaternion(planet, 0);
+  return buildPoleBasisQuaternion(planet.poleRaDeg, planet.poleDecDeg, 0);
 }
 
 /**

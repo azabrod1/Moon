@@ -616,12 +616,9 @@ describe('planet rotation models against JPL Horizons', () => {
       const centricRad = Math.asin(toEarth.y);
       const flatteningSquared = (row.polarKm / row.equatorialKm) ** 2;
       const latDeg = Math.atan2(Math.sin(centricRad), Math.cos(centricRad) * flatteningSquared) / DEG;
-      // Neptune's pole and meridian leave out its precession terms
-      // (0.70 sin N, −0.51 cos N, −0.48 sin N; N runs 52° a century).
-      const tolerance = row.planet === 'Neptune' ? 0.6 : 0.1;
       const label = `${row.planet} ${row.utc}`;
-      expect(Math.abs(wrap((row.eastPositive ? eastDeg : -eastDeg) - row.lonDeg)), label).toBeLessThan(tolerance);
-      expect(Math.abs(latDeg - row.latDeg), label).toBeLessThan(tolerance);
+      expect(Math.abs(wrap((row.eastPositive ? eastDeg : -eastDeg) - row.lonDeg)), label).toBeLessThan(0.1);
+      expect(Math.abs(latDeg - row.latDeg), label).toBeLessThan(0.1);
     }
   });
 });

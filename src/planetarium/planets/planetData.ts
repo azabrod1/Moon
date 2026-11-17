@@ -33,10 +33,23 @@ export interface PlanetData {
                            // ("N₂ / O₂", "CO₂ (thin)"). Optional because the
                            // moons' catalog only names the three that have one;
                            // every planet carries it, Mercury as 'None'.
-  poleRaDeg: number;          // IAU north pole right ascension
-  poleDecDeg: number;         // IAU north pole declination
+  poleRaDeg: number;          // IAU north pole right ascension (at J2000.0)
+  poleDecDeg: number;         // IAU north pole declination (at J2000.0)
   primeMeridianDegAtJ2000: number;   // IAU prime meridian angle at J2000.0
   primeMeridianRateDegPerDay: number; // rotation rate in degrees/day
+  /** IAU terms in one precession angle N = argumentDegAtJ2000 +
+   *  argumentRateDegPerCentury · T (Neptune): α += raSinDeg · sin N,
+   *  δ += decCosDeg · cos N, W += meridianSinDeg · sin N. The pole and prime
+   *  meridian above already hold them at J2000, so a reader that wants a fixed
+   *  pole has the J2000 one; computeBodyOrientationQuaternion adds the change
+   *  since. */
+  rotationPrecession?: {
+    argumentDegAtJ2000: number;
+    argumentRateDegPerCentury: number;
+    raSinDeg: number;
+    decCosDeg: number;
+    meridianSinDeg: number;
+  };
   systemRadiusAU: number;             // radius at which speed throttle begins
 }
 
@@ -251,10 +264,19 @@ export const PLANETS: PlanetData[] = [
     moons: 14,
     description: 'Deep blue ice giant, strongest winds',
     atmosphere: 'H₂ / He / CH₄',
-    poleRaDeg: 299.36,
-    poleDecDeg: 43.46,
-    primeMeridianDegAtJ2000: 249.978,
+    // IAU 2015 (NAIF pck00011): the constant terms with the precession terms
+    // (N = 357.85° + 52.316° per century) as they stood at J2000.
+    poleRaDeg: 299.36 + 0.7 * Math.sin((357.85 * Math.PI) / 180),
+    poleDecDeg: 43.46 - 0.51 * Math.cos((357.85 * Math.PI) / 180),
+    primeMeridianDegAtJ2000: 249.978 - 0.48 * Math.sin((357.85 * Math.PI) / 180),
     primeMeridianRateDegPerDay: 541.1397757,
+    rotationPrecession: {
+      argumentDegAtJ2000: 357.85,
+      argumentRateDegPerCentury: 52.316,
+      raSinDeg: 0.7,
+      decCosDeg: -0.51,
+      meridianSinDeg: -0.48,
+    },
     systemRadiusAU: 0.01,
   },
 ];

@@ -302,14 +302,20 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   // side, where the compressed container holds 42.7.
   earthNight: ['4k', '8k'],
   // The photo moons. Each rung is cut from the same mosaic as the boot map
-  // under it, in the same run, so every step is a pure sharpen. Which rungs a
-  // body has is a fact about its source: Titan's mosaic is 4040 px and
-  // Miranda's and Ariel's are 1440, so those three are boot-only and stay out
-  // of this table entirely.
-  enceladus: ['4k'],
+  // under it, through the same passes and at the same level gain, so every
+  // step is a pure sharpen. Which rungs a body has is a fact about its source:
+  // Titan's mosaic is 4040 px and Miranda's and Ariel's are 1440, so those
+  // three are boot-only and stay out of this table entirely; Mimas' and
+  // Iapetus' are 5760, which fills a 4K and would only be blown up to an 8K.
+  // Enceladus, Dione and Tethys hold real detail past 4K over nearly all of
+  // their surface, so they climb to 8K, at the gate Jupiter's 8K uses (see
+  // UPGRADE_TRIGGER_FRACTION_BY_KEY). Rhea's and Charon's mosaics are wider
+  // than 8K too, but measured from 4K to 8K they gain less than Callisto's
+  // does, and Charon's unimaged far side nothing at all, so they stop at 4K.
+  enceladus: ['4k', '8k'],
   mimas: ['4k'],
-  dione: ['4k'],
-  tethys: ['4k'],
+  dione: ['4k', '8k'],
+  tethys: ['4k', '8k'],
   rhea: ['4k'],
   iapetus: ['4k'],
   charon: ['4k'],
@@ -440,10 +446,19 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   // the boot map rather than climbing. That is also what prices a nine-body
   // moon tour inside a small profile's ladder ceiling: 10.7 MiB a 4K rung
   // instead of 42.7.
-  enceladus: { '4k': { file: 'enceladus.ktx2', webp: false } },
+  enceladus: {
+    '4k': { file: 'enceladus.ktx2', webp: false },
+    '8k': { file: 'enceladus.ktx2', webp: false },
+  },
   mimas: { '4k': { file: 'mimas.ktx2', webp: false } },
-  dione: { '4k': { file: 'dione.ktx2', webp: false } },
-  tethys: { '4k': { file: 'tethys.ktx2', webp: false } },
+  dione: {
+    '4k': { file: 'dione.ktx2', webp: false },
+    '8k': { file: 'dione.ktx2', webp: false },
+  },
+  tethys: {
+    '4k': { file: 'tethys.ktx2', webp: false },
+    '8k': { file: 'tethys.ktx2', webp: false },
+  },
   rhea: { '4k': { file: 'rhea.ktx2', webp: false } },
   iapetus: { '4k': { file: 'iapetus.ktx2', webp: false } },
   charon: { '4k': { file: 'charon.ktx2', webp: false } },
@@ -804,6 +819,13 @@ const UPGRADE_TRIGGER_FRACTION_BY_KEY: Record<string, Partial<Record<TextureTier
   // first rung at the standard gate, so the 4K is still what an arrival's veil
   // waits on and the 8K never is.
   jupiter: { '8k': 0.5 },
+  // Enceladus, Dione and Tethys, on Jupiter's arithmetic: each boots on a 2K
+  // map with its 4K as the first rung at the standard gate, so the 4K is what
+  // an arrival's veil waits on, and the 8K, earned at half the viewport, never
+  // is. At the tier's own 0.22 a disc the 4K still serves would pull 42.7 MiB.
+  enceladus: { '8k': 0.5 },
+  dione: { '8k': 0.5 },
+  tethys: { '8k': 0.5 },
 };
 
 /** The screen fraction at which `tier` earns its download for `key`. */

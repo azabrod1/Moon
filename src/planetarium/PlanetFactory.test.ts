@@ -2081,8 +2081,13 @@ describe('the ladder against the sector memory envelope', () => {
     // arithmetic settles a phone's ladder either way.
     // Mercury's 8K container is 32 MiB more than the 4K one it climbs past,
     // and Mars's 4K rung is a webp again (42.7 MiB where its container was
-    // 10.7), another 32.
-    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(640.0, 1);
+    // 10.7), another 32. Enceladus, Dione and Tethys climb past their 4K
+    // containers to 8K ones the same way: 32 MiB each, 96 in all.
+    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(
+      640.0 + 3 * (mib(equirectMapGpuBytes(8192, true)) - mib(equirectMapGpuBytes(4096, true))),
+      1,
+    );
+    expect(mib(ladderWorstCaseBytes(true, true))).toBeCloseTo(736.0, 1);
     expect(ladderWorstCaseBytes(true, true)).toBeGreaterThan(UNMEASURED_TOUCH_PROFILE.envelopeBytes);
     // It is now unreachable. The rung that would cross the envelope less the
     // tiles' floor is refused before it is fetched, so the ladder settles
@@ -2446,7 +2451,8 @@ describe('the release band', () => {
       expect(releaseTargetTier(rgba)).toBe('4k');
       // Every ladder whose rungs share a format keeps its one-rung step.
       bindKtx2TierLoader(() => {}, true);
-      for (const key of ['moon', 'earthClouds', 'earthNight', 'mercury', 'callisto', 'pluto']) {
+      for (const key of ['moon', 'earthClouds', 'earthNight', 'mercury', 'callisto', 'pluto',
+        'enceladus', 'dione', 'tethys']) {
         const up = ladderHandle(key);
         up.appliedTier = '8k';
         up.material.map = rungTexture(key, '8k');
@@ -3005,6 +3011,25 @@ describe('the rungs that ship only as a compressed container', () => {
     // A disc the 2K map still serves earns no 8K.
     expect(earnedUpgradeTier(up, 0.3)).toBe('4k');
     expect(earnedUpgradeTier(up, 0.55)).toBe('8k');
+  });
+
+  it('gives Enceladus, Dione and Tethys Jupiter\'s gate: the 4K container the arrival\'s rung, the 8K one approach work', () => {
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    for (const key of ['enceladus', 'dione', 'tethys']) {
+      expect(upgradeTriggerFraction(key, '8k'), key).toBe(0.5);
+      expect(upgradeTriggerFraction(key, '4k'), key).toBe(UPGRADE_TRIGGER_FRACTION['4k']);
+      expect(resolveTierFile(key, '8k'), key).toBe(`${key}.ktx2`);
+      const up = ladderHandle(key);
+      expect(up.tiers, key).toEqual(['4k', '8k']);
+      expect(up.effectiveMaxTier, key).toBe('8k');
+      expect(arrivalUpgradeTier(up), key).toBe('4k');
+      expect(earnedUpgradeTier(up, 0.3), key).toBe('4k');
+      expect(earnedUpgradeTier(up, 0.55), key).toBe('8k');
+    }
+    // With no transcoder neither rung exists: both ship as a container alone.
+    bindKtx2TierLoader(null);
+    expect(makeTextureUpgrade('dione', new THREE.MeshStandardMaterial())).toBeUndefined();
   });
 
   it('tops Jupiter out at its 4K webp when no KTX2 loader is bound, and asks for no 8K webp', () => {

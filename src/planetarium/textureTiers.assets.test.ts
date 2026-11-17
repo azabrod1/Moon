@@ -145,6 +145,9 @@ const CONTAINER_COLOR_MODEL: Record<string, number> = {
   '8k/ganymede.v2.ktx2': DF_MODEL_ETC1S,
   '8k/callisto.v2.ktx2': DF_MODEL_ETC1S,
   '8k/pluto.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/enceladus.ktx2': DF_MODEL_ETC1S,
+  '8k/dione.ktx2': DF_MODEL_ETC1S,
+  '8k/tethys.ktx2': DF_MODEL_ETC1S,
 };
 
 describe('the files behind the colour ladder', () => {
@@ -222,9 +225,12 @@ describe('the files behind the colour ladder', () => {
       'earthNight 8k: 8k/earth-night.v2.ktx2',
       'jupiter 8k: 8k/jupiter.v2.ktx2',
       'enceladus 4k: 4k/enceladus.ktx2',
+      'enceladus 8k: 8k/enceladus.ktx2',
       'mimas 4k: 4k/mimas.ktx2',
       'dione 4k: 4k/dione.ktx2',
+      'dione 8k: 8k/dione.ktx2',
       'tethys 4k: 4k/tethys.ktx2',
+      'tethys 8k: 8k/tethys.ktx2',
       'rhea 4k: 4k/rhea.ktx2',
       'iapetus 4k: 4k/iapetus.ktx2',
       'charon 4k: 4k/charon.ktx2',

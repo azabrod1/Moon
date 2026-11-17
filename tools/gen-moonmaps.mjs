@@ -275,6 +275,10 @@ const PLUTO_CAP = [42, 38, 34];
  * Enceladus' south-polar rows, Dione's last row, and a few pixels each side
  * of Dione's 180E edge.
  *
+ * Their rung intermediates are named `<body>-v2-<tier>`, so the cache keeps
+ * the `<body>-4k` ones the shipped .ktx2 files under the old names were cut
+ * from, and gen-ktx2 on a branch without this rule still reproduces those.
+ *
  * `levelSolveBelow` keeps the level solve on the pixels it always used: a
  * shadow is lighting, not albedo, and a gain solved with the shadows in it
  * would brighten every lit pixel to pay for them.
@@ -354,7 +358,7 @@ const JOBS = {
   enceladus: {
     src: 'Enceladus_Cassini_mosaic_global_110m.tif',
     outputs: [{ width: 2048, out: 'enceladus.v2.webp' }],
-    rungs: [{ width: 8192, name: 'enceladus-8k' }, { width: 4096, name: 'enceladus-4k' }],
+    rungs: [{ width: 8192, name: 'enceladus-v2-8k' }, { width: 4096, name: 'enceladus-v2-4k' }],
     // The most reflective surface in the solar system and as close to neutral
     // as anything gets: the gain is a whisper of blue in the shadows and
     // nothing at all in the highlights.
@@ -373,7 +377,7 @@ const JOBS = {
   dione: {
     src: 'Dione_Cassini_Voyager_mosaic_global_154m.tif',
     outputs: [{ width: 2048, out: 'dione.v2.webp' }],
-    rungs: [{ width: 8192, name: 'dione-8k' }, { width: 4096, name: 'dione-4k' }],
+    rungs: [{ width: 8192, name: 'dione-v2-8k' }, { width: 4096, name: 'dione-v2-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
     level: { albedo: 0.6 },
     noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },
@@ -381,7 +385,7 @@ const JOBS = {
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
     outputs: [{ width: 2048, out: 'tethys.v2.webp' }],
-    rungs: [{ width: 8192, name: 'tethys-8k' }, { width: 4096, name: 'tethys-4k' }],
+    rungs: [{ width: 8192, name: 'tethys-v2-8k' }, { width: 4096, name: 'tethys-v2-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
     level: { albedo: 0.8 },
     noData: { below: 1, mode: 'texture', seam: 0.03, shadowHoles: SHADOW_HOLES },

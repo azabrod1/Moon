@@ -219,10 +219,10 @@ const JOBS = {
   //
   // Pixels come from the gen:moonmaps intermediates rather than from a
   // shipped file, which is what the third source kind above exists for.
-  enceladus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('enceladus-4k'), out: '4k/enceladus.v2.ktx2' },
+  enceladus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('enceladus-v2-4k'), out: '4k/enceladus.v2.ktx2' },
   mimas4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mimas-4k'), out: '4k/mimas.ktx2' },
-  dione4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('dione-4k'), out: '4k/dione.v2.ktx2' },
-  tethys4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('tethys-4k'), out: '4k/tethys.v2.ktx2' },
+  dione4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('dione-v2-4k'), out: '4k/dione.v2.ktx2' },
+  tethys4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('tethys-v2-4k'), out: '4k/tethys.v2.ktx2' },
   rhea4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('rhea-4k'), out: '4k/rhea.ktx2' },
   iapetus4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('iapetus-4k'), out: '4k/iapetus.ktx2' },
   charon4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('charon-4k'), out: '4k/charon.ktx2' },
@@ -250,9 +250,9 @@ const JOBS = {
   // would be a blow-up; Rhea's and Charon's gain less than Callisto's). All
   // three sizes of these were re-cut with their shadows kept (gen-moonmaps'
   // SHADOW_HOLES), so every one ships under a .v2 name.
-  enceladus8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('enceladus-8k'), out: '8k/enceladus.v2.ktx2' },
-  dione8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('dione-8k'), out: '8k/dione.v2.ktx2' },
-  tethys8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('tethys-8k'), out: '8k/tethys.v2.ktx2' },
+  enceladus8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('enceladus-v2-8k'), out: '8k/enceladus.v2.ktx2' },
+  dione8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('dione-v2-8k'), out: '8k/dione.v2.ktx2' },
+  tethys8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('tethys-v2-8k'), out: '8k/tethys.v2.ktx2' },
   // Jupiter's 8K, the one toured planet rung with a container, and UASTC
   // like Earth's day map: a gas giant is slow gradients, and nothing else
   // answers a 170.7 MiB upload. It ships alone, so its pixels come from the
@@ -349,7 +349,7 @@ function moonmapPng(name, pngOut, width) {
   const cache = path.resolve(cacheArg ? cacheArg.slice('--cache='.length) : '.moon-data-cache');
   const src = path.join(cache, 'zoom', 'rungs', `${name}.png`);
   if (!existsSync(src)) {
-    throw new Error(`${src} is not on disk — run \`node tools/gen-moonmaps.mjs ${name.replace(/-\d+k$/, '')}\` first`);
+    throw new Error(`${src} is not on disk — run \`node tools/gen-moonmaps.mjs ${name.replace(/(-v\d+)?-\d+k$/, '')}\` first`);
   }
   console.log('  reading', src);
   writeFileSync(pngOut, readFileSync(src));

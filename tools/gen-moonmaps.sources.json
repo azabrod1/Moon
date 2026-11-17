@@ -211,7 +211,7 @@
         "rmsVs4k": 11.428,
         "rmsVsIntermediate": 6.502,
         "shadowHoles": { "holes": 917, "holePx": 37158, "gapsLeftToTheFill": 13 },
-        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/enceladus.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps enceladus-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
+        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/enceladus.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps enceladus-v2-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
       }
     },
     "notes": "Global, mono. 14401x7201 rather than 14400x7200: the map spans 360.025 deg, a hair over one wrap. The mosaic was shifted 3.5 deg west of earlier Enceladus maps to match the IAU longitude definition (product abstract). Tiger stripes present.",
@@ -339,7 +339,7 @@
         "rmsVs4k": 8.722,
         "rmsVsIntermediate": 5.127,
         "shadowHoles": { "holes": 2500, "holePx": 457208, "gapsLeftToTheFill": 7 },
-        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/dione.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps dione-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
+        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/dione.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps dione-v2-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
       }
     },
     "notes": "Global, mono. Wispy chasms present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", but the product's own PDS3 and ISIS3 labels both say EAST. The labels are the authority here. 23040 px is far wider than a 4K rung needs; USGS publishes no reduced version, so the whole 265 MB was taken.",
@@ -419,7 +419,7 @@
         "rmsVs4k": 7.421,
         "rmsVsIntermediate": 4.434,
         "shadowHoles": { "holes": 990, "holePx": 27361, "gapsLeftToTheFill": 0 },
-        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/tethys.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps tethys-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
+        "measured": "Level 0 unpacked to BC7, box-averaged 2x2 in sRGB bytes to 4096x2048 and compared with 4k/tethys.v2.ktx2 unpacked the same way (mean and RMS of the 0-255 difference, all pixels, three channels); rmsVsIntermediate is the container against the gen:moonmaps tethys-v2-8k intermediate it was encoded from, the baked vertical flip undone. Cut with shadows kept as measurements (gen-moonmaps SHADOW_HOLES): shadowHoles counts the 8-connected zero blobs filled from their dark rims at source resolution, and the gaps left to the terrain fill."
       }
     },
     "notes": "Global, mono. Odysseus and Ithaca Chasma present. CONFLICT: the Astropedia catalog page states \"Longitude Direction: Positive West\", both labels say EAST - same catalog error as Dione.",

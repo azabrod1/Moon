@@ -47,6 +47,8 @@ import {
   LANE_CLEAN_RATIO,
   type LaneBody,
   type ArrivalPose,
+  MOON_LAND_RANGE_FLOOR_AU,
+  moonLandRangeAU,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES, SUN_DATA } from './planets/planetData';
@@ -819,6 +821,51 @@ describe('moon teleport camera tracking', () => {
     // ...fully released at the window's end and beyond.
     expect(arrivalLookReleaseFade(ARRIVAL_LOOK_RELEASE_S)).toBe(0);
     expect(arrivalLookReleaseFade(ARRIVAL_LOOK_RELEASE_S * 5)).toBe(0);
+  });
+});
+
+describe('moonLandRangeAU — the Land prompt reaches the moon, not its planet', () => {
+  const angles = [0.7, 2.4, 4.1];
+
+  it('never takes the prompt away from a moon teleport that had it', () => {
+    // The big moons park beyond the floor (Io ~62,000 km out) and are offered
+    // a moment into the glide, as before; every arrival the floor reached,
+    // the held-in reach still reaches.
+    const heldIn = new Set<string>();
+    for (const moon of MOONS) {
+      for (const angle of angles) {
+        const inp = catalogInputs(moon.name, angle);
+        const dist = arrivalPose(inp).position.distanceTo(inp.targetPos);
+        const bareFloor = Math.max(inp.renderedR * 3, MOON_LAND_RANGE_FLOOR_AU);
+        const range = moonLandRangeAU(inp.renderedR, inp.orbitR);
+        if (dist >= bareFloor) continue;
+        if (range < bareFloor) heldIn.add(moon.name);
+        expect(dist, `${moon.name}: arrival inside the Land range`).toBeLessThan(range);
+      }
+    }
+    // The moons the cap changes are all exercised.
+    for (const name of ['Phobos', 'Deimos', 'Charon', 'Styx', 'Nix', 'Cordelia', 'Naiad']) {
+      expect(heldIn.has(name), `${name} exercised`).toBe(true);
+    }
+  });
+
+  it('a teleport to Mars is never offered Phobos, wherever Phobos is', () => {
+    const marsStandoff = arrivalStandoffAU(planetInputs('Mars'));
+    const phobos = catalogInputs('Phobos');
+    // The nearest Phobos ever gets to the parked ship: on the ship's side.
+    expect(marsStandoff - phobos.orbitR).toBeGreaterThan(moonLandRangeAU(phobos.renderedR, phobos.orbitR));
+    // Under the bare floor it was in reach from every point of its orbit.
+    expect(marsStandoff + phobos.orbitR).toBeLessThan(MOON_LAND_RANGE_FLOOR_AU);
+  });
+
+  it('a moon far from its planet keeps the plain floor', () => {
+    const moon = catalogInputs('Moon');
+    expect(moonLandRangeAU(moon.renderedR, moon.orbitR)).toBe(MOON_LAND_RANGE_FLOOR_AU);
+  });
+
+  it('a large rendered sphere still reaches three radii, whatever the separation', () => {
+    expect(moonLandRangeAU(1e-4, 1e-5)).toBeCloseTo(3e-4, 15);
+    expect(moonLandRangeAU(1e-6, 0)).toBe(MOON_LAND_RANGE_FLOOR_AU);
   });
 });
 

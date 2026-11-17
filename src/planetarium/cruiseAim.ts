@@ -37,6 +37,22 @@
  * ease; the player's next look, steer, or throttle gesture is what ends the
  * shot, over the same 0.35 s release fade every other handback uses.
  *
+ * Under the engage gate sits a FRAME-KEEP floor (frameKeep.ts): when the
+ * caller passes the visible frame, the deflection is never less than the
+ * smallest turn that keeps the destination framed — its whole disc inside
+ * the frame, or spanning it edge to edge once wider than it. The flyby
+ * offset can point sideways (a ringed planet's ring axis, a moon's parent
+ * side), and an upright phone shows only ~±15° across, so without the floor
+ * Uranus, Deimos and Phobos arrived at or past the screen's edge and slid
+ * further out until tracking engaged. Where the destination is already
+ * framed — every desktop arrival, every ringless planet, the big moons on a
+ * phone — the floor is exactly zero, so the settled-arrival contract above
+ * holds there unchanged; where it is not, the arrival opens turned just far
+ * enough to show the destination, and the first input hands that back over
+ * the same release fade. Both deflections lie on the one great circle from the
+ * origin aim toward the target, so the larger simply wins. The floor shares
+ * every exit with the look (recede ease, release fade, loss, warp).
+ *
  * The look's target is fed ANALYTICALLY (a moon: parent world position +
  * ephemeris offset; a planet: its live ephemeris position), heliocentric,
  * never from the mesh transform: updateMoonPositions skips invisible
@@ -67,6 +83,7 @@ import {
   type FlybyHoldState,
 } from './arrivalLogic';
 import { FLIGHT_UP_SCENE } from './flightFrame';
+import { frameKeepAngle, type FrameKeepView } from './frameKeep';
 
 /** Continuity backstop: aim-direction changes above this rate are clipped
  *  into fast sweeps. Base-aim motion (drags, reacquire) bypasses it
@@ -106,6 +123,9 @@ export interface ArrivalLookState {
   name: string;
   /** Parent planet name for moon targets; '' for planets. */
   parentPlanet: string;
+  /** Rendered radius of the target (AU), for the frame-keep floor's disc.
+   *  Zero keeps only the target's centre in frame. */
+  bodyRadiusAU: number;
   arrivalDistanceAU: number;
   previousDistanceAU: number;
   approached: boolean;
@@ -126,6 +146,12 @@ export interface ArrivalLookState {
    *  detection datum, separate from the emitted aim. Zero until seeded. */
   prevApparentDir: THREE.Vector3;
   hasPrevApparentDir: boolean;
+  /** Diagnostics of the last step (radians off the origin aim): the
+   *  frame-keep floor after its exits, and the tracking shot's own
+   *  deflection. Read-only outside this module; the dev readout reports
+   *  them. */
+  keepRad: number;
+  trackRad: number;
 }
 
 /** The whole cruise-aim state. Owned by PlanetariumMode, advanced only by
@@ -156,13 +182,14 @@ export function createCruiseAimState(): CruiseAimState {
  *  desired aim exactly, not sweep toward it. */
 export function startArrivalLook(
   state: CruiseAimState,
-  body: { kind: 'planet' | 'moon'; name: string; parentPlanet?: string },
+  body: { kind: 'planet' | 'moon'; name: string; parentPlanet?: string; radiusAU?: number },
   arrivalDistanceAU: number,
 ): void {
   state.look = {
     kind: body.kind,
     name: body.name,
     parentPlanet: body.parentPlanet ?? '',
+    bodyRadiusAU: Math.max(body.radiusAU ?? 0, 0),
     arrivalDistanceAU,
     previousDistanceAU: arrivalDistanceAU,
     approached: false,
@@ -173,6 +200,8 @@ export function startArrivalLook(
     hasLastMoonWorldPos: false,
     prevApparentDir: new THREE.Vector3(),
     hasPrevApparentDir: false,
+    keepRad: 0,
+    trackRad: 0,
   };
 }
 
@@ -203,6 +232,7 @@ const tmpMoonScene = new THREE.Vector3();
 const tmpApparentDir = new THREE.Vector3();
 const tmpDesired = new THREE.Vector3();
 const tmpAxis = new THREE.Vector3();
+const tmpKeepPerp = new THREE.Vector3();
 const tmpTransport = new THREE.Quaternion();
 const tmpStep = new THREE.Quaternion();
 
@@ -228,8 +258,10 @@ function antipodalAxis(dir: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
  * moonWorldPosAU is the look target's HELIOCENTRIC position (null when it
  * cannot be resolved) and renderOriginAU the player's render-frame origin —
  * the heliocentric→scene conversion happens here and nowhere else. Writes
- * the emitted unit aim direction (scene frame) to outDir. Allocates
- * nothing.
+ * the emitted unit aim direction (scene frame) to outDir. `frame` is the
+ * visible frame the frame-keep floor fits the target into (see the header);
+ * without it the floor is off and the look is the engage-gated shot alone.
+ * Allocates nothing.
  */
 export function stepCruiseAim(
   state: CruiseAimState,
@@ -238,6 +270,7 @@ export function stepCruiseAim(
   renderOriginAU: { x: number; y: number; z: number },
   dtS: number,
   outDir: THREE.Vector3,
+  frame: FrameKeepView | null = null,
 ): void {
   // Base aim: the origin direction. The chase offset never degenerates to
   // zero length in cruise; guard anyway so a pathological pose can't NaN
@@ -275,7 +308,8 @@ export function stepCruiseAim(
         .copy(tmpMoonScene)
         .sub(camPos)
         .length();
-      if (camToMoonLen > 1e-12) {
+      const hasApparentDir = camToMoonLen > 1e-12;
+      if (hasApparentDir) {
         tmpApparentDir.multiplyScalar(1 / camToMoonLen);
         const warped =
           look.hasPrevApparentDir &&
@@ -329,6 +363,8 @@ export function stepCruiseAim(
             look.receding,
           );
       const disengage = recede * arrivalLookReleaseFade(look.releaseElapsedS ?? 0);
+      look.keepRad = 0;
+      look.trackRad = 0;
       if (disengage <= 0) {
         state.look = null; // handoff complete; residual eases out below
       } else {
@@ -340,6 +376,31 @@ export function stepCruiseAim(
           const len = tmpDesired.length();
           if (len > 1e-12) tmpDesired.multiplyScalar(1 / len);
           else tmpDesired.copy(baseDir);
+          look.trackRad = Math.acos(THREE.MathUtils.clamp(tmpDesired.dot(baseDir), -1, 1));
+        }
+        if (frame && hasApparentDir) {
+          // The frame-keep floor: the smallest turn toward the target that
+          // frames it, under the same exits as the look. The
+          // weighted composition above is a positive mix of the target and
+          // origin directions, so it lies on this same great circle and the
+          // larger turn simply wins.
+          const discRadiusRad = camToMoonLen > look.bodyRadiusAU
+            ? Math.asin(look.bodyRadiusAU / camToMoonLen)
+            : Math.PI / 2;
+          const keep = disengage * frameKeepAngle(
+            baseDir, tmpApparentDir, discRadiusRad, FLIGHT_UP_SCENE, frame,
+          );
+          look.keepRad = keep;
+          if (keep > look.trackRad) {
+            tmpKeepPerp.copy(tmpApparentDir).addScaledVector(baseDir, -baseDir.dot(tmpApparentDir));
+            if (tmpKeepPerp.lengthSq() > 1e-24) {
+              tmpKeepPerp.normalize();
+              tmpDesired
+                .copy(baseDir)
+                .multiplyScalar(Math.cos(keep))
+                .addScaledVector(tmpKeepPerp, Math.sin(keep));
+            }
+          }
         }
       }
     }

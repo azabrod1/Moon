@@ -134,6 +134,7 @@ function augmentRingMaterial(
   mat: THREE.MeshStandardMaterial,
   planetRadiusAU: number,
   sunTan: number,
+  flattening: number,
 ): RingShadingFx {
   const fx: RingShadingFx = {
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
@@ -141,12 +142,17 @@ function augmentRingMaterial(
   };
   const uPlanetRadius = { value: planetRadiusAU };
   const uSunTan = { value: sunTan };
+  // A flattened planet's pole stretch, a/c − 1 (0 for a sphere): the shadow
+  // test runs in the frame stretched along the pole (local y), where the
+  // planet is a sphere of its equatorial radius and the ring plane is unmoved.
+  const uPolarStretch = { value: flattening > 0 ? 1 / (1 - flattening) - 1 : 0 };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirLocal = fx.uSunDirLocal;
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
     shader.uniforms.uPlanetRadius = uPlanetRadius;
     shader.uniforms.uSunTan = uSunTan;
+    shader.uniforms.uPolarStretch = uPolarStretch;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -167,6 +173,7 @@ function augmentRingMaterial(
           + 'uniform vec3 uSunDirLocal;\n'
           + 'uniform float uPlanetRadius;\n'
           + 'uniform float uSunTan;\n'
+          + 'uniform float uPolarStretch;\n'
           + 'varying vec3 vRingLocal;\n'
           + 'varying vec3 vSunView;',
       )
@@ -174,6 +181,7 @@ function augmentRingMaterial(
         '#include <opaque_fragment>',
         '{\n'
           + '  vec3 sd = normalize(uSunDirLocal);\n'
+          + '  if (uPolarStretch > 0.0) sd = normalize(vec3(sd.x, sd.y * (1.0 + uPolarStretch), sd.z));\n'
           + '  float axial = dot(vRingLocal, -sd);\n'          // distance anti-sunward of the planet
           + '  float shadow = 0.0;\n'
           + '  if (axial > 0.0) {\n'
@@ -203,6 +211,8 @@ export function createPlanetRings(
   planetRadiusAU: number,
   cfg: RingConfig,
   sunTan: number,
+  /** The planet's flattening along its pole (astronomy/bodyShape); 0 for a sphere. */
+  flattening = 0,
 ): { mesh: THREE.Mesh; fx: RingShadingFx } {
   const innerRadius = planetRadiusAU * cfg.innerFactor;
   const outerRadius = planetRadiusAU * cfg.outerFactor;
@@ -259,7 +269,7 @@ export function createPlanetRings(
     depthWrite: false,
   });
 
-  const fx = augmentRingMaterial(mat, planetRadiusAU, sunTan);
+  const fx = augmentRingMaterial(mat, planetRadiusAU, sunTan, flattening);
 
   const mesh = new THREE.Mesh(geo, mat);
   return { mesh, fx };

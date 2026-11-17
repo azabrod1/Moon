@@ -59,6 +59,13 @@ import {
   shadowAxisSphereHitAU,
   type ShadowConeProfile,
 } from '../../astronomy/shadows';
+import { bodyShape } from '../../astronomy/bodyShape';
+import {
+  projectedOutlineRadius,
+  spheroidNormal,
+  spheroidRadiusToward,
+  type SpheroidShape,
+} from '../../astronomy/spheroid';
 import { resolveGuideVisibility } from '../surfaceView';
 import type { MoonMesh } from '../PlanetFactory';
 import {
@@ -127,6 +134,8 @@ interface GuideStyle {
 }
 
 const tmpPoseDir = new THREE.Vector3();
+const tmpEllipseMinor = new THREE.Vector3();
+const tmpEllipseBasis = new THREE.Matrix4();
 
 /**
  * One drawn guide: a px-width core line over its dark casing, sharing a unit
@@ -151,6 +160,16 @@ class GuideLine {
     this.group.position.copy(centerAU);
     this.group.quaternion.setFromUnitVectors(FORWARD, normalUnit);
     this.group.scale.setScalar(radiusAU);
+    this.group.visible = true;
+  }
+
+  /** The unit ring as an ellipse: semi-axis `majorAU` along `majorUnit`
+   *  (perpendicular to the normal), `minorAU` across it. */
+  setEllipse(centerAU: THREE.Vector3, normalUnit: THREE.Vector3, majorUnit: THREE.Vector3, majorAU: number, minorAU: number): void {
+    this.group.position.copy(centerAU);
+    const minorUnit = tmpEllipseMinor.crossVectors(normalUnit, majorUnit);
+    this.group.quaternion.setFromRotationMatrix(tmpEllipseBasis.makeBasis(majorUnit, minorUnit, normalUnit));
+    this.group.scale.set(majorAU, minorAU, majorAU);
     this.group.visible = true;
   }
 
@@ -190,6 +209,10 @@ interface ConeRecord {
    * sunward of the occluder — the gap between them is lit space).
    */
   shadowMinAxialAU: number;
+  /** A flattened occluder's cone: minor/major radius (1 for a round cone)
+   *  and the unit major direction across the axis. */
+  minorRatio: number;
+  majorUnit: THREE.Vector3;
 }
 
 /** A moon the guides follow: the landed/companion subject and, when a jumped
@@ -328,6 +351,10 @@ export class ShadowVisuals {
   };
 
   private tmpAxis = new THREE.Vector3();
+  private outlineMajorUnit = new THREE.Vector3();
+  private outlineMinorUnit = new THREE.Vector3();
+  private outlineMinorKm = 0;
+  private coneBasis = new THREE.Matrix4();
   private tmpHelio = new THREE.Vector3();
   private tmpVec = new THREE.Vector3();
   private tmpOrigin = new THREE.Vector3();
@@ -443,6 +470,8 @@ export class ShadowVisuals {
       halfAngleRad: 0,
       axialLengthAU: 0,
       shadowMinAxialAU: 0,
+      minorRatio: 1,
+      majorUnit: new THREE.Vector3(1, 0, 0),
     };
   }
 
@@ -533,6 +562,10 @@ export class ShadowVisuals {
     // rings agree with the engine's classification and moon dimming.
     const parentEffRadiusKm = parentRadiusKm * occluderEnlargement(parentName);
     this.parentRadiusEffAU = parentEffRadiusKm / KM_PER_AU;
+    // A flattened parent (astronomy/bodyShape, scene axes like this group):
+    // its cones and eclipse rings are the outline the Sun sees, its spots and
+    // footprints sit on its true surface.
+    const parentShape = bodyShape(parentName);
 
     if (this.guidesVisible) {
       this.poseConePair(
@@ -543,6 +576,7 @@ export class ShadowVisuals {
         parentDistAU,
         parentEffRadiusKm,
         farthestMoonReachAU,
+        parentShape,
       );
       for (let s = 0; s < this.slots.length; s++) {
         const input = guideSlots[s];
@@ -576,16 +610,16 @@ export class ShadowVisuals {
       }
       const moonAxis = moonHelio.divideScalar(moonDistAU); // moon's anti-sunward axis
 
-      this.poseSpot(spot, offset, moonAxis, moonDistAU, m.data.radiusKm, parentRadiusKm);
+      this.poseSpot(spot, offset, moonAxis, moonDistAU, m.data.radiusKm, parentRadiusKm, parentShape);
 
       if (this.guidesVisible) {
         const slot = this.slotFor(m.data.name);
         if (slot) {
           maxRingDistAU = Math.max(
             maxRingDistAU,
-            this.poseEclipseRings(slot, m, axis, parentDistAU, parentEffRadiusKm),
+            this.poseEclipseRings(slot, m, axis, parentDistAU, parentEffRadiusKm, parentShape),
           );
-          this.poseTransitGuides(slot, m, moonAxis, moonDistAU, parentRadiusAU);
+          this.poseTransitGuides(slot, m, moonAxis, moonDistAU, parentRadiusAU, parentShape);
         }
       }
 
@@ -676,6 +710,7 @@ export class ShadowVisuals {
     axis: THREE.Vector3,
     parentDistAU: number,
     parentEffRadiusKm: number,
+    parentShape: SpheroidShape,
   ): number {
     const offset = moon.mesh.position;
     const orbitRadiusAU = offset.length();
@@ -703,8 +738,22 @@ export class ShadowVisuals {
     const umbraAbsAU = Math.abs(this.profileScratch.umbraRadiusKm) / KM_PER_AU;
 
     this.tmpRingCenter.copy(axis).multiplyScalar(ringDistAU);
-    slot.ringPenumbra.setRing(this.tmpRingCenter, axis, penumbraAU);
-    if (umbraAbsAU > 1e-12) slot.ringUmbra.setRing(this.tmpRingCenter, axis, umbraAbsAU);
+    if (parentShape.flattening > 0 && this.outlineAxes(axis, parentEffRadiusKm, parentShape)) {
+      // The cross-section of a flattened parent's shadow: an ellipse, its
+      // minor axis along the projected pole, each axis the cone of that radius.
+      const majorPenumbraAU = penumbraAU;
+      const majorUmbraAU = umbraAbsAU;
+      computeShadowConeProfileKm(this.outlineMinorKm, parentDistAU * KM_PER_AU, ringDistAU * KM_PER_AU, this.profileScratch);
+      const minorPenumbraAU = this.profileScratch.penumbraRadiusKm / KM_PER_AU;
+      const minorUmbraAU = Math.abs(this.profileScratch.umbraRadiusKm) / KM_PER_AU;
+      slot.ringPenumbra.setEllipse(this.tmpRingCenter, axis, this.outlineMajorUnit, majorPenumbraAU, minorPenumbraAU);
+      if (majorUmbraAU > 1e-12 && minorUmbraAU > 1e-12) {
+        slot.ringUmbra.setEllipse(this.tmpRingCenter, axis, this.outlineMajorUnit, majorUmbraAU, minorUmbraAU);
+      }
+    } else {
+      slot.ringPenumbra.setRing(this.tmpRingCenter, axis, penumbraAU);
+      if (umbraAbsAU > 1e-12) slot.ringUmbra.setRing(this.tmpRingCenter, axis, umbraAbsAU);
+    }
 
     const syzygy = this.tmpSyzygy.copy(axisInOrbitPlane).divideScalar(wLen).multiplyScalar(orbitRadiusAU);
     const tickDir = this.tmpTickDir.crossVectors(orbitNormal, syzygy).normalize();
@@ -737,9 +786,10 @@ export class ShadowVisuals {
     moonAxis: THREE.Vector3,
     moonDistAU: number,
     parentRadiusAU: number,
+    parentShape: SpheroidShape,
   ): void {
     const offset = moon.mesh.position;
-    const tHitAU = shadowAxisSphereHitAU(offset, moonAxis, parentRadiusAU);
+    const tHitAU = shadowAxisSphereHitAU(offset, moonAxis, parentRadiusAU, parentShape);
     const tNearAU = tHitAU ?? -offset.dot(moonAxis);
     if (tNearAU <= 0) return;
 
@@ -756,12 +806,11 @@ export class ShadowVisuals {
     if (penumbraAU > parentRadiusAU * 0.85) return;
 
     if (tHitAU !== null) {
-      const dir = this.tmpVec.copy(offset).addScaledVector(moonAxis, tHitAU).normalize();
       // Same sagitta lift as the spot, so rings and spot sit on one shell.
       const sagittaAU =
         parentRadiusAU - Math.sqrt(Math.max(parentRadiusAU * parentRadiusAU - penumbraAU * penumbraAU, 0));
-      const liftAU = parentRadiusAU + sagittaAU * 1.2 + parentRadiusAU * 0.002;
-      const hitPos = slot.hitPosAU.copy(dir).multiplyScalar(liftAU);
+      const hitPos = slot.hitPosAU;
+      const dir = this.surfacePose(offset, moonAxis, tHitAU, parentRadiusAU, sagittaAU * 1.2, parentShape, hitPos);
 
       slot.footprintPenumbra.setRing(hitPos, dir, penumbraAU);
       if (umbraAbsAU > 1e-12) slot.footprintUmbra.setRing(hitPos, dir, umbraAbsAU);
@@ -771,7 +820,11 @@ export class ShadowVisuals {
       slot.hitDirUnit.copy(dir);
     } else {
       const closePos = slot.hitPosAU.copy(offset).addScaledVector(moonAxis, tNearAU);
-      if (closePos.length() >= parentRadiusAU + penumbraAU) return;
+      const closeLengthAU = closePos.length();
+      const surfaceAU = parentShape.flattening > 0 && closeLengthAU > 0
+        ? spheroidRadiusToward(closePos.x / closeLengthAU, closePos.y / closeLengthAU, closePos.z / closeLengthAU, parentRadiusAU, parentShape)
+        : parentRadiusAU;
+      if (closeLengthAU >= surfaceAU + penumbraAU) return;
 
       slot.footprintPenumbra.setRing(closePos, moonAxis, penumbraAU);
       if (umbraAbsAU > 1e-12) slot.footprintUmbra.setRing(closePos, moonAxis, umbraAbsAU);
@@ -919,10 +972,26 @@ export class ShadowVisuals {
     // LINES are gated on resolvability below, but the camera-inside-the-fill
     // test must not be — you can stand in a cone whose occluder shows < 6 px
     // (Mars from near its own umbra tip) and the fill would tint the frame.
+    let halfAngleRad = rec.halfAngleRad;
+    if (rec.minorRatio < 1) {
+      // An elliptical cone's outline, seen from the camera, stands off the
+      // axis by the ellipse's support radius across the line of sight: the
+      // round cone of that radius has the same silhouette.
+      const toCamera = this.tmpVec.copy(cameraLocalAU).sub(rec.apexAU);
+      toCamera.addScaledVector(rec.axisUnit, -toCamera.dot(rec.axisUnit));
+      const across = this.tmpEdgeEnd.crossVectors(rec.axisUnit, toCamera);
+      const acrossLength = across.length();
+      if (acrossLength > 0) {
+        across.divideScalar(acrossLength);
+        const alongMajor = across.dot(rec.majorUnit);
+        const support = Math.sqrt(alongMajor * alongMajor + rec.minorRatio * rec.minorRatio * (1 - alongMajor * alongMajor));
+        halfAngleRad = Math.atan(Math.tan(rec.halfAngleRad) * support);
+      }
+    }
     const status = computeConeSilhouette(
       rec.apexAU,
       rec.axisUnit,
-      rec.halfAngleRad,
+      halfAngleRad,
       cameraLocalAU,
       this.tmpEdgeDirA,
       this.tmpEdgeDirB,
@@ -943,7 +1012,7 @@ export class ShadowVisuals {
       rec.edgeB.hide();
       return;
     }
-    const generatrixAU = rec.axialLengthAU / Math.cos(rec.halfAngleRad);
+    const generatrixAU = rec.axialLengthAU / Math.cos(halfAngleRad);
     this.tmpEdgeEnd.copy(rec.apexAU).addScaledVector(this.tmpEdgeDirA, generatrixAU);
     rec.edgeA.setSegment(rec.apexAU, this.tmpEdgeEnd);
     this.tmpEdgeEnd.copy(rec.apexAU).addScaledVector(this.tmpEdgeDirB, generatrixAU);
@@ -965,7 +1034,21 @@ export class ShadowVisuals {
     sunDistAU: number,
     occluderRadiusKm: number,
     reachAU: number,
+    occluderShape?: SpheroidShape,
   ): void {
+    // A flattened occluder casts an elliptical cone: the minor radius along
+    // the projected pole, scaled about the equatorial radius's apex. Against
+    // the engine's cone of each direction's own apex that is tens of km off
+    // at the moons' distances, on a cone tens of thousands across.
+    const elliptical = occluderShape !== undefined && occluderShape.flattening > 0
+      && this.outlineAxes(axis, occluderRadiusKm, occluderShape);
+    const minorRatio = elliptical ? this.outlineMinorKm / occluderRadiusKm : 1;
+    recUmbra.minorRatio = minorRatio;
+    recPenumbra.minorRatio = minorRatio;
+    if (elliptical) {
+      recUmbra.majorUnit.copy(this.outlineMajorUnit);
+      recPenumbra.majorUnit.copy(this.outlineMajorUnit);
+    }
     computeShadowConeProfileKm(occluderRadiusKm, sunDistAU * KM_PER_AU, 0, this.profileScratch);
     const radiusAU = occluderRadiusKm / KM_PER_AU;
     const umbraLenAU = this.profileScratch.umbraLengthKm / KM_PER_AU;
@@ -973,8 +1056,9 @@ export class ShadowVisuals {
 
     const umbra = recUmbra.fill;
     umbra.position.copy(originAU).addScaledVector(axis, umbraLenAU);
-    umbra.quaternion.setFromUnitVectors(UP, this.tmpVec.copy(axis).negate());
-    umbra.scale.set(radiusAU, umbraLenAU, radiusAU);
+    if (elliptical) this.orientEllipticalCone(umbra, this.tmpVec.copy(axis).negate());
+    else umbra.quaternion.setFromUnitVectors(UP, this.tmpVec.copy(axis).negate());
+    umbra.scale.set(radiusAU, umbraLenAU, radiusAU * minorRatio);
     umbra.visible = true;
     recUmbra.posed = true;
     recUmbra.apexAU.copy(originAU).addScaledVector(axis, umbraLenAU);
@@ -987,8 +1071,9 @@ export class ShadowVisuals {
     const penEndRadiusAU = (radiusAU * penLenAU) / pinchAU;
     const penumbra = recPenumbra.fill;
     penumbra.position.copy(originAU).addScaledVector(axis, -pinchAU);
-    penumbra.quaternion.setFromUnitVectors(UP, axis);
-    penumbra.scale.set(penEndRadiusAU, penLenAU, penEndRadiusAU);
+    if (elliptical) this.orientEllipticalCone(penumbra, axis);
+    else penumbra.quaternion.setFromUnitVectors(UP, axis);
+    penumbra.scale.set(penEndRadiusAU, penLenAU, penEndRadiusAU * minorRatio);
     penumbra.visible = true;
     recPenumbra.posed = true;
     recPenumbra.apexAU.copy(originAU).addScaledVector(axis, -pinchAU);
@@ -1017,11 +1102,12 @@ export class ShadowVisuals {
     moonSunDistAU: number,
     moonRadiusKm: number,
     parentRadiusKm: number,
+    parentShape: SpheroidShape,
   ): void {
     const parentRadiusAU = parentRadiusKm / KM_PER_AU;
     // Near-surface hit along the shadow ray — same helper the surface-view
     // vantage stands on, so the spot and the observer agree by construction.
-    const tAU = shadowAxisSphereHitAU(moonOffsetAU, moonAxis, parentRadiusAU);
+    const tAU = shadowAxisSphereHitAU(moonOffsetAU, moonAxis, parentRadiusAU, parentShape);
     if (tAU === null) {
       spot.visible = false;
       return;
@@ -1050,13 +1136,60 @@ export class ShadowVisuals {
     const ratio = (penKm + umbKm) / Math.max(penKm - umbKm, 1e-9);
     uniforms.uCoreCover.value = umbKm >= 0 ? 1 : ratio * ratio;
 
-    const dir = this.tmpVec.copy(moonOffsetAU).addScaledVector(moonAxis, tAU).normalize();
     const sagittaAU =
       parentRadiusAU - Math.sqrt(Math.max(parentRadiusAU * parentRadiusAU - spotRadiusAU * spotRadiusAU, 0));
-    spot.position.copy(dir).multiplyScalar(parentRadiusAU + sagittaAU * 1.2 + parentRadiusAU * 0.002);
+    const dir = this.surfacePose(moonOffsetAU, moonAxis, tAU, parentRadiusAU, sagittaAU * 1.2, parentShape, spot.position);
     spot.quaternion.setFromUnitVectors(FORWARD, dir);
     spot.scale.setScalar(spotRadiusAU);
     spot.visible = true;
+  }
+
+  /**
+   * Where a shadow axis meets the parent, lifted off the ground by the flat
+   * disc's sagitta lift plus a 0.2% skin: written into `outPos`, and the unit
+   * surface normal there returned (in this.tmpVec). On a sphere that is the
+   * radial direction and the lift is from the centre, as it always was; on a
+   * flattened parent it is the spheroid's normal at the true hit.
+   */
+  private surfacePose(
+    offsetAU: THREE.Vector3,
+    axis: THREE.Vector3,
+    tAU: number,
+    parentRadiusAU: number,
+    sagittaLiftAU: number,
+    parentShape: SpheroidShape,
+    outPos: THREE.Vector3,
+  ): THREE.Vector3 {
+    const dir = this.tmpVec.copy(offsetAU).addScaledVector(axis, tAU);
+    if (parentShape.flattening === 0) {
+      dir.normalize();
+      outPos.copy(dir).multiplyScalar(parentRadiusAU + sagittaLiftAU + parentRadiusAU * 0.002);
+      return dir;
+    }
+    outPos.copy(dir);
+    spheroidNormal(dir.x, dir.y, dir.z, parentShape, dir);
+    outPos.addScaledVector(dir, sagittaLiftAU + parentRadiusAU * 0.002);
+    return dir;
+  }
+
+  /** A flattened occluder's outline along the shadow axis: the minor radius
+   *  (km, along the projected pole) into outlineMinorKm and the unit major
+   *  direction into outlineMajorUnit. False seen pole-on, where it is round. */
+  private outlineAxes(axis: THREE.Vector3, radiusKm: number, shape: SpheroidShape): boolean {
+    const major = this.outlineMajorUnit.set(shape.poleX, shape.poleY, shape.poleZ).cross(axis);
+    const majorLength = major.length();
+    if (majorLength < 1e-9) return false;
+    major.divideScalar(majorLength);
+    const minor = this.outlineMinorUnit.crossVectors(axis, major);
+    this.outlineMinorKm = projectedOutlineRadius(axis.x, axis.y, axis.z, minor.x, minor.y, minor.z, radiusKm, shape);
+    return true;
+  }
+
+  /** Point the unit cone (opening along +Y) along `coneDir`, its local X on
+   *  the outline's major direction so a scale.z of minor/major flattens it. */
+  private orientEllipticalCone(cone: THREE.Mesh, coneDir: THREE.Vector3): void {
+    const zUnit = this.outlineMinorUnit.crossVectors(this.outlineMajorUnit, coneDir);
+    cone.quaternion.setFromRotationMatrix(this.coneBasis.makeBasis(this.outlineMajorUnit, coneDir, zUnit));
   }
 
   private ensureSpot(moonName: string): THREE.Mesh {

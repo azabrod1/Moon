@@ -173,6 +173,7 @@ describe('the LUT shell material', () => {
     const fx = {
       uSunDirWorld: { value: new THREE.Vector3() },
       uSunDirLocal: { value: new THREE.Vector3() },
+      uBodyScale: { value: new THREE.Vector3(1, 1, 1) },
       uMoonShadow: { value: [new THREE.Vector4(1, 2, 3, 4)] },
       uMoonShadowCount: { value: 2 },
       uPlanetshineColor: { value: new THREE.Color() },

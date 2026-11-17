@@ -117,6 +117,8 @@ import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import type { EventType } from '../astronomy/ephemeris';
 import { findLunarPhaseEvent } from '../astronomy/lunarPhase';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
+import { bodyShape } from '../astronomy/bodyShape';
+import { projectedOutlineRadius, type SpheroidShape } from '../astronomy/spheroid';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import { SUN_LIGHT_BASELINE } from './sunLight';
 import { HighlightMeter, type HighlightContext, type HighlightTelemetry } from './highlightMeter';
@@ -2041,6 +2043,8 @@ export class PlanetariumMode {
   private tmpSurfaceVantage = new THREE.Vector3();
   private tmpSurfaceAxis = new THREE.Vector3();
   private tmpPhaseTarget = new THREE.Vector3();
+  private tmpSunOccluderToward = new THREE.Vector3();
+  private tmpSunAtmosphereMiss = new THREE.Vector3();
   private tmpPhaseToSun = new THREE.Vector3();
   private tmpPhaseToEye = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
@@ -9662,11 +9666,21 @@ export class PlanetariumMode {
 
       const closestDistance = Math.sqrt(Math.max(0, offset.lengthSq() - planeDistance * planeDistance));
       planet.mesh.getWorldScale(this.tmpSunOccluderScale);
-      const solidRadius = planet.data.radiusAU * Math.max(
+      let solidRadius = planet.data.radiusAU * Math.max(
         Math.abs(this.tmpSunOccluderScale.x),
         Math.abs(this.tmpSunOccluderScale.y),
         Math.abs(this.tmpSunOccluderScale.z),
       );
+      // A flattened planet: its outline along the line to the Sun, toward
+      // where the line passes closest (astronomy/spheroid.ts).
+      const shape = bodyShape(planet.data.name);
+      if (shape.flattening > 0 && closestDistance > 0) {
+        const miss = this.tmpSunAtmosphereMiss.copy(offset).addScaledVector(sunDirection, -planeDistance).negate();
+        miss.divideScalar(closestDistance);
+        solidRadius = projectedOutlineRadius(
+          sunDirection.x, sunDirection.y, sunDirection.z, miss.x, miss.y, miss.z, solidRadius, shape,
+        );
+      }
       const shellRadius = solidRadius * config.scale;
       const solarBand = projectedSourceRadiusAtPlane(
         SUN_DATA.radiusAU,
@@ -9731,7 +9745,9 @@ export class PlanetariumMode {
     this.sunOccIncumbentFx = null;
 
     for (const planet of this.solarSystem?.planets ?? []) {
-      visible *= 1 - this.considerSunOccluder(planet.mesh, planet.fx ?? null, sunDirection, sunDistance, sunAngularRadius);
+      visible *= 1 - this.considerSunOccluder(
+        planet.mesh, planet.fx ?? null, sunDirection, sunDistance, sunAngularRadius, bodyShape(planet.data.name),
+      );
       if (visible < 1e-4) {
         this.commitDominantSunOccluder();
         return 0;
@@ -9760,8 +9776,9 @@ export class PlanetariumMode {
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
+    shape?: SpheroidShape,
   ): number {
-    const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius);
+    const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius, shape);
     if (occlusion <= 0) return occlusion;
     if (occlusion > this.sunOccBestOcclusion) {
       this.sunOccSecondOcclusion = this.sunOccBestOcclusion;
@@ -9853,6 +9870,7 @@ export class PlanetariumMode {
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
+    shape?: SpheroidShape,
   ): number {
     if (!mesh.visible) return 0;
 
@@ -9875,9 +9893,24 @@ export class PlanetariumMode {
     if (!(renderedRadius > 0)) return 0;
 
     bodyDirection.multiplyScalar(1 / bodyDistance);
-    const separation = Math.acos(THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1));
+    const cosSeparation = THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1);
+    const separation = Math.acos(cosSeparation);
     const angularRadius = Math.asin(THREE.MathUtils.clamp(renderedRadius / bodyDistance, 0, 0.999999));
+    // The likeness and size gates read the body's round size; the cover is
+    // a flattened body's outline toward the Sun (astronomy/spheroid.ts).
     this.lastSunOccluderAngularRadius = angularRadius;
+    if (shape && shape.flattening > 0) {
+      const toward = this.tmpSunOccluderToward.copy(sunDirection).addScaledVector(bodyDirection, -cosSeparation);
+      const towardLength = toward.length();
+      if (towardLength > 1e-12) {
+        toward.divideScalar(towardLength);
+        const outline = projectedOutlineRadius(
+          bodyDirection.x, bodyDirection.y, bodyDirection.z, toward.x, toward.y, toward.z, renderedRadius, shape,
+        );
+        const outlineAngularRadius = Math.asin(THREE.MathUtils.clamp(outline / bodyDistance, 0, 0.999999));
+        return circleOcclusionFraction(sunAngularRadius, outlineAngularRadius, separation);
+      }
+    }
     return circleOcclusionFraction(sunAngularRadius, angularRadius, separation);
   }
 

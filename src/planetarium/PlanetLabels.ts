@@ -9,6 +9,8 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
+import { bodyShape } from '../astronomy/bodyShape';
+import type { SpheroidShape } from '../astronomy/spheroid';
 import {
   projectSphereToScreen,
   screenPointToWorldRay,
@@ -105,6 +107,9 @@ export interface ForegroundSphere {
   // the landed case (player sits at body centre) keeps a real depth.
   distFromCamera: number;
   name: string;
+  /** A body flattened along its pole (astronomy/bodyShape), radiusAU its
+   *  equatorial radius; absent is a sphere. */
+  shape?: SpheroidShape;
 }
 
 /**
@@ -124,6 +129,8 @@ export function sphereHidesPoint(
   dz: number,
   distAlong: number,
 ): boolean {
+  const shape = sphere.shape;
+  if (shape && shape.flattening > 0) return spheroidHidesPoint(sphere, shape, dx, dy, dz, distAlong);
   // Closest approach of the line to the centre, measured along the ray, and
   // the miss vector from there — formed directly, not as d² − along², which
   // cancels to nothing against a planet an AU away.
@@ -137,6 +144,41 @@ export function sphereHidesPoint(
   // Where the line enters the sphere: behind the camera means the sphere is
   // behind us; beyond the point means the point sits in front of the body.
   const entry = along - Math.sqrt(rSq - missSq);
+  return entry > 0 && entry < distAlong;
+}
+
+/**
+ * `sphereHidesPoint` for a flattened body: the same closest-approach test in
+ * the frame stretched along its pole by a/c (astronomy/spheroid.ts), where the
+ * body is a sphere of its equatorial radius and the line's parameter is
+ * unchanged — so `entry` is still a distance along the true sight line.
+ */
+function spheroidHidesPoint(
+  sphere: ForegroundSphere,
+  shape: SpheroidShape,
+  dx: number,
+  dy: number,
+  dz: number,
+  distAlong: number,
+): boolean {
+  const stretch = 1 / (1 - shape.flattening) - 1;
+  const centreAlong = (sphere.x * shape.poleX + sphere.y * shape.poleY + sphere.z * shape.poleZ) * stretch;
+  const cx = sphere.x + centreAlong * shape.poleX;
+  const cy = sphere.y + centreAlong * shape.poleY;
+  const cz = sphere.z + centreAlong * shape.poleZ;
+  const directionAlong = (dx * shape.poleX + dy * shape.poleY + dz * shape.poleZ) * stretch;
+  const sx = dx + directionAlong * shape.poleX;
+  const sy = dy + directionAlong * shape.poleY;
+  const sz = dz + directionAlong * shape.poleZ;
+  const speedSq = sx * sx + sy * sy + sz * sz;
+  const along = (sx * cx + sy * cy + sz * cz) / speedSq;
+  const mx = cx - along * sx;
+  const my = cy - along * sy;
+  const mz = cz - along * sz;
+  const missSq = mx * mx + my * my + mz * mz;
+  const rSq = sphere.radiusAU * sphere.radiusAU;
+  if (missSq >= rSq) return false;
+  const entry = along - Math.sqrt((rSq - missSq) / speedSq);
   return entry > 0 && entry < distAlong;
 }
 
@@ -456,6 +498,7 @@ export class PlanetLabels {
       if (angularSize <= 0.01) continue;
       this.foregroundSpheres.push({
         x, y, z, radiusAU: entry.planet.radiusAU, distFromCamera, name: entry.planet.name,
+        shape: bodyShape(entry.planet.name),
       });
     }
   }

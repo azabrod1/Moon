@@ -24,6 +24,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   computeShadowGeometry,
+  emptyShadowGeometry,
   computeShadowConeProfileKm,
   computeConeSilhouette,
   classifyEclipse,
@@ -45,12 +46,14 @@ import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 import { getSatelliteOrbitMeta } from './satellites';
 import { KM_PER_AU } from './constants';
 import goldens from './shadows.goldens.json';
+import { raySpheroidT, SPHERE_SHAPE, type SpheroidShape } from './spheroid';
+import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 const MIN = 60_000;
 const HOUR = 3_600_000;
 
 function geometryScratch(): ShadowGeometry {
-  return { axialKm: 0, missKm: 0, penumbraRadiusKm: 0, umbraRadiusKm: 0, umbraLengthKm: 0 };
+  return emptyShadowGeometry();
 }
 function circumstanceScratch(): EclipseCircumstance {
   return { classification: 'none', penumbralMagnitude: 0, umbralMagnitude: 0, antumbralMagnitude: 0 };
@@ -383,6 +386,78 @@ describe('satellite events vs JPL Horizons vectors', () => {
       if (jplInEclipse) inEclipseSamples++;
     }
     expect(inEclipseSamples).toBeGreaterThan(0);
+  });
+});
+
+describe('a flattened occluder and target', () => {
+  // Saturn's shape, the Sun at its full 26.7° latitude over the equator.
+  const equatorialKm = 60_268;
+  const saturnPos = new THREE.Vector3(9.5, 0, 0);
+  const axis = saturnPos.clone().normalize();
+  const latitude = (26.7 * Math.PI) / 180;
+  const pole = new THREE.Vector3(Math.sin(latitude), Math.cos(latitude), 0);
+  const shape: SpheroidShape = { flattening: 1 - 54_364 / equatorialKm, poleX: pole.x, poleY: pole.y, poleZ: pole.z };
+  const projectedPole = pole.clone().addScaledVector(axis, -pole.dot(axis)).normalize();
+  const major = new THREE.Vector3().crossVectors(axis, projectedPole).normalize();
+  const across = (psiDeg: number) =>
+    major.clone().multiplyScalar(Math.cos((psiDeg * Math.PI) / 180)).addScaledVector(projectedPole, Math.sin((psiDeg * Math.PI) / 180));
+
+  it("casts cones that match exact rays to the Sun's limb, at Titan's and Iapetus's distances", () => {
+    const saturnKm = saturnPos.clone().multiplyScalar(KM_PER_AU);
+    /** Share of 36 limb points whose line from `targetKm` meets the body. */
+    const limbBlocked = (targetKm: THREE.Vector3) => {
+      const toSun = targetKm.clone().negate().normalize();
+      const first = new THREE.Vector3().crossVectors(toSun, new THREE.Vector3(0, 0, 1)).normalize();
+      const second = new THREE.Vector3().crossVectors(toSun, first);
+      let blocked = 0;
+      for (let step = 0; step < 36; step++) {
+        const angle = (2 * Math.PI * step) / 36;
+        const limb = first.clone().multiplyScalar(KM_CONSTANTS.SUN_RADIUS * Math.cos(angle))
+          .addScaledVector(second, KM_CONSTANTS.SUN_RADIUS * Math.sin(angle));
+        const origin = targetKm.clone().sub(saturnKm);
+        const toLimb = limb.sub(targetKm);
+        const t = raySpheroidT(origin.x, origin.y, origin.z, toLimb.x, toLimb.y, toLimb.z, equatorialKm, shape);
+        if (t > 0 && t < 1) blocked++;
+      }
+      return blocked / 36;
+    };
+    for (const axialKm of [1_221_870, 3_560_000]) {
+      for (const psiDeg of [0, 45, 90]) {
+        const direction = across(psiDeg);
+        const targetKm = (missKm: number) => saturnKm.clone().addScaledVector(axis, axialKm).addScaledVector(direction, missKm);
+        const edge = (inside: (blocked: number) => boolean) => {
+          let low = 0, high = 2 * equatorialKm;
+          for (let step = 0; step < 40; step++) {
+            const middle = (low + high) / 2;
+            if (inside(limbBlocked(targetKm(middle)))) low = middle; else high = middle;
+          }
+          return low;
+        };
+        const g = computeShadowGeometry(saturnPos, equatorialKm, targetKm(1000).divideScalar(KM_PER_AU), geometryScratch(), 1, shape);
+        const where = `${axialKm} km behind, ${psiDeg}° from the equator`;
+        expect(Math.abs(g.umbraRadiusKm - edge((blocked) => blocked === 1)), where).toBeLessThan(15);
+        expect(Math.abs(g.penumbraRadiusKm - edge((blocked) => blocked > 0)), where).toBeLessThan(15);
+      }
+    }
+  });
+
+  it("is touched at its outline: a shadow over the pole's flattened band misses", () => {
+    // A 200 km occluder 100,000 km sunward of Saturn, its axis 58,000 km out:
+    // inside the equator's reach, outside the pole's (54,364 km at B = 0).
+    const sideOn: SpheroidShape = { ...shape, poleX: 0, poleY: 1, poleZ: 0 };
+    const target = saturnPos.clone();
+    const touch = (direction: THREE.Vector3, targetShape: SpheroidShape) => {
+      const occluder = target.clone()
+        .addScaledVector(axis, -100_000 / KM_PER_AU)
+        .addScaledVector(direction, 58_000 / KM_PER_AU);
+      const g = computeShadowGeometry(occluder, 200, target, geometryScratch());
+      return classifyShadowTransit(g, 200, equatorialKm, occluder.length() * KM_PER_AU, targetShape);
+    };
+    const polar = new THREE.Vector3(0, 1, 0);
+    const equatorial = new THREE.Vector3(0, 0, 1);
+    expect(touch(polar, SPHERE_SHAPE)).toBe('total');
+    expect(touch(polar, sideOn)).toBe('none');
+    expect(touch(equatorial, sideOn)).toBe('total');
   });
 });
 

@@ -12,6 +12,9 @@ export interface PlanetData {
   semiMajorAxisAU: number;
   radiusAU: number;       // equatorial radius in AU
   radiusKm: number;
+  /** (equatorial − polar)/equatorial along the spin pole; absent is a sphere
+   *  (astronomy/bodyShape.ts). */
+  flattening?: number;
   axialTiltDeg: number;
   orbitalVelocityKmS: number;
   color: number;           // hex UI tint (deck rows, labels, orbit lines)

@@ -9,6 +9,8 @@
  * so a change to either side must come here.
  */
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
+import { spheroidLevelRadius } from '../../astronomy/spheroid';
 import { MAX_REGIONS as SCHEMA_MAX_REGIONS } from '../data/interiorTypes';
 import { EARTH_MODEL } from '../data/models/earth';
 import { SUN_MODEL } from '../data/models/sun';
@@ -238,6 +240,29 @@ describe('the shader text', () => {
     for (const name of called) expect(defined, `${name}() is called but never defined`).toContain(name);
     for (const name of ['sectionNoDataColor', 'sectionScaleColor', 'sectionScaleT', 'sectionTempK', 'sectionIncandescence', 'sectionHeat', 'sectionSample']) {
       expect(defined).toContain(name);
+    }
+  });
+});
+
+describe('the display radius on a flattened giant, CPU and GPU', () => {
+  it('reads the level of the similar spheroid as the pick and the ruler do, and a sphere\'s radius as it always has', () => {
+    // The shader's two sides, as it spells them; the sphere keeps the world length verbatim.
+    expect(SECTION_SHADER_TEXT).toContain('vec3 sectionBodyPoint = uWorldToBody * vSectionWorld;');
+    expect(SECTION_SHADER_TEXT).toContain('float sectionRadius = uPoleStretch > 0.0\n  ? length(vec3(sectionBodyPoint.x, sectionBodyPoint.y * (1.0 + uPoleStretch), sectionBodyPoint.z))\n  : length(vSectionWorld);');
+    expect(createSectionUniforms().uPoleStretch.value).toBe(0);
+    // That arithmetic, in body space under a real pose, against the world-space level
+    // astronomy/spheroid gives the pick and the ruler, about the posed pole.
+    const flattening = 1 - 54_364 / 60_268;
+    const pose = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.47, -1.1, 0.3));
+    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(pose);
+    const shape = { flattening, poleX: pole.x, poleY: pole.y, poleZ: pole.z };
+    const worldToBody = new THREE.Matrix3().setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(pose).invert());
+    const stretch = 1 / (1 - flattening) - 1;
+    for (let trial = 0; trial < 50; trial++) {
+      const world = new THREE.Vector3(Math.sin(trial * 1.3), Math.cos(trial * 0.7), Math.sin(trial * 2.9 + 1)).multiplyScalar(0.9);
+      const body = world.clone().applyMatrix3(worldToBody);
+      const shaderLevel = Math.hypot(body.x, body.y * (1 + stretch), body.z);
+      expect(shaderLevel).toBeCloseTo(spheroidLevelRadius(world.x, world.y, world.z, shape), 12);
     }
   });
 });

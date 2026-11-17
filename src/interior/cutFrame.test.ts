@@ -8,6 +8,7 @@ import {
   createCutAnchor,
   createCutFrame,
   cutFaceBasis,
+  cutFaceMatrix,
   cutViewForAngle,
   frameFromAnchor,
   frameQuaternion,
@@ -16,7 +17,9 @@ import {
   wedgeAngle,
   yawCutFrame,
   cutYawRad,
+  type CutFrame,
 } from './cutFrame';
+import { spheroidLevelRadius, spheroidRadiusToward, SPHERE_SHAPE, type SpheroidShape } from '../astronomy/spheroid';
 
 const centre = new THREE.Vector3(0, 0, 0);
 
@@ -342,5 +345,80 @@ describe('cutYawRad', () => {
 
   it('never goes negative past a full opening', () => {
     expect(cutYawRad(Math.PI + 0.1, 0.3)).toBe(0);
+  });
+});
+
+describe('cutFaceMatrix', () => {
+  const FLATTENING = 1 - 54_364 / 60_268; // Saturn's
+  const tilted = new THREE.Vector3(-0.4, 0.75, 0.3).normalize();
+  const SATURN: SpheroidShape = { flattening: FLATTENING, poleX: tilted.x, poleY: tilted.y, poleZ: tilted.z };
+  const matrix = new THREE.Matrix4();
+  const point = new THREE.Vector3();
+  const frames: Array<[string, () => CutFrame]> = [
+    ['a cutaway seen from low on one side', () => yawCutFrame(computeCutFrame(new THREE.Vector3(4, -1.5, 7), new THREE.Vector3(0, 1, 0), centre, Math.PI / 2, createCutFrame()), 0.4)],
+    ['a narrow wedge from above', () => computeCutFrame(new THREE.Vector3(0.5, 8, 2), new THREE.Vector3(0, 0, -1), centre, Math.PI / 6, createCutFrame())],
+    ['a Section with the pole in its plane', () => computeCutFrame(new THREE.Vector3(tilted.z, 0, -tilted.x).normalize().multiplyScalar(9), tilted, centre, Math.PI, createCutFrame())],
+    ['a Section seen down the pole', () => computeCutFrame(tilted.clone().multiplyScalar(9), new THREE.Vector3(1, 0, 0), centre, Math.PI, createCutFrame())],
+  ];
+
+  it('is the face basis alone on a sphere', () => {
+    const frame = frames[0][1]();
+    for (const side of ['a', 'b'] as const) {
+      const basis = cutFaceBasis(frame, side);
+      expect(cutFaceMatrix(frame, side, SPHERE_SHAPE, matrix).elements).toEqual(new THREE.Matrix4().makeBasis(basis.radial, basis.up, basis.normal).elements);
+    }
+  });
+
+  for (const [label, makeFrame] of frames) {
+    it(`lays the half-disc on the half-ellipse of the section: ${label}`, () => {
+      const frame = makeFrame();
+      for (const side of ['a', 'b'] as const) {
+        const basis = cutFaceBasis(frame, side);
+        cutFaceMatrix(frame, side, SATURN, matrix);
+        // No mirror: the face keeps its winding, and its normal is the plane's.
+        expect(matrix.determinant()).toBeGreaterThan(0);
+        const normalColumn = new THREE.Vector3().setFromMatrixColumn(matrix, 2);
+        expect(normalColumn.distanceTo(basis.normal)).toBeLessThan(1e-12);
+        // The rim lands on the body's surface, in the plane, on the radial side.
+        for (let step = 0; step <= 32; step++) {
+          const angle = -Math.PI / 2 + (Math.PI * step) / 32;
+          point.set(Math.cos(angle), Math.sin(angle), 0).applyMatrix4(matrix);
+          expect(spheroidLevelRadius(point.x, point.y, point.z, SATURN)).toBeCloseTo(1, 12);
+          expect(Math.abs(point.dot(basis.normal))).toBeLessThan(1e-12);
+          expect(point.dot(basis.radial)).toBeGreaterThan(-1e-12);
+        }
+        // The straight edge stays on the hinge, reaching the body's own extent along it.
+        point.set(0, 1, 0).applyMatrix4(matrix);
+        const hingeExtent = spheroidRadiusToward(basis.up.x, basis.up.y, basis.up.z, 1, SATURN);
+        expect(point.distanceTo(basis.up.clone().multiplyScalar(hingeExtent))).toBeLessThan(1e-12);
+        // And it covers the section: any point of the plane inside the body on
+        // the radial side is the image of a point of the unit half-disc.
+        const inverse = matrix.clone().invert();
+        for (let trial = 0; trial < 64; trial++) {
+          const radialShare = Math.abs(Math.sin(trial * 1.7));
+          const upShare = Math.cos(trial * 2.3);
+          point.copy(basis.radial).multiplyScalar(radialShare).addScaledVector(basis.up, upShare);
+          const level = spheroidLevelRadius(point.x, point.y, point.z, SATURN);
+          point.multiplyScalar((0.98 * Math.abs(Math.sin(trial * 0.9))) / level);
+          const local = point.clone().applyMatrix4(inverse);
+          expect(local.length()).toBeLessThanOrEqual(1);
+          expect(local.x).toBeGreaterThanOrEqual(-1e-12);
+          expect(Math.abs(local.z)).toBeLessThan(1e-12);
+        }
+      }
+    });
+  }
+
+  it('lets the two faces of a Section tile one section, meeting along the hinge', () => {
+    const frame = frames[2][1]();
+    const matrixB = new THREE.Matrix4();
+    cutFaceMatrix(frame, 'a', SATURN, matrix);
+    cutFaceMatrix(frame, 'b', SATURN, matrixB);
+    // Both faces send the ends of their straight edges to the same two points.
+    for (const end of [1, -1]) {
+      const onA = new THREE.Vector3(0, end, 0).applyMatrix4(matrix);
+      const onB = new THREE.Vector3(0, -end, 0).applyMatrix4(matrixB); // B's up is the hinge reversed
+      expect(onA.distanceTo(onB)).toBeLessThan(1e-12);
+    }
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   projectedOutlineRadius,
   raySpheroidT,
+  spheroidLevelRadius,
   spheroidNormal,
   spheroidRadiusToward,
   SPHERE_SHAPE,
@@ -85,6 +86,29 @@ describe('spheroid', () => {
     const tangent = { x: next.x - here.x, y: next.y - here.y, z: next.z - here.z };
     const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
     expect(Math.abs(normal.x * tangent.x + normal.y * tangent.y + normal.z * tangent.z) / tangentLength).toBeLessThan(1e-4);
+  });
+
+  it('labels every point with the similar spheroid through it', () => {
+    // On the surface the level is the equatorial radius; scaled by any factor
+    // toward the centre the point is on the similar spheroid that factor down.
+    let state = 777;
+    const random = () => ((state = (state * 1103515245 + 12345) % 2 ** 31) / 2 ** 31) * 2 - 1;
+    for (let trial = 0; trial < 100; trial++) {
+      let dx = random(), dy = random(), dz = random();
+      const length = Math.hypot(dx, dy, dz);
+      dx /= length; dy /= length; dz /= length;
+      const surface = spheroidRadiusToward(dx, dy, dz, EQUATORIAL, SATURN);
+      const fraction = 0.05 + 0.95 * Math.abs(random());
+      const level = spheroidLevelRadius(dx * surface * fraction, dy * surface * fraction, dz * surface * fraction, SATURN);
+      expect(level / EQUATORIAL).toBeCloseTo(fraction, 12);
+      // The oracle that knows nothing of the stretch: the surface equation of the
+      // spheroid of that level holds at the point.
+      const scale = EQUATORIAL / level;
+      expect(surfaceValue(dx * surface * fraction * scale, dy * surface * fraction * scale, dz * surface * fraction * scale)).toBeCloseTo(1, 10);
+    }
+    expect(spheroidLevelRadius(pole.x * POLAR, pole.y * POLAR, pole.z * POLAR, SATURN)).toBeCloseTo(EQUATORIAL, 6);
+    // A sphere's level is the distance from the centre, bit for bit.
+    expect(spheroidLevelRadius(3, 4, 12, SPHERE_SHAPE)).toBe(Math.hypot(3, 4, 12));
   });
 
   it("draws the outline the lines see: the projected ellipse matches a ray oracle", () => {

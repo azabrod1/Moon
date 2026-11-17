@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { computeCutFrame, createCutFaceBasis, createCutFrame, cutFaceBasis, insideWedge, wedgeAngle, yawCutFrame, type CutFrame } from './cutFrame';
+import { computeCutFrame, createCutFaceBasis, createCutFrame, cutFaceBasis, cutFaceMatrix, insideWedge, wedgeAngle, yawCutFrame, type CutFrame } from './cutFrame';
+import { spheroidLevelRadius, SPHERE_SHAPE, type SpheroidShape } from '../astronomy/spheroid';
 import { MAX_REGIONS } from './data/interiorTypes';
 import { drawnRegionCount, pickInterior, regionIndexAtRadius, type PickLayout, type PickSurface } from './interiorPick';
 
@@ -306,4 +307,81 @@ describe('pickInterior over a grid of rays', () => {
       });
     }
   }
+});
+
+describe('pickInterior on a flattened giant', () => {
+  // Saturn's flattening (astronomy/bodyShape), polar radius 0.902 of the equatorial.
+  const FLATTENING = 1 - 54_364 / 60_268;
+  const POLAR = 1 - FLATTENING;
+  const POLE_UP: SpheroidShape = { flattening: FLATTENING, poleX: 0, poleY: 1, poleZ: 0 };
+  const tilted = new THREE.Vector3(0.35, 0.8, -0.45).normalize();
+  const POLE_TILTED: SpheroidShape = { flattening: FLATTENING, poleX: tilted.x, poleY: tilted.y, poleZ: tilted.z };
+
+  it('meets the skin on the spheroid, and misses where only the sphere would be', () => {
+    const layout = { ...layoutFor(0, THREE_REGIONS), shape: POLE_UP };
+    const nearPole = rayDown(0, 0.5);
+    const hit = pickInterior(nearPole.origin, nearPole.direction, layout)!;
+    expect(hit.surface).toBe('skin');
+    expect(hit.radiusDisplay).toBe(1);
+    // x² + y²/c² + z² = 1 at the hit.
+    expect(hit.point.x ** 2 + (hit.point.y / POLAR) ** 2 + hit.point.z ** 2).toBeCloseTo(1, 12);
+    // Over the pole, between the polar radius and 1: the sphere is there, the body is not.
+    const overPole = rayDown(0, (POLAR + 1) / 2);
+    expect(pickInterior(overPole.origin, overPole.direction, { frame: layout.frame, outerDisplay: THREE_REGIONS })).not.toBeNull();
+    expect(pickInterior(overPole.origin, overPole.direction, layout)).toBeNull();
+  });
+
+  it('at Section, resolves a face hit by the similar spheroid through it', () => {
+    const layout = { ...layoutFor(HALF_TURN, THREE_REGIONS), shape: POLE_UP };
+    // Along the pole a level is that fraction of the polar radius; across it, of the equatorial.
+    const alongPole = rayDown(0, 0.5 * POLAR);
+    const polarHit = pickInterior(alongPole.origin, alongPole.direction, layout)!;
+    expect(polarHit.surface).toBe('face');
+    expect(polarHit.radiusDisplay).toBeCloseTo(0.5, 12);
+    expect(polarHit.regionIndex).toBe(1);
+    const acrossPole = rayDown(0.5, 0);
+    expect(pickInterior(acrossPole.origin, acrossPole.direction, layout)!.radiusDisplay).toBeCloseTo(0.5, 12);
+    // Past the half-ellipse's rim above the pole, the face is not there.
+    const pastRim = rayDown(0, 0.97);
+    expect(pickInterior(pastRim.origin, pastRim.direction, layout)).toBeNull();
+  });
+
+  it('agrees with the face the scene draws: a point at local radius ρ on the half-disc picks at level ρ', () => {
+    const origin = new THREE.Vector3(2.1, 1.4, 9.6);
+    const frame = computeCutFrame(origin, new THREE.Vector3(0, 1, 0), new THREE.Vector3(), QUARTER_TURN, createCutFrame());
+    yawCutFrame(frame, THREE.MathUtils.degToRad(25));
+    const layout: PickLayout = { frame, outerDisplay: THREE_REGIONS, shape: POLE_TILTED };
+    const matrix = new THREE.Matrix4();
+    const point = new THREE.Vector3();
+    let checked = 0;
+    for (const side of ['a', 'b'] as const) {
+      cutFaceMatrix(frame, side, POLE_TILTED, matrix);
+      for (const localRadius of [0.1, 0.45, 0.8, 0.97]) {
+        for (const angle of [-1.2, -0.5, 0.2, 0.9, 1.4]) {
+          point.set(localRadius * Math.cos(angle), localRadius * Math.sin(angle), 0).applyMatrix4(matrix);
+          const direction = point.clone().sub(origin).normalize();
+          const hit = pickInterior(origin, direction, layout);
+          // A point the near face hides from this camera is not this face's to answer for.
+          if (!hit || hit.surface !== 'face' || hit.point.distanceTo(point) > 1e-9) continue;
+          expect(hit.radiusDisplay).toBeCloseTo(localRadius, 12);
+          expect(spheroidLevelRadius(point.x, point.y, point.z, POLE_TILTED)).toBeCloseTo(localRadius, 12);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  it('is the sphere, bit for bit, at no flattening', () => {
+    const sphereLayout = layoutFor(QUARTER_TURN, THREE_REGIONS);
+    const flatLayout = { ...sphereLayout, shape: SPHERE_SHAPE };
+    for (const [x, y] of [[0.2, 0.3], [-0.6, 0.1], [0.05, -0.7], [0.9, 0.2]]) {
+      const ray = rayDown(x, y);
+      const sphereHit = pickInterior(ray.origin, ray.direction, sphereLayout);
+      const shapedHit = pickInterior(ray.origin, ray.direction, flatLayout);
+      expect(shapedHit?.surface).toBe(sphereHit?.surface);
+      expect(shapedHit?.distance).toBe(sphereHit?.distance);
+      expect(shapedHit?.radiusDisplay).toBe(sphereHit?.radiusDisplay);
+    }
+  });
 });

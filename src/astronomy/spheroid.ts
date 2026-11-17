@@ -67,6 +67,23 @@ export function raySpheroidT(
   return (-linear - Math.sqrt(discriminant)) / quadratic;
 }
 
+/**
+ * The equatorial radius of the spheroid through a point that shares this
+ * one's centre, pole and flattening: the point's length in the frame
+ * stretched along the pole, where that whole family of similar spheroids is
+ * concentric spheres. It labels the nested shells a flattened body is drawn
+ * with, as a radius labels a sphere's; on a sphere it is the point's distance
+ * from the centre.
+ */
+export function spheroidLevelRadius(
+  pointX: number, pointY: number, pointZ: number,
+  shape: SpheroidShape,
+): number {
+  if (shape.flattening === 0) return Math.hypot(pointX, pointY, pointZ);
+  const along = (pointX * shape.poleX + pointY * shape.poleY + pointZ * shape.poleZ) * (1 / (1 - shape.flattening) - 1);
+  return Math.hypot(pointX + along * shape.poleX, pointY + along * shape.poleY, pointZ + along * shape.poleZ);
+}
+
 /** Distance from the centre to the surface along a unit direction. */
 export function spheroidRadiusToward(
   directionX: number, directionY: number, directionZ: number,

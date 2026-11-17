@@ -532,7 +532,7 @@ import {
   stepShadowEventSearch,
   type ShadowEventSearch,
 } from './shadowEventSearch';
-import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
+import { moonOrientationQuaternion, tidalRollNorth } from './world/tidalLock';
 import {
   type MapBodySizeParams,
   type MapMarkerZoomParams,
@@ -6694,13 +6694,16 @@ export class PlanetariumMode {
    * (the real lunar axis sits within ~1.5° of the ecliptic pole).
    */
   private orientTidallyLockedMoon(
-    mesh: THREE.Mesh,
+    moon: MoonMesh,
+    parentPlanetName: string,
     offsetFromParent: THREE.Vector3,
     rollNorth: THREE.Vector3,
   ) {
     // Through the shared seam, so the same moon at the same instant faces the
-    // same way here and on the system map.
-    tidalLockQuaternion(offsetFromParent, rollNorth, mesh.quaternion);
+    // same way here and on the system map (Earth's Moon with its librations).
+    moonOrientationQuaternion(
+      moon.data.name, parentPlanetName, offsetFromParent, rollNorth, this.timeState.currentUtcMs, moon.mesh.quaternion,
+    );
   }
 
   /**
@@ -7579,7 +7582,7 @@ export class PlanetariumMode {
 
         const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset, this.tmpMoonOrbitNormal);
         m.mesh.position.copy(offset);
-        this.orientTidallyLockedMoon(m.mesh, offset, this.tmpMoonOrbitNormal);
+        this.orientTidallyLockedMoon(m, planet.data.name, offset, this.tmpMoonOrbitNormal);
 
         // Eclipse dimming: darken the moon while it sits in its parent's
         // shadow (pure geometry from positions already in hand).

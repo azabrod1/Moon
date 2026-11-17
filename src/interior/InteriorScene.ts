@@ -81,7 +81,7 @@ import type { PlanetData } from '../planetarium/planets/planetData';
 import type { InteriorBody } from './interiorBody';
 import { computeBodyOrientationQuaternion, ttJDFromUtcMs } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
-import { tidalLockQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
+import { moonOrientationQuaternion, tidalRollNorth } from '../planetarium/world/tidalLock';
 import { applyAtmosphereCut, applyPhotosphereCut, applySkinCut, configureSkinCutEdge, createSkinCutUniforms, type SkinCutUniforms } from './rendering/skinCut';
 import { SUN_ATMOSPHERE_TINT_RGB, sunPhotosphereFragmentShader, sunPhotosphereVertexShader } from '../shared/shaders/sun';
 import { SUN_POLE_DEC_DEG, SUN_POLE_RA_DEG } from '../planetarium/planets/planetData';
@@ -1364,7 +1364,8 @@ export class InteriorScene {
 
   /**
    * The body's real orientation at an instant: IAU pole and spin for a
-   * planet, the tidal lock for a moon. The faces read the inverse so their
+   * planet, the tidal lock for a moon (the IAU lunar model for the Moon,
+   * world/tidalLock.ts). The faces read the inverse so their
    * patterns are fixed to the material, not to the screen.
    */
   setPose(body: InteriorBody, utcMs: number): void {
@@ -1376,7 +1377,9 @@ export class InteriorScene {
     } else if (body.moon) {
       computeMoonOffsetEquatorialAU(body.moon.name, body.moon.parentPlanet, utcMs, tmpOffset, tmpNormal);
       tidalRollNorth(body.moon.name, body.moon.parentPlanet, tmpNormal, tmpRollNorth);
-      if (!tidalLockQuaternion(tmpOffset, tmpRollNorth, quaternion)) quaternion.identity();
+      if (!moonOrientationQuaternion(body.moon.name, body.moon.parentPlanet, tmpOffset, tmpRollNorth, utcMs, quaternion)) {
+        quaternion.identity();
+      }
     } else {
       quaternion.identity();
     }

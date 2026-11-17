@@ -464,7 +464,11 @@ const primeScratch = new THREE.Vector3();
 const basisZScratch = new THREE.Vector3();
 const basisScratch = new THREE.Matrix4();
 
-function buildPoleBasisQuaternion(
+/** The body-fixed frame of a pole (RA, Dec) and prime meridian W, degrees:
+ *  +X the meridian, +Y the pole, +Z texture longitude 90°W. Bodies whose
+ *  rotation is not a planetData record (the Moon, lunarOrientation.ts) build
+ *  their frame here too, so every globe agrees on what its axes mean. */
+export function buildPoleBasisQuaternion(
   poleRaDeg: number,
   poleDecDeg: number,
   primeMeridianDeg: number,

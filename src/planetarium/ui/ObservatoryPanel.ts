@@ -18,7 +18,8 @@
  * the rows on screen touches nothing, so a fast clock cannot make the list
  * flicker.
  */
-import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
+import type { EventType } from '../../astronomy/ephemeris';
+import { lunarPhaseAt } from '../../astronomy/lunarPhase';
 import { formatDateCompact } from '../../astronomy/planetary';
 import type { ShadowClassification, ShadowEvent } from '../../astronomy/shadows';
 import {
@@ -512,7 +513,8 @@ export function observatoryPhaseText(
   fromEarth: (PhaseGlyphInput & { text: string }) | null;
 }) | null {
   if (info.kind === 'earth') {
-    const state = computeOrbitalState(new Date(utcMs));
+    // The phase of the Moon as drawn (lunarPhase.ts).
+    const state = lunarPhaseAt(utcMs);
     const moonPhase = barePhase(state.phaseName);
     const onMoon = info.subject === 'Earth';
     const phase = onMoon ? COMPLEMENT_PHASE[moonPhase] ?? moonPhase : moonPhase;

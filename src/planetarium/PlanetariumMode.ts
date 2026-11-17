@@ -114,7 +114,8 @@ import {
 } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
-import { findEvent, type EventType } from '../astronomy/ephemeris';
+import type { EventType } from '../astronomy/ephemeris';
+import { findLunarPhaseEvent } from '../astronomy/lunarPhase';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import { SUN_LIGHT_BASELINE } from './sunLight';
@@ -19666,7 +19667,7 @@ export class PlanetariumMode {
   }
 
   /**
-   * Earth finder metas: full/new via findEvent (cached until stale or
+   * Earth finder metas: full/new via findLunarPhaseEvent (cached until stale or
    * crossed), eclipse rows reuse the chunked upcoming-search results.
    */
   private observatoryNextDates(): { full: string; new: string; lunar: string; solar: string } | null {
@@ -19684,11 +19685,11 @@ export class PlanetariumMode {
       (cache.fullMs !== null && now > cache.fullMs) ||
       (cache.newMs !== null && now > cache.newMs);
     if (stale) {
-      const from = new Date(now + 60_000);
+      const fromUtcMs = now + 60_000;
       this.observatoryNextDatesCache = {
         computedAtUtcMs: now,
-        fullMs: findEvent('full-moon', from, 1)?.getTime() ?? null,
-        newMs: findEvent('new-moon', from, 1)?.getTime() ?? null,
+        fullMs: findLunarPhaseEvent('full-moon', fromUtcMs, 1),
+        newMs: findLunarPhaseEvent('new-moon', fromUtcMs, 1),
       };
     }
     const fresh = this.observatoryNextDatesCache!;
@@ -20271,15 +20272,17 @@ export class PlanetariumMode {
         ? { startUtcMs: lastPhase.utcMs, peakUtcMs: lastPhase.utcMs, endUtcMs: lastPhase.utcMs }
         : null;
     const fromUtcMs = stepperSearchFromUtcMs(parkedPhase, this.timeState.currentUtcMs, direction);
-    const found = findEvent(type, new Date(fromUtcMs), direction);
-    if (!found) {
+    // Full and new moon of the Moon as drawn (lunarPhase.ts), so the jump
+    // lands on the syzygy the scene shows.
+    const foundUtcMs = findLunarPhaseEvent(type, fromUtcMs, direction);
+    if (foundUtcMs === null) {
       this.notification.show('No event found within the search range');
       return;
     }
-    this.lastPhaseJump = { type, utcMs: found.getTime() };
+    this.lastPhaseJump = { type, utcMs: foundUtcMs };
     // Same park-and-watch policy as the shadow jumps.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
-    this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
+    this.setCurrentUtcMs(foundUtcMs - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
     // A full-moon jump can land inside a coinciding lunar eclipse. Adopt it:
     // the HUD then narrates the eclipse over the phase framing (same body,
@@ -20315,7 +20318,7 @@ export class PlanetariumMode {
     // phase jump can still land inside a coinciding eclipse, so it gets the
     // same hand-off.
     this.notification.show(
-      `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}` +
+      `${formatUtcLabel(foundUtcMs)} — ${OBSERVATORY_EVENT_LABELS[type]}` +
         this.observatoryJumpHandoff(),
     );
   }

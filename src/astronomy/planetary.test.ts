@@ -135,16 +135,16 @@ describe('computeBodyPoleQuaternion (de-spin foundation)', () => {
 
   it('puts Earth\'s prime meridian at GMST (absolute rotation phase)', () => {
     // At 2000-01-01 12:00 UTC, GMST ≈ 280.46°: Greenwich points at that RA.
-    // Evaluated through ttJDFromUtcMs — the production computeBodyState path —
-    // the IAU W model lands within ~0.05°; the 0.5° tolerance absorbs the
-    // UT1/ΔT-level coarseness of the pin value. Do not tighten. This is the
+    // Earth's rotation angle now comes from the clock (earthOrientation.ts,
+    // pinned to ERFA's values there), and at J2000 it equals GMST to well
+    // under the pin's own rounding, which is the tolerance. This is the
     // absolute-phase test that no spin model could pass in the mirrored frame.
     const earth = PLANETS.find((p) => p.name === 'Earth')!;
     const jdTT = ttJDFromUtcMs(Date.UTC(2000, 0, 1, 12, 0, 0));
     const prime = new THREE.Vector3(1, 0, 0).applyQuaternion(
       computeBodyOrientationQuaternion(earth, jdTT),
     );
-    expect(prime.angleTo(raDecToVector(280.46, 0)) * RAD).toBeLessThan(0.5);
+    expect(prime.angleTo(raDecToVector(280.46, 0)) * RAD).toBeLessThan(0.005);
   });
 
   it('shares its pole axis with the spinning orientation at any time', () => {

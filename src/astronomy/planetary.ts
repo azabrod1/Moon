@@ -10,6 +10,7 @@ import type { PlanetData } from '../planetarium/planets/planetData';
 import { dateToJD, moonPosition, sunPosition, type SunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
+import { earthOrientationQuaternion } from './earthOrientation';
 import {
   STANDISH_MAX_JD,
   STANDISH_MIN_JD,
@@ -368,8 +369,10 @@ export function trajectoryLineBodyFraction(
  * intermediate ecliptic frame runs longitude toward −Z. det = +1 throughout,
  * so cross products and spin senses are physically meaningful and the IAU
  * pole + W construction below gives the true absolute rotation phase (which
- * continents face the Sun at a UTC instant — pinned against GMST in
- * planetary.test.ts).
+ * face of a body is toward the Sun at a UTC instant). Earth is the exception:
+ * its orientation comes from earthOrientation.ts (rotation angle and
+ * precessing pole, pinned to ERFA test values), which this cartographic
+ * model is not accurate enough for.
  *
  * The IAU prime-meridian reference is the node of the body's equator on the
  * J2000 Earth equator, at RA = poleRA + 90° (always perpendicular to the
@@ -402,9 +405,19 @@ function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number, 
   return out.setFromRotationMatrix(basis);
 }
 
+/** Earth alone is oriented by the IERS-style model in earthOrientation.ts
+ *  (rotation angle from the clock, precessing pole) rather than the WGCCRE
+ *  pole + W below; see that module for why. */
+function isEarthOriented(planet: PlanetData): boolean {
+  return planet.name === 'Earth';
+}
+
 /** Pass `out` and the orientation is written into it rather than into a
- *  fresh quaternion; the math is the same either way. */
+ *  fresh quaternion; the math is the same either way. `jd` is TT. */
 export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number, out?: THREE.Quaternion): THREE.Quaternion {
+  if (isEarthOriented(planet)) {
+    return earthOrientationQuaternion(utcMsAtTtJD(jd), jd, out ?? new THREE.Quaternion());
+  }
   const daysSinceJ2000 = getDaysSinceJ2000(jd);
   const primeMeridianDeg =
     planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
@@ -461,7 +474,10 @@ export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
 export function computeBodyStateInto(planet: PlanetData, utcMs: number, out: BodyState): BodyState {
   const jd = ttJDFromUtcMs(utcMs);
   computeBodyPositionAU(planet, utcMs, out.positionAU);
-  computeBodyOrientationQuaternion(planet, jd, out.orientationQuaternion);
+  // Earth's rotation angle reads the clock directly; going through the TT
+  // date would only invert ttJDFromUtcMs to get it back.
+  if (isEarthOriented(planet)) earthOrientationQuaternion(utcMs, jd, out.orientationQuaternion);
+  else computeBodyOrientationQuaternion(planet, jd, out.orientationQuaternion);
   out.sunDirection.copy(out.positionAU).multiplyScalar(-1).normalize();
   return out;
 }

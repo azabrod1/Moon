@@ -233,12 +233,13 @@ const JOBS = {
   // (textureLadder's armArrivalWarmGoal), so every jump to one of these
   // bodies fetches its 8K wherever the device can hold one, after the 4K
   // where there is one, whether or not the flight goes on to cross the 8K's
-  // trigger gate; only a body flown up to waits for the gate. The service worker keeps what it fetched, so the bill
-  // is once per device per moon, on the first visit, at the shipped size: Io
-  // 5.5 MB, Europa 6.4, Ganymede 6.5, Callisto 6.9, Pluto 3.6, Enceladus 6.7,
-  // Dione 6.7, Tethys 6.6. What one must not do is hold 170.7 MiB, which is
-  // what the uncompressed twin would be: transcoded it holds 42.7 at a byte a
-  // texel (ASTC, BC7) and 21.3 at half a byte (ETC2, BC1).
+  // trigger gate; only a body flown up to waits for the gate. The service
+  // worker keeps what it fetched, so the bill is once per device per moon, on
+  // the first visit, at the shipped size: Io 5.5 MB, Europa 6.4, Ganymede
+  // 6.5, Callisto 6.9, Pluto 3.6, Enceladus 6.7, Dione 6.7, Tethys 6.6. What
+  // one must not do is hold 170.7 MiB, which is what the uncompressed twin
+  // would be: transcoded it holds 42.7 at a byte a texel (ASTC, BC7) and 21.3
+  // at half a byte (ETC2, BC1).
   io8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('io-8k'), out: '8k/io.v2.ktx2' },
   europa8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('europa-8k'), out: '8k/europa.v2.ktx2' },
   ganymede8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },

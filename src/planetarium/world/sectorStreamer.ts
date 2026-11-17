@@ -1084,8 +1084,10 @@ export class SectorStreamer {
   /** The one envelope the tiles and the globe maps spend between them. */
   private readonly envelope: MemoryEnvelope;
   private warnedNoBudget = false;
-  /** The last reconcile's answer to `tilesShort`. */
+  /** The last reconcile's answer to `tilesShort`, and the globe maps' bytes
+   *  it was taken against (`tilesShortFor`). */
   private short = false;
+  private shortAgainst = 0;
   private generation = 0;
   private lastNowMs = 0;
   private batching = false;
@@ -1307,9 +1309,9 @@ export class SectorStreamer {
    */
   maintain(globalMapBytes: number, nowMs: number): void {
     this.lastNowMs = nowMs;
-    // Nothing is wanted on a frame nothing measures, so nothing is short.
-    this.short = false;
     this.setGlobalMapBytes(globalMapBytes);
+    // Nothing is wanted on a frame nothing measures, so nothing is short.
+    this.answerShort(false);
     for (const body of this.bodies.values()) {
       for (const slot of body.slots) {
         if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
@@ -1380,7 +1382,7 @@ export class SectorStreamer {
       body.admitting = false;
       // No reconcile follows for this body, and a suspended frame wants
       // nothing; the batch's reconcile, if there is one, answers afresh.
-      this.short = false;
+      this.answerShort(false);
       return;
     }
 
@@ -1577,7 +1579,7 @@ export class SectorStreamer {
     // loop above: that loop stops at the in-flight cap and skips a candidate
     // the fetch pool cannot carry, and either would leave the answer to
     // whichever candidate happened to be reached.
-    this.short = this.shortOfMaps(candidates);
+    this.answerShort(this.shortOfMaps(candidates));
     // Last, with every release and materialisation of the frame behind it:
     // the cover each family's ground draws until something changes again.
     for (const body of this.bodies.values()) if (body.cutDirty) this.applyCut(body);
@@ -1814,9 +1816,13 @@ export class SectorStreamer {
    * hold now. Each condition rules out a shortfall the ladder cannot answer:
    * at the draw-call cap a set is refused whatever the memory; where the
    * tiles' own ceiling binds, an empty ladder leaves them no more room than
-   * they have; and a set that fits now is only waiting on the network. Read
-   * at the floor the same way — a ladder big enough to hold the tiles at
-   * their floor is the case this exists for.
+   * they have; a set that fits now is only waiting on the network; and a set
+   * whose maps outnumber the whole fetch pool can never start at all (an
+   * Earth set is three fetches, the limited row's pool two). That last is
+   * the pool's size, never how busy it is right now: a pool merely full
+   * would flicker the answer frame to frame. Read at the floor the same way —
+   * a ladder big enough to hold the tiles at their floor is the case this
+   * exists for.
    */
   private shortOfMaps(candidates: ReadonlyArray<{ body: SectorBody; slot: SectorSlot }>): boolean {
     if (candidates.length === 0 || this.liveCount() >= this.residentCap) return false;
@@ -1825,21 +1831,39 @@ export class SectorStreamer {
     const unsqueezed = sectorBudgetBytes(this.envelope, 0, this.envelope.floorBytes, this.envelope.fixedBytes);
     for (const { body, slot } of candidates) {
       if (slot.state !== 'idle') continue;
+      if (this.loadFetchCount(body, slot) > this.fetchPool) continue;
       const need = held + this.slotSetBytes(body, slot);
       if (need > budget && need <= unsqueezed) return true;
     }
     return false;
   }
 
+  /** Record an answer with the ledger it was taken against. */
+  private answerShort(short: boolean): void {
+    this.short = short;
+    this.shortAgainst = this.envelope.ladderBytes;
+  }
+
   /**
    * True when the last reconcile left a wanted set out for want of memory the
    * globe maps hold, and only then (see shortOfMaps). Cleared on every frame
    * that reconciles nothing — the chart's `maintain`, a suspended body,
-   * `dropAll` — since nothing is wanted there. Read by the ladder's release
-   * pass, which runs before this frame's reconcile, so it reads the last one.
+   * `dropAll` — since nothing is wanted there.
    */
   tilesShort(): boolean {
     return this.short;
+  }
+
+  /**
+   * The same answer, or null when it was taken against other globe-map bytes
+   * than `ladderBytes`. The ladder's release pass runs before this frame's
+   * reconcile, so what it reads is the last frame's; a swap that landed since
+   * (or any rung applied, a source closed) has changed the very budget the
+   * answer was about, and acting on it would give a second map back for room
+   * the first may already have made.
+   */
+  tilesShortFor(ladderBytes: number): boolean | null {
+    return ladderBytes === this.shortAgainst ? this.short : null;
   }
 
   /** Bytes held: what the resident sets draw plus what the loads in flight
@@ -1914,7 +1938,7 @@ export class SectorStreamer {
    *  cache when they were resident before. */
   dropAll(): void {
     for (const body of this.bodies.values()) for (const slot of body.slots) this.release(slot);
-    this.short = false;
+    this.answerShort(false);
     // Whatever frame was open is over: a batch left behind by a caller that
     // never reached its endFrame must not hold every later frame in
     // measure-only mode.

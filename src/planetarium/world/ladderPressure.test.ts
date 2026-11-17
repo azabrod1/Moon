@@ -14,6 +14,7 @@ function state(over: Partial<LadderPressureState> = {}): LadderPressureState {
     restoreQueued: false,
     tilesShort: false,
     tilesShortSinceMs: null,
+    drawing: true,
     ...over,
   };
 }
@@ -150,5 +151,38 @@ describe('the tiles\' shortfall', () => {
     expect(plan.tilesReleaseDue).toBe(true);
     expect(plan.pressureSinceMs).toBeNull();
     expect(plan.releaseDue).toBe(false);
+  });
+
+  it('acts on no answer taken against another ledger, and carries the latch through it', () => {
+    // A swap landed (or any rung applied) after the tiles last answered: the
+    // answer is about a budget that no longer exists, so nothing comes due on
+    // it, and the latch is neither started nor cleared — clearing it on every
+    // landing would let back-to-back restores hold a hand-back off for ever.
+    const stale = planLadderPressure(state({
+      tilesShort: null, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(stale.tilesReleaseDue).toBe(false);
+    expect(stale.tilesShortSinceMs).toBe(0);
+    expect(planLadderPressure(state({ tilesShort: null, nowMs: 5_000 })).tilesShortSinceMs).toBeNull();
+    // The next fresh answer is due at once on the latch it carried.
+    const fresh = planLadderPressure(state({
+      tilesShort: true, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(fresh.tilesReleaseDue).toBe(true);
+  });
+
+  it('starts no release on the first chart frame', () => {
+    // The pass runs before this frame's streamer work, so on the frame the
+    // chart opens it still holds the last world frame's answer. Under the
+    // chart no sphere is drawn and the tiles want nothing.
+    const plan = planLadderPressure(state({
+      drawing: false, tilesShort: true, tilesShortSinceMs: 0, nowMs: 10 * RELEASE_PRESSURE_DWELL_MS,
+    }));
+    expect(plan.tilesReleaseDue).toBe(false);
+    expect(plan.tilesShortSinceMs).toBeNull();
+    // The ladder's own pressure is not the tiles' and still plans there.
+    expect(planLadderPressure(state({
+      drawing: false, blockedDemand: true, pressureSinceMs: 0, nowMs: RELEASE_PRESSURE_DWELL_MS,
+    })).releaseDue).toBe(true);
   });
 });

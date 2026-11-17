@@ -61,7 +61,9 @@ import {
   releaseDwellMs,
   releaseExpired,
   releaseLandsOnContainer,
+  releaseLostItsReason,
   releaseOffer,
+  requeueRestoreEntry,
   releaseTargetTier,
   releaseUpgradeSource,
   startTierRelease,
@@ -2044,7 +2046,6 @@ describe('the ladder against the sector memory envelope', () => {
     // left that may go (the test below); this sum is what it starts from.
     const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
     expect(Math.floor(budget / set)).toBe(5);
-    expect(budget).toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.sectorFloorBytes);
     expect(UNMEASURED_DESKTOP_PROFILE.ceilingBytes / set)
       .toBeGreaterThanOrEqual(UNMEASURED_DESKTOP_PROFILE.residentCap);
 
@@ -2127,6 +2128,92 @@ describe('the ladder against the sector memory envelope', () => {
     for (const t of taken) expect(t).toMatch(/ 8k$/);
   });
 
+  it('gives back only what is far when Earth\'s own tiles are the ones asking', () => {
+    // The same heaviest ladder, but as it is when Earth's tiles are short:
+    // Earth is close, so its globe, cloud deck and night lights are inside
+    // their bands and offer nothing. What may go is every other 8K container
+    // above a 4K one — the Moon, Mercury, Callisto, Pluto and the three
+    // Saturnians — 32 MiB apiece.
+    const profile = UNMEASURED_DESKTOP_PROFILE;
+    const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
+    const set = sectorSetGpuBytes(SECTOR_SETS.Earth);
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384, false);
+    const earth = new Set(['earthDay', 'earthClouds', 'earthNight']);
+    const held: Array<{ up: TextureUpgrade; material: THREE.MeshStandardMaterial }> = [];
+    for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
+      const material = trackMaterial(new THREE.MeshStandardMaterial());
+      const up = makeTextureUpgrade(key, material);
+      if (!up) continue;
+      up.appliedTier = up.effectiveMaxTier;
+      material.map = rungTexture(key, up.appliedTier);
+      trackReleaseBand(up, earth.has(key) ? 1 : 0, 0);
+      held.push({ up, material });
+    }
+    const nowMs = 60_000;
+    const ladder = () => held.reduce((sum, h) => sum + appliedTierGpuBytes(h.up), 0);
+    const budget = () => sectorBudgetBytes(profile, ladder(), profile.sectorFloorBytes, pool);
+    const start = ladder();
+    const taken: string[] = [];
+    while (budget() / set < profile.residentCap) {
+      const candidates = held.flatMap((h, i) => {
+        const offer = releaseOffer(h.up, nowMs, false);
+        return offer ? [{ id: String(i), distance: i, ...offer }] : [];
+      });
+      const victim = planRelease(candidates, {
+        ladderBytes: ladder(), envelopeBytes: profile.envelopeBytes - pool, containersOnly: true,
+      });
+      if (!victim) break;
+      const { up, material } = held[Number(victim.id)];
+      taken.push(up.key);
+      const low = releaseTargetTier(up)!;
+      up.appliedTier = low;
+      material.map = rungTexture(up.key, low);
+    }
+    expect(taken.sort()).toEqual(['callisto', 'dione', 'enceladus', 'mercury', 'moon', 'pluto', 'tethys']);
+    // All seven are needed, and they leave the tiles exactly their working
+    // set, with what is left of the envelope after the pool and the ladder:
+    const step = equirectMapGpuBytes(8192, true) - equirectMapGpuBytes(4096, true);
+    expect(budget()).toBe(Math.min(profile.ceilingBytes, profile.envelopeBytes - pool - (start - 7 * step)));
+    expect(Math.floor(budget() / set)).toBe(profile.residentCap);
+    // ...with 3.5 MiB to spare. That spare is the colour ladder's alone: the
+    // ledger the tiles are measured against (liveGlobalMapBytes) also holds
+    // the atmosphere tables, Earth's haze cache and the relief rungs, and any
+    // one of those, held on top, takes the sixteenth set away.
+    expect(mib(budget() - profile.residentCap * set)).toBeCloseTo(
+      1024 - mib(pool) - (mib(start) - 7 * mib(step)) - 16 * mib(set), 1,
+    );
+    expect(mib(budget() - profile.residentCap * set)).toBeLessThan(4);
+  });
+
+  it('offers the tiles nothing where a container would land as RGBA', () => {
+    // A transcoder with no compressed format to target hands three RGBA: the
+    // 4K below an 8K container is 42.7 MiB there, a transient of two sets,
+    // and no release is the tiles' to ask for.
+    bindKtx2TierLoader(() => {}, false);
+    withMaxTextureSize(16384);
+    const candidates = [];
+    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+      if (!tiers.includes('8k')) continue;
+      const up = makeTextureUpgrade(key, trackMaterial(new THREE.MeshStandardMaterial()));
+      if (!up || !up.tiers.includes('8k')) continue;
+      up.appliedTier = '8k';
+      (up.material as THREE.MeshStandardMaterial).map = mapTexture(8192);
+      trackReleaseBand(up, 0, 0);
+      expect(releaseLandsOnContainer(up), key).toBe(false);
+      const offer = releaseOffer(up, 60_000, false);
+      if (offer) {
+        expect(offer.lowIsContainer, key).toBe(false);
+        candidates.push({ id: key, distance: 1, ...offer });
+      }
+    }
+    expect(candidates.length).toBeGreaterThan(0);
+    const roomy = { ladderBytes: 0, envelopeBytes: Number.POSITIVE_INFINITY };
+    expect(planRelease(candidates, { ...roomy, containersOnly: true })).toBeNull();
+    // The ladder's own pressure still has them all to choose from.
+    expect(planRelease(candidates, roomy)).not.toBeNull();
+  });
+
   it('never takes an in-band or protected rung for the tiles', () => {
     bindKtx2TierLoader(() => {}, true);
     withMaxTextureSize(16384);
@@ -2163,38 +2250,58 @@ describe('the ladder against the sector memory envelope', () => {
     expect(planRelease(candidates, roomy)?.id).toBe('jupiter');
   });
 
-  it('a release evicts at most one set and nets at least one', () => {
+  it('a release costs the tiles one set at most, and frees one per release at a byte a texel or per two at half', () => {
     // A swap down holds both maps from the low one's decode until it lands,
     // and the tiles are trimmed for that transient before it is spent
     // (sectorStreamer.test.ts, "trims the tiles for both maps before the low
     // one is assigned"). Not gated: for every rung the tiles' shortfall may
     // take, the transient is a 4K container, no bigger than any one set a
-    // body streams, so it costs the tiles one set at most; and once it lands
-    // the ladder is lighter by more than the biggest set, so they come out
-    // at least one set up on where they started.
+    // body streams, so it costs the tiles one set at most. What landing frees
+    // depends on what the transcoder targets. At a byte a texel (ASTC, BC7)
+    // an 8K gives back 32 MiB, more than the biggest set; at half a byte
+    // (ETC2, BC1) it gives back 16, less than one Earth set, and it takes two
+    // releases to free one.
     bindKtx2TierLoader(() => {}, true);
     withMaxTextureSize(16384);
+    const container = (width: number, bytesPerTexel: number): THREE.CompressedTexture => {
+      const mipmaps: Array<{ width: number; height: number; data: Uint8Array }> = [];
+      for (let w = width, h = width / 2; w >= 4; w >>= 1, h >>= 1) {
+        mipmaps.push({ width: w, height: h, data: new Uint8Array(w * h * bytesPerTexel) });
+      }
+      return new THREE.CompressedTexture(mipmaps as unknown as ImageData[], width, width / 2);
+    };
     const sets = [...Object.values(SECTOR_SETS), ...Object.values(SECTOR_NIGHT_SETS)]
       .map((spec) => sectorSetGpuBytes(spec));
     const smallest = Math.min(...sets);
     const largest = Math.max(...sets);
-    const takeable: string[] = [];
-    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
-      if (!tiers.includes('8k')) continue;
-      const up = ladderHandle(key);
-      up.appliedTier = '8k';
-      up.material.map = rungTexture(key, '8k');
-      if (!releaseLandsOnContainer(up)) continue;
-      takeable.push(key);
-      const transient = tierUploadBytes(key, releaseTargetTier(up)!);
-      expect(transient, key).toBeLessThanOrEqual(smallest);
-      expect(appliedTierGpuBytes(up) - transient, key).toBeGreaterThanOrEqual(largest);
+    const earthSet = sectorSetGpuBytes(SECTOR_SETS.Earth);
+    for (const bytesPerTexel of [1, 0.5]) {
+      const takeable: string[] = [];
+      for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+        if (!tiers.includes('8k')) continue;
+        const up = ladderHandle(key);
+        up.appliedTier = '8k';
+        up.material.map = container(8192, bytesPerTexel);
+        if (!releaseLandsOnContainer(up)) continue;
+        takeable.push(key);
+        const transient = textureGpuBytes(container(4096, bytesPerTexel), 4096);
+        const freed = appliedTierGpuBytes(up) - transient;
+        expect(transient, key).toBeLessThanOrEqual(smallest);
+        expect(mib(freed), key).toBeCloseTo(32 * bytesPerTexel, 1);
+        if (bytesPerTexel === 1) {
+          expect(freed, key).toBeGreaterThanOrEqual(largest);
+        } else {
+          expect(freed, key).toBeLessThan(earthSet);
+          expect(2 * freed, key).toBeGreaterThanOrEqual(largest);
+        }
+      }
+      // The 8K containers above a 4K one: the Moon, the deck, the night
+      // lights, Mercury, Callisto, Pluto and the three Saturnians. Earth's
+      // globe, Jupiter and the three Galileans that boot at 4096 drop to a
+      // webp.
+      expect(takeable.sort()).toEqual(['callisto', 'dione', 'earthClouds', 'earthNight', 'enceladus',
+        'mercury', 'moon', 'pluto', 'tethys']);
     }
-    // The 8K containers above a 4K one: the Moon, the deck, the night lights,
-    // Mercury, Callisto, Pluto and the three Saturnians. Earth's globe,
-    // Jupiter and the three Galileans that boot at 4096 drop to a webp.
-    expect(takeable.sort()).toEqual(['callisto', 'dione', 'earthClouds', 'earthNight', 'enceladus',
-      'mercury', 'moon', 'pluto', 'tethys']);
   });
 
   it('never lets a phone reach its heaviest: the rung that would is refused', () => {
@@ -2753,6 +2860,82 @@ describe('what a release puts on the material', () => {
       expect(up.release).toBeUndefined();
       expect(up.releasedAtMs).toBeUndefined(); // nothing was given back
     } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('abandons a swap in the air when its body becomes protected', async () => {
+    const up = onFourK();
+    const high = up.material.map!;
+    trackReleaseBand(up, 0, 0);
+    expect(startTierRelease(up, 1_000)).toBe(true);
+    // Far and unguarded, the reason it was started still holds.
+    expect(releaseLostItsReason(up, false)).toBe(false);
+    // Then the autopilot picks it, or the ship commits to it.
+    expect(releaseLostItsReason(up, true)).toBe(true);
+    cancelTierRelease(up);
+    pending[0].onLoad(new THREE.Texture());
+    await settleRungUpload();
+    expect(up.material.map).toBe(high);
+    expect(up.appliedTier).toBe('4k');
+  });
+
+  it('abandons a swap in the air when its body grows back past its band', async () => {
+    const up = onFourK();
+    const high = up.material.map!;
+    trackReleaseBand(up, 0, 0);
+    startTierRelease(up, 1_000);
+    trackReleaseBand(up, 1, 2_000); // the approach brings it back to fill the view
+    expect(releaseLostItsReason(up, false)).toBe(true);
+    cancelTierRelease(up);
+    pending[0].onLoad(new THREE.Texture());
+    await settleRungUpload();
+    expect(up.material.map).toBe(high);
+    expect(up.appliedTier).toBe('4k');
+  });
+
+  it('never abandons a swap the restore queue started', () => {
+    // Re-fetching a stand-in's own tier, or handing it back for a smaller
+    // one: either replaces a stand-in, which the body needs at any size and
+    // however it is protected.
+    for (const restore of [true, false]) {
+      const up = onFourK();
+      trackReleaseBand(up, 1, 0);
+      startTierRelease(up, 1_000, { restore, queued: true });
+      expect(releaseLostItsReason(up, true)).toBe(false);
+      expect(up.release).toBeDefined();
+    }
+  });
+
+  it('puts a failed hand-back back on the restore queue, asked again after the cooldown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const entry = onStandin('moon');
+      const queue = [entry];
+      // A rung that can never fit again is handed back rather than restored.
+      bindTierAdmission(() => 'refuse');
+      const next = takeRestoreRefetch(queue, undefined, 1_000)!;
+      expect(next).toEqual({ up: entry.up, restore: false });
+      expect(queue).toHaveLength(0);
+      const settled: boolean[] = [];
+      startTierRelease(entry.up, 1_000, { restore: next.restore, queued: true, onSettled: (ok) => settled.push(ok) });
+      pending[0].onError(new Error('offline'));
+      await settleRungUpload();
+      expect(settled).toEqual([false]);
+      expect(entry.up.material.map).toBe(entry.tex); // still on the stand-in
+      expect(requeueRestoreEntry(queue, entry)).toBe(true);
+      expect(queue).toEqual([entry]);
+      // It waits out the handle's cooldown, then is asked again.
+      expect(takeRestoreRefetch(queue, undefined, 1_001)).toBeNull();
+      expect(queue).toHaveLength(1);
+      expect(takeRestoreRefetch(queue, undefined, entry.up.releaseRetryAtMs!))
+        .toEqual({ up: entry.up, restore: false });
+      // An entry whose body has a real map again is answered, not re-queued.
+      entry.up.material.map = mapTexture(4096);
+      expect(requeueRestoreEntry(queue, entry)).toBe(false);
+      expect(queue).toHaveLength(0);
+    } finally {
+      bindTierAdmission(null);
       warn.mockRestore();
     }
   });

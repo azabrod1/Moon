@@ -30,6 +30,7 @@ import {
 } from './sectorStreamer';
 import {
   APPLE_PHONE_PROFILE,
+  LIMITED_PROFILE,
   MemoryEnvelope,
   UNMEASURED_DESKTOP_PROFILE,
   UNMEASURED_TOUCH_PROFILE,
@@ -55,6 +56,7 @@ import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sect
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
 import { mapTexture, recordWarmUploads, settleRungUpload } from '../testing/upgradeHarness';
+import { planLadderPressure, RELEASE_PRESSURE_DWELL_MS } from './ladderPressure';
 
 /** A scripted loader: records every URL, and lets a test resolve or fail
  *  each one later (or synchronously with `auto`). */
@@ -2683,6 +2685,68 @@ describe('what the tiles say they are short of', () => {
     const roomy = settled(limits, 0, sizes, 1);
     expect(roomy.stats().inflight).toBe(2);
     expect(roomy.tilesShort()).toBe(false);
+  });
+
+  it('starts no second release once a landing has made the room', () => {
+    loader.auto = true;
+    // Four sets wanted; the maps leave room for two.
+    const four: Record<string, number> = {};
+    for (let c = 0; c < 4; c++) four[`${c}_1`] = 4 + 0.01 * c;
+    const before = NO_FLOOR.envelopeBytes - 2 * EARTH_SET_BYTES;
+    const streamer = settled(NO_FLOOR, before, four);
+    expect(streamer.tilesShortFor(before)).toBe(true);
+    // The release pass as the mode runs it, ahead of the frame's reconcile.
+    let since: number | null = 0;
+    const pass = (ladderBytes: number, nowMs: number): boolean => {
+      const plan = planLadderPressure({
+        ladderBytes, ceilingBytes: Number.POSITIVE_INFINITY, blockedDemand: false, pressureSinceMs: null,
+        nowMs, swapInFlight: false, restoreQueued: false,
+        tilesShort: streamer.tilesShortFor(ladderBytes), tilesShortSinceMs: since, drawing: true,
+      });
+      since = plan.tilesShortSinceMs;
+      return plan.tilesReleaseDue;
+    };
+    // Short past the dwell: one release is due.
+    expect(pass(before, RELEASE_PRESSURE_DWELL_MS)).toBe(true);
+    // It lands and frees two sets' worth. The mode hands the streamer the new
+    // figure at once, and the release's settle restarts the latch.
+    const after = before - 2 * EARTH_SET_BYTES;
+    streamer.setGlobalMapBytes(after);
+    since = null;
+    // The next pass still holds the last reconcile's answer — taken against
+    // the old ledger, and acted on by nothing, however long a latch it met.
+    expect(streamer.tilesShort()).toBe(true);
+    expect(pass(after, RELEASE_PRESSURE_DWELL_MS + 16)).toBe(false);
+    since = 0;
+    expect(pass(after, 10 * RELEASE_PRESSURE_DWELL_MS)).toBe(false);
+    // The reconcile takes the room it was given and answers against it.
+    for (let f = 0; f < 8; f++) streamer.update('Earth', inside, measureOf(four), 2_000 + f * 16);
+    expect(streamer.stats().resident).toBe(4);
+    expect(streamer.tilesShortFor(after)).toBe(false);
+    expect(pass(after, 20 * RELEASE_PRESSURE_DWELL_MS)).toBe(false);
+  });
+
+  it('is not short for a set the fetch pool can never carry', () => {
+    loader.auto = true;
+    // The limited row with a heavy ladder: one night sector resident (a
+    // single fetch) and Earth's day sectors wanted, whose three maps outnumber
+    // the row's pool of two. By memory alone the day set would count as
+    // short, but no map given back could ever start it.
+    const streamer = makeStreamer(LIMITED_PROFILE, { load: loader.load, warm: warm.warm });
+    streamer.register(earthHandle());
+    streamer.register(earthNightHandle());
+    streamer.setGlobalMapBytes(150 * MiB);
+    const day: Record<string, number> = { '1_1': 4, '2_1': 4.1, '3_1': 4.2 };
+    for (let f = 0; f < 8; f++) {
+      streamer.beginFrame();
+      streamer.update('Earth', cameraOver(2, 1), measureOf(day), f * 16);
+      streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 4 }), f * 16);
+      streamer.endFrame();
+    }
+    const resident = streamer.stats().bodies.Earth?.resident ?? [];
+    expect(resident).toEqual(['night/2_1']);
+    expect(streamer.stats().budgetedBytes + EARTH_SET_BYTES).toBeGreaterThan(streamer.stats().budget);
+    expect(streamer.tilesShort()).toBe(false);
   });
 
   it('fires at the floor', () => {

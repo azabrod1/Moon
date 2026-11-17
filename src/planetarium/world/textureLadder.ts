@@ -199,12 +199,14 @@ export interface TextureUpgrade {
    *  climbing, and never the other way round. `abort` ends the transfer when
    *  the swap is abandoned: a swap given up on has no reader left, and a
    *  stalled link is exactly where one abandoned transfer per timeout would
-   *  otherwise accumulate for the session. */
+   *  otherwise accumulate for the session. `queued` marks a swap the restore
+   *  queue started, which replaces a stand-in and is never discretionary. */
   release?: {
     toTier: TextureTier;
     generation: number;
     startedAtMs: number;
     restore?: boolean;
+    queued?: boolean;
     abort?: AbortController;
   };
   /** GPU bytes the map a swap DOWN has decoded but not yet assigned will
@@ -1328,22 +1330,41 @@ export function releaseTargetTier(up: TextureUpgrade): TextureTier | null {
 /** The tier a body's first-paint map is fetched at. */
 const BOOT_TIER: TextureTier = '2k';
 
-/** Whether this handle's release lands on a compressed container: the map
- *  below is fetched as a .ktx2 (TIER_FILE_OVERRIDES, with a loader bound),
- *  never a webp and never the boot map. The only release the tiles'
- *  shortfall may ask for (world/ladderPressure): a container's upload is a
- *  banded memcpy, while a webp's is one unsliceable sRGB conversion — and the
- *  4096 boot maps of Earth's globe and of Io, Europa and Ganymede free
- *  nothing against the container above them. */
+/** Whether this handle's release lands on a compressed upload ON THIS
+ *  DEVICE: the map below is fetched as a .ktx2 (TIER_FILE_OVERRIDES, with a
+ *  loader bound) and the transcoder has a compressed format to target. The
+ *  only release the tiles' shortfall may ask for (world/ladderPressure): a
+ *  container's upload is a banded memcpy, while a webp's is one unsliceable
+ *  sRGB conversion, and the 4096 boot maps of Earth's globe and of Io, Europa
+ *  and Ganymede free nothing against the container above them. With no
+ *  target the container lands as RGBA — a 4K at 42.7 MiB, a transient of two
+ *  sets — so the filename alone is not enough. */
 export function releaseLandsOnContainer(up: TextureUpgrade): boolean {
   const low = releaseTargetTier(up);
-  return low !== null && resolveTierFile(up.key, low).endsWith('.ktx2');
+  return low !== null && landsCompressed(up.key, low);
+}
+
+/** The tier's fetch is a container this device keeps compressed. */
+function landsCompressed(key: string, tier: TextureTier): boolean {
+  return ktx2CompressedTarget && resolveTierFile(key, tier).endsWith('.ktx2');
+}
+
+/** Whether a swap down already in the air has lost the reason it was started
+ *  for, and should be abandoned (cancelTierRelease): its body is now one no
+ *  pressure may take a map from (`guarded`), or has grown back past its
+ *  release band. Starting a release checks both; without this, one already
+ *  running would land anyway, on a body the player is flying to or looking
+ *  at. A swap the restore queue started is never abandoned here: it is
+ *  replacing a stand-in, which the body needs whatever its size. */
+export function releaseLostItsReason(up: TextureUpgrade, guarded: boolean): boolean {
+  if (!up.release || up.release.queued) return false;
+  return guarded || up.belowBandSinceMs === undefined;
 }
 
 /**
  * What this handle offers the release planner this frame, or null when it
- * offers nothing: a body the player is protected on (`guarded`), one still
- * inside its release band or short of its dwell, and one with no tier below.
+ * offers nothing: a body the player is protected on (`guarded`), and one
+ * still inside its release band or short of its dwell.
  * The planner's ReleaseCandidate, less the id and the distance only the scene
  * knows.
  */
@@ -1353,12 +1374,13 @@ export function releaseOffer(
   guarded: boolean,
 ): { heldBytes: number; lowBytes: number; lowIsContainer: boolean } | null {
   if (guarded || !releaseDue(up, nowMs)) return null;
-  const low = releaseTargetTier(up);
-  if (!low) return null;
+  // releaseDue holds only for a handle with a tier applied, which always has
+  // one below it: the boot map at least.
+  const low = releaseTargetTier(up)!;
   return {
     heldBytes: appliedTierHeldBytes(up),
     lowBytes: tierUploadBytes(up.key, low),
-    lowIsContainer: resolveTierFile(up.key, low).endsWith('.ktx2'),
+    lowIsContainer: landsCompressed(up.key, low),
   };
 }
 
@@ -1400,6 +1422,10 @@ export function startTierRelease(
   nowMs = performance.now(),
   opts: {
     restore?: boolean;
+    /** Started by the restore queue: a stand-in is being replaced, so the
+     *  swap is not one to abandon when its body comes back into view
+     *  (releaseLostItsReason). */
+    queued?: boolean;
     onSettled?: (released: boolean) => void;
     /** Called the moment the low map's bytes enter (and leave) the ledger, so
      *  a caller that shares the envelope with another manager can hand it the
@@ -1412,7 +1438,7 @@ export function startTierRelease(
   if (!toTier) return false;
   const generation = ++upgradeGeneration;
   const abort = typeof AbortController === 'function' ? new AbortController() : undefined;
-  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, abort };
+  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, queued: opts.queued, abort };
   const abandoned = () => up.release?.generation !== generation;
   const ktx2 = ktx2TierLoader;
   const file = resolveTierFile(up.key, toTier);
@@ -1559,10 +1585,13 @@ export function buildRestoreQueue(
  * of the stand-in. So is one `handBack` names — the release pass asks for
  * that while the tiles are short and the rung is one it would give back for
  * them anyway, rather than fetch a far 8K only to swap it straight down.
+ * An entry whose swap failed is put back by the caller, and waits out its
+ * handle's cooldown here before it is asked again.
  */
 export function takeRestoreRefetch(
   queue: RestoreRefetchEntry[],
   handBack?: (up: TextureUpgrade) => boolean,
+  nowMs = performance.now(),
 ): { up: TextureUpgrade; restore: boolean } | null {
   for (let i = 0; i < queue.length; i++) {
     const { up, tex } = queue[i];
@@ -1572,6 +1601,9 @@ export function takeRestoreRefetch(
       continue;
     }
     if (up.attempt || up.release) continue;
+    // A swap of this handle failed lately: the entry was put back to try
+    // again, after the same cooldown any failed swap waits out.
+    if (up.releaseRetryAtMs !== undefined && nowMs < up.releaseRetryAtMs) continue;
     if (handBack?.(up)) {
       queue.splice(i, 1);
       return { up, restore: false };
@@ -1582,6 +1614,18 @@ export function takeRestoreRefetch(
     return { up, restore: room === 'admit' };
   }
   return null;
+}
+
+/** Put a restore entry whose swap failed, hung or was cut short back on the
+ *  queue — only if its body still draws the stand-in the entry was for, since
+ *  a map that arrived by any other route has answered it. It then waits out
+ *  its handle's cooldown in takeRestoreRefetch before it is asked again, so
+ *  a body is never left on a stand-in for the session by one bad fetch.
+ *  True when it was put back. */
+export function requeueRestoreEntry(queue: RestoreRefetchEntry[], entry: RestoreRefetchEntry): boolean {
+  if (!entry.up.appliedTier || materialColorMap(entry.up.material) !== entry.tex) return false;
+  if (!queue.includes(entry)) queue.push(entry);
+  return true;
 }
 
 /** Abandon a swap in flight (a timeout, a teleport away, mode disposal). The

@@ -20,7 +20,11 @@
  *    the boot map, which would cost an unsliceable upload to free memory the
  *    tiles are owed only by preference. And it stays out of
  *    `pressureSinceMs`, which is also what cuts a committed arrival's warm
- *    goals short: tiles short at Earth must not end Earth's own climb.
+ *    goals short: tiles short at Earth must not end Earth's own climb. The
+ *    tiles answer once a frame, after this pass has run, so an answer is
+ *    acted on only while the ledger is the one it was taken against, never
+ *    under the chart (where nothing is wanted), and every release that
+ *    settles restarts the dwell on answers taken after it.
  * 2. Pressure is a state, not a frame. It must hold for a dwell before
  *    anything is released — a rung applying holds its decoded source for the
  *    frame or two before the upload is paid and the source closed, and a body
@@ -53,10 +57,15 @@ export interface LadderPressureState {
   /** A rung is waiting to fetch back the map a lost context took. */
   restoreQueued: boolean;
   /** The tiles want a set the maps leave no room for and an empty ladder
-   *  would (SectorStreamer.tilesShort). */
-  tilesShort: boolean;
+   *  would (SectorStreamer.tilesShortFor), or null when that answer was taken
+   *  against other globe-map bytes than the ladder holds now — a swap landed,
+   *  a rung applied — and says nothing about this ledger. */
+  tilesShort: boolean | null;
   /** When the tiles first came up short, or null while they are not. */
   tilesShortSinceMs: number | null;
+  /** The spheres are drawn this frame. Under the chart nothing is, so the
+   *  tiles want nothing whatever the last world frame's reconcile said. */
+  drawing: boolean;
 }
 
 export interface LadderPressurePlan {
@@ -84,8 +93,16 @@ export function planLadderPressure(state: LadderPressureState): LadderPressurePl
   const pressure = state.ladderBytes > state.ceilingBytes || state.blockedDemand;
   const pressureSinceMs = pressure ? state.pressureSinceMs ?? state.nowMs : null;
   const dwellServed = pressureSinceMs !== null && state.nowMs - pressureSinceMs >= dwellMs;
-  const tilesShortSinceMs = state.tilesShort ? state.tilesShortSinceMs ?? state.nowMs : null;
-  const tilesServed = tilesShortSinceMs !== null && state.nowMs - tilesShortSinceMs >= dwellMs;
+  // An answer about another ledger is no answer: the latch is carried as it
+  // is, neither started nor cleared, and nothing comes due on it. Clearing
+  // it would make every landing restart the dwell — and a queue of restores
+  // landing back to back would then never let a hand-back come due. The
+  // caller restarts it where it must: when a release it started settles.
+  const tiles = state.drawing ? state.tilesShort : false;
+  const tilesShortSinceMs = tiles === null ? state.tilesShortSinceMs
+    : tiles ? state.tilesShortSinceMs ?? state.nowMs : null;
+  const tilesServed = tiles === true && tilesShortSinceMs !== null
+    && state.nowMs - tilesShortSinceMs >= dwellMs;
   const releaseDue = dwellServed && !state.swapInFlight;
   return {
     pressureSinceMs,

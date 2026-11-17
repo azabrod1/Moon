@@ -35,6 +35,7 @@ import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, OBLIQUITY_DEG, RAD } from './constants';
 import { PLANETARIUM_BODIES, PLANETS } from '../planetarium/planets/planetData';
+import orientationGolden from './bodyOrientation.goldens.json';
 
 function norm360(deg: number): number {
   return ((deg % 360) + 360) % 360;
@@ -581,6 +582,46 @@ describe('the zero-allocation out params', () => {
       expect(returned).toBe(out);
       expect(out.longitude).toBe(fresh.longitude);
       expect(out.distance).toBe(fresh.distance);
+    }
+  });
+});
+
+describe('planet rotation models against JPL Horizons', () => {
+  // Horizons' sub-Earth point: the planet posed and turned one light time
+  // back, seen from Earth's true (not drawn) centre, in each body's stated
+  // longitude convention, latitude planetodetic on its stated radii. The
+  // golden's dates are TT, turned to UTC through the app's own clock, so a
+  // future ΔT forecast is not under test.
+  it('puts the sub-Earth point where Horizons does (tools/sub-observer-golden.mjs)', () => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const earth = PLANETS.find((planet) => planet.name === 'Earth')!;
+    const lightSecondsPerAU = 499.004784;
+    const wrap = (degrees: number) => ((degrees % 360) + 540) % 360 - 180;
+    for (const row of orientationGolden.rows) {
+      const planet = PLANETS.find((candidate) => candidate.name === row.planet)!;
+      const [year, month, day] = row.utc.slice(0, 11).split('-');
+      const jdTT = Date.UTC(Number(year), months.indexOf(month), Number(day)) / 86_400_000 + 2440587.5;
+      let utcMs = (jdTT - 2440587.5) * 86_400_000;
+      for (let iteration = 0; iteration < 4; iteration++) utcMs += (jdTT - ttJDFromUtcMs(utcMs)) * 86_400_000;
+      const drawnEarth = computeBodyPositionAU(earth, utcMs);
+      const earthNow = computeBodyPositionAU(earth, utcMs + drawnEarth.length() * lightSecondsPerAU * 1000);
+      let lightMs = 0;
+      for (let iteration = 0; iteration < 4; iteration++) {
+        lightMs = computeBodyPositionAU(planet, utcMs - lightMs).distanceTo(earthNow) * lightSecondsPerAU * 1000;
+      }
+      const toEarth = earthNow.sub(computeBodyPositionAU(planet, utcMs - lightMs)).normalize()
+        .applyQuaternion(computeBodyOrientationQuaternion(planet, ttJDFromUtcMs(utcMs - lightMs)).invert());
+      // Body frame: +X longitude 0, +Y north, +Z 90° west.
+      const eastDeg = Math.atan2(-toEarth.z, toEarth.x) / DEG;
+      const centricRad = Math.asin(toEarth.y);
+      const flatteningSquared = (row.polarKm / row.equatorialKm) ** 2;
+      const latDeg = Math.atan2(Math.sin(centricRad), Math.cos(centricRad) * flatteningSquared) / DEG;
+      // Neptune's pole and meridian leave out its precession terms
+      // (0.70 sin N, −0.51 cos N, −0.48 sin N; N runs 52° a century).
+      const tolerance = row.planet === 'Neptune' ? 0.6 : 0.1;
+      const label = `${row.planet} ${row.utc}`;
+      expect(Math.abs(wrap((row.eastPositive ? eastDeg : -eastDeg) - row.lonDeg)), label).toBeLessThan(tolerance);
+      expect(Math.abs(latDeg - row.latDeg), label).toBeLessThan(tolerance);
     }
   });
 });

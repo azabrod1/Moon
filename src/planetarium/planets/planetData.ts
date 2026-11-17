@@ -79,10 +79,12 @@ export const PLANETS: PlanetData[] = [
     moons: 0,
     description: 'Smallest planet, heavily cratered',
     atmosphere: 'None',
-    poleRaDeg: 281.0097,
-    poleDecDeg: 61.4143,
-    primeMeridianDegAtJ2000: 329.5469,
-    primeMeridianRateDegPerDay: 6.1385025,
+    // IAU 2015 (Archinal et al. 2018; NAIF pck00011), without the pole's
+    // −0.0328 T and −0.0049 T drifts or the 0.01° librations in W.
+    poleRaDeg: 281.0103,
+    poleDecDeg: 61.4155,
+    primeMeridianDegAtJ2000: 329.5988,
+    primeMeridianRateDegPerDay: 6.1385108,
     systemRadiusAU: 0.01,
   },
   {
@@ -148,10 +150,15 @@ export const PLANETS: PlanetData[] = [
     moons: 2,
     description: 'The Red Planet, with polar ice caps',
     atmosphere: 'CO₂ (thin)',
-    poleRaDeg: 317.269202,
-    poleDecDeg: 54.432516,
-    primeMeridianDegAtJ2000: 176.049863,
-    primeMeridianRateDegPerDay: 350.89198226,
+    // IAU 2015 (Archinal et al. 2018; NAIF pck00011): the constant terms and
+    // the 71,000-year terms, whose argument (79.398797°, 166.325722°,
+    // 95.391654° + 0.5042615° per century) leaves them constant over the
+    // window; without these the pole sat 1.6° off. Left out: the pole's
+    // −0.109 T and −0.058 T drifts and the sub-0.0003° short terms.
+    poleRaDeg: 317.269202 + 0.419057 * Math.sin((79.398797 * Math.PI) / 180),
+    poleDecDeg: 54.432516 + 1.591274 * Math.cos((166.325722 * Math.PI) / 180),
+    primeMeridianDegAtJ2000: 176.049863 + 0.584542 * Math.sin((95.391654 * Math.PI) / 180),
+    primeMeridianRateDegPerDay: 350.891982443297,
     systemRadiusAU: 0.01,
   },
   {

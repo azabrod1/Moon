@@ -268,7 +268,9 @@ const PLUTO_CAP = [42, 38, 34];
  * from grey scaled by that factor at unchanged luminance and hue, see
  * saturate), `localContrast`, then `level` — `{ albedo }` or `{ mean }`, with
  * `shoulder: false` for a plain gain where the gain is under one and the top
- * of the range should keep its spacing (see applyLevel).
+ * of the range should keep its spacing (see applyLevel), and `solveWidth` to
+ * solve the one gain every target takes at that width rather than the widest
+ * (see runJob).
  *
  * Every tier ABOVE a moon's boot map is a rung, never an output, because every
  * one of them ships GPU-compressed and alone: an ETC1S container of one of
@@ -292,7 +294,8 @@ const PLUTO_CAP = [42, 38, 34];
  * exactly as they ship today. The new bodies boot at 2048 like every other
  * moon. A rung is written only where the source can actually fill it: Titan's
  * mosaic is 4040 px and Miranda's and Ariel's are 1440, so those three are
- * boot-only and the rest of their detail is the procedural blend's job.
+ * boot-only and the rest of their detail is the procedural blend's job. Mimas'
+ * and Iapetus' are 5760, which fills a 4K and nothing above it.
  */
 const JOBS = {
   // --- the eight that ship as noise balls today -----------------------------
@@ -326,12 +329,19 @@ const JOBS = {
   enceladus: {
     src: 'Enceladus_Cassini_mosaic_global_110m.tif',
     outputs: [{ width: 2048, out: 'enceladus.webp' }],
-    rungs: [{ width: 4096, name: 'enceladus-4k' }],
+    rungs: [{ width: 8192, name: 'enceladus-8k' }, { width: 4096, name: 'enceladus-4k' }],
     // The most reflective surface in the solar system and as close to neutral
     // as anything gets: the gain is a whisper of blue in the shadows and
     // nothing at all in the highlights.
     colour: gains([0.98, 0.99, 1.0], [1.0, 1.0, 1.0]),
-    level: { albedo: 1.04 },
+    // Enceladus, Dione and Tethys took their 8K rung after the boot map and
+    // the 4K had shipped, and those two were levelled with the gain solved on
+    // the 4K, then the widest target. Solved on the 8K instead it moves by up
+    // to 0.4 per cent, which re-cuts both shipped maps a fraction of a count
+    // off under the names they ship as. Solved at 4096, every target takes the
+    // gain the shipped maps carry: a re-run reproduces them byte for byte, and
+    // the 8K is that same level one resample sharper.
+    level: { albedo: 1.04, solveWidth: 4096 },
   },
   mimas: {
     src: 'PIA17214_Mimas_global_map_2017.tif',
@@ -343,16 +353,18 @@ const JOBS = {
   dione: {
     src: 'Dione_Cassini_Voyager_mosaic_global_154m.tif',
     outputs: [{ width: 2048, out: 'dione.webp' }],
-    rungs: [{ width: 4096, name: 'dione-4k' }],
+    rungs: [{ width: 8192, name: 'dione-8k' }, { width: 4096, name: 'dione-4k' }],
     colour: gains([0.99, 0.975, 0.95], [1.0, 0.995, 0.985]),
-    level: { albedo: 0.6 },
+    // Solved at the 4K the shipped maps were levelled on (see Enceladus).
+    level: { albedo: 0.6, solveWidth: 4096 },
   },
   tethys: {
     src: 'Tethys_Cassini_mosaic_global_293m.tif',
     outputs: [{ width: 2048, out: 'tethys.webp' }],
-    rungs: [{ width: 4096, name: 'tethys-4k' }],
+    rungs: [{ width: 8192, name: 'tethys-8k' }, { width: 4096, name: 'tethys-4k' }],
     colour: gains([0.99, 0.98, 0.96], [1.0, 0.997, 0.99]),
-    level: { albedo: 0.8 },
+    // Solved at the 4K the shipped maps were levelled on (see Enceladus).
+    level: { albedo: 0.8, solveWidth: 4096 },
   },
   rhea: {
     src: 'Rhea_Cassini_Voyager_mosaic_global_417m.tif',
@@ -1614,7 +1626,16 @@ async function runJob(name) {
   if (!flag('no-rungs')) targets.sort((a, b) => b.width - a.width);
   // Solved once and reused: a rung is a sharpen of the boot below it, and two
   // gains solved separately on two resamples of one picture would leave them a
-  // fraction of a count apart for no reason.
+  // fraction of a count apart for no reason. It is solved on the first target,
+  // which is the widest unless the level names `solveWidth` (see the Enceladus
+  // job): then that target goes first and the rest take its gain.
+  const solveWidth = job.level?.solveWidth;
+  if (solveWidth !== undefined && !flag('no-rungs')) {
+    if (!targets.some((t) => t.width === solveWidth)) {
+      throw new Error(`${name}: level.solveWidth ${solveWidth} is not one of this job's widths`);
+    }
+    targets.sort((a, b) => (b.width === solveWidth) - (a.width === solveWidth));
+  }
   let levelGain;
   for (const target of targets) {
     if (target.kind === 'rung' && flag('no-rungs')) continue;

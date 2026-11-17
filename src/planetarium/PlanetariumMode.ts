@@ -383,6 +383,7 @@ import {
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   sweepSegmentSphere,
+  moonLandRangeAU,
   type BodyCapState,
   type SweepContact,
   type ArrivalInputs,
@@ -10567,8 +10568,12 @@ export class PlanetariumMode {
         const md = Math.sqrt(mdx * mdx + mdy * mdy + mdz * mdz);
         // Rendered size, not the catalog radius: the mesh a player flies up to
         // is the inflated one, and the Land prompt has to appear where that
-        // sphere is.
-        const moonLandThreshold = Math.max(m.data.radiusAU * m.mesh.scale.x * 3, 0.0003);
+        // sphere is. The reach is held to half the live separation, so a moon
+        // close to its planet never claims the planet's own neighbourhood.
+        const moonLandThreshold = moonLandRangeAU(
+          m.data.radiusAU * m.mesh.scale.x,
+          Math.hypot(mp.x - wp.x, mp.y - wp.y, mp.z - wp.z),
+        );
         if (md < moonLandThreshold && md < closestDist) {
           closestDist = md;
           closest = { type: 'moon', name: m.data.name, parentPlanet: planet.data.name };

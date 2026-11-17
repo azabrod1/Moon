@@ -1272,17 +1272,27 @@ function boundaryShare(
 ): number {
   let low = 0;
   let high = 1;
+  // The frames a share produces depend only on `every`, a whole number, so
+  // once the bisection is finer than the step between two of them it keeps
+  // asking about a run it has already made: 64 of 90 runs were repeats. Each
+  // answer is kept, and the bisection takes the same path to the same share.
+  const decided = new Map<number, boolean>();
   for (let step = 0; step < 18; step++) {
     const p = (low + high) / 2;
-    const rig = new Rig(new ResolutionController(FULL_LADDER));
-    rig.controller.setBudget(budgetMs, 0, { cause: 'user', quantised: budgetMs > refreshMs * 1.5 });
     // A deterministic share, not a random one: every 1/p-th frame is late by
     // one refresh, which is what a vsync miss costs.
     const every = p <= 0 ? Infinity : Math.round(1 / p);
-    rig.run(Math.round(60_000 / budgetMs), (_r, i) => (
-      every !== Infinity && i % every === every - 1 ? budgetMs + refreshMs : budgetMs
-    ));
-    if (decide(rig)) high = p;
+    let verdict = decided.get(every);
+    if (verdict === undefined) {
+      const rig = new Rig(new ResolutionController(FULL_LADDER));
+      rig.controller.setBudget(budgetMs, 0, { cause: 'user', quantised: budgetMs > refreshMs * 1.5 });
+      rig.run(Math.round(60_000 / budgetMs), (_r, i) => (
+        every !== Infinity && i % every === every - 1 ? budgetMs + refreshMs : budgetMs
+      ));
+      verdict = decide(rig);
+      decided.set(every, verdict);
+    }
+    if (verdict) high = p;
     else low = p;
   }
   return (low + high) / 2;
@@ -1331,7 +1341,7 @@ describe('the budget the Frame rate row sets', () => {
     expect(rig.applied.map((a) => a.reason)).toContain('up');
   });
 
-  it('derives its down and up boundaries at every budget', () => {
+  it('derives its down boundary at every budget', () => {
     const rows: { budgetMs: number; refreshMs: number }[] = [
       { budgetMs: 1000 / 60, refreshMs: 1000 / 60 },
       { budgetMs: 1000 / 30, refreshMs: 1000 / 60 },

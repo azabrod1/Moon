@@ -3225,7 +3225,7 @@ describe('the rungs that ship only as a compressed container', () => {
     expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.v2.ktx2');
     expect(resolveTierFile('earthNight', '4k')).toBe('earth-night.v2.ktx2');
     // The photo-moon rungs, which ship as containers alone.
-    expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.ktx2');
+    expect(resolveTierFile('enceladus', '4k')).toBe('enceladus.v2.ktx2');
     expect(resolveTierFile('io', '8k')).toBe('io.v2.ktx2');
     expect(resolveTierFile('pluto', '4k')).toBe('pluto.v2.ktx2');
     // Jupiter's 8K, which like Earth's day map exists only as a container.
@@ -3333,7 +3333,7 @@ describe('the rungs that ship only as a compressed container', () => {
     for (const key of ['enceladus', 'dione', 'tethys']) {
       expect(upgradeTriggerFraction(key, '8k'), key).toBe(0.5);
       expect(upgradeTriggerFraction(key, '4k'), key).toBe(UPGRADE_TRIGGER_FRACTION['4k']);
-      expect(resolveTierFile(key, '8k'), key).toBe(`${key}.ktx2`);
+      expect(resolveTierFile(key, '8k'), key).toBe(`${key}.v2.ktx2`);
       const up = ladderHandle(key);
       expect(up.tiers, key).toEqual(['4k', '8k']);
       expect(up.effectiveMaxTier, key).toBe('8k');

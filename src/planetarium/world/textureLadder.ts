@@ -135,12 +135,15 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // until now (Cassini for the Saturnians, New Horizons for Charon, Voyager 2
   // for the two Uranians). Miranda's and Ariel's sources are southern
   // hemispheres only, and the unimaged half is filled from the imaged one in
-  // the map itself — nothing here draws a data edge.
+  // the map itself — nothing here draws a data edge. Enceladus, Dione and
+  // Tethys are `.v2` at every size: re-cut with their crater shadows kept as
+  // the measurements they are, where the first cut filled them with bright
+  // terrain (gen-moonmaps' SHADOW_HOLES).
   titan: 'titan.webp',
-  enceladus: 'enceladus.webp',
+  enceladus: 'enceladus.v2.webp',
   mimas: 'mimas.webp',
-  dione: 'dione.webp',
-  tethys: 'tethys.webp',
+  dione: 'dione.v2.webp',
+  tethys: 'tethys.v2.webp',
   rhea: 'rhea.webp',
   iapetus: 'iapetus.webp',
   miranda: 'miranda.webp',
@@ -449,17 +452,17 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
   // moon tour inside a small profile's ladder ceiling: 10.7 MiB a 4K rung
   // instead of 42.7.
   enceladus: {
-    '4k': { file: 'enceladus.ktx2', webp: false },
-    '8k': { file: 'enceladus.ktx2', webp: false },
+    '4k': { file: 'enceladus.v2.ktx2', webp: false },
+    '8k': { file: 'enceladus.v2.ktx2', webp: false },
   },
   mimas: { '4k': { file: 'mimas.ktx2', webp: false } },
   dione: {
-    '4k': { file: 'dione.ktx2', webp: false },
-    '8k': { file: 'dione.ktx2', webp: false },
+    '4k': { file: 'dione.v2.ktx2', webp: false },
+    '8k': { file: 'dione.v2.ktx2', webp: false },
   },
   tethys: {
-    '4k': { file: 'tethys.ktx2', webp: false },
-    '8k': { file: 'tethys.ktx2', webp: false },
+    '4k': { file: 'tethys.v2.ktx2', webp: false },
+    '8k': { file: 'tethys.v2.ktx2', webp: false },
   },
   rhea: { '4k': { file: 'rhea.ktx2', webp: false } },
   iapetus: { '4k': { file: 'iapetus.ktx2', webp: false } },

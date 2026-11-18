@@ -5,6 +5,12 @@
  * the planet catalog (moons), is a sphere. The shadow engine, the shadow
  * visuals and the renderer all ask here, so the body they draw, the shadow it
  * casts and the shadow it catches agree.
+ *
+ * Look inside asks too (interior/InteriorScene): a giant is cut open as the
+ * spheroid the planetarium draws, its layers flattened with it. Volume compare
+ * deliberately does not (volumeCompare/CompareScene): it compares volumes, and
+ * draws every body as the sphere of its volumetric-mean radius, the shape
+ * that holds exactly the body's volume and the one its solver is built on.
  */
 import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 import { raDecToVector } from './planetary';

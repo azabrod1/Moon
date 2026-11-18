@@ -656,7 +656,7 @@ export class InteriorScene {
     const atmosphere = body.sun ? SUN_CORONA : ATMOSPHERES[body.id];
     if (atmosphere) {
       // A flattened giant's air wears the oblate variant, squashed with the
-      // skin at present time (wearShape); its pole is the posed one by then.
+      // skin at present time (setShape); its pole is the posed one by then.
       const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
         initialAlpha: ATMOSPHERE_ALPHA,
         initialSunDir: this.keyDirection,
@@ -1128,8 +1128,9 @@ export class InteriorScene {
    * its oblate variant over a flattened giant (a fragment text of its own, the
    * cut's near-side test included), the Sun's corona (its own program — the
    * disc gate's scale is baked into the shader text for the Sun alone), the
-   * Sun's photosphere, the reveal's ghost and the cloud deck. The section faces are already one material for the
-   * session, and the skin is never freed because a swap probes the incoming one
+   * Sun's photosphere, the reveal's ghost and the cloud deck. The section
+   * faces are already one material for the session, and the skin is never
+   * freed because a swap probes the incoming one
    * while the outgoing one is still alive. Each twin is built through the same
    * factory as the real thing, because a key that differs by one define is a
    * program the real material cannot use.

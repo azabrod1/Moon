@@ -67,6 +67,16 @@ export interface SunPosition {
 }
 
 /**
+ * The nutation part of sunPosition's apparent longitude (Meeus 25.8, the
+ * −0.00478° sin Ω term), exported so a caller in a mean J2000 frame can take
+ * it back out while keeping the aberration (planetary.ts's Earth seam).
+ */
+export function sunNutationLongitudeDeg(jd: number): number {
+  const omega = 125.04 - 1934.136 * T(jd);
+  return -0.00478 * Math.sin(omega * DEG);
+}
+
+/**
  * Low-precision Sun position (Meeus Ch. 25, simplified).
  * Good to ~0.01° longitude. `out` is the caller's own record, written and
  * returned instead of a fresh one — the same optional-`out` idiom as the
@@ -91,9 +101,8 @@ export function sunPosition(jd: number, out?: SunPosition): SunPosition {
   // Sun's true longitude
   const trueLon = norm360(L0 + C);
 
-  // Sun's apparent longitude (nutation correction)
-  const omega = 125.04 - 1934.136 * t;
-  const apparentLon = trueLon - 0.00569 - 0.00478 * Math.sin(omega * DEG);
+  // Sun's apparent longitude: aberration, then nutation
+  const apparentLon = trueLon - 0.00569 + sunNutationLongitudeDeg(jd);
 
   // Distance in AU
   const e = 0.016708634 - 0.000042037 * t - 0.0000001267 * t * t;

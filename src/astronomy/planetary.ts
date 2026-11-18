@@ -1,15 +1,19 @@
 /**
- * Planet-position math for the Planetarium: Kepler solver, element-to-vector
- * transforms in the scene's J2000 frame, the Meeus Earth/Moon seams, and the
- * shared simulation time type. Elements come from the Standish provider
- * (standish.ts); Earth's render position alone stays Meeus-derived. Consumed
- * by the Planetarium world and nav controllers.
+ * Planet-position math for the Planetarium: the position seams every body is
+ * drawn from, the Kepler solver and element-to-vector transforms in the
+ * scene's J2000 frame, and the shared simulation time type. From 1900 to
+ * mid-2100 positions come from the fitted ephemeris (fittedEphemeris.ts,
+ * fitted to JPL's DE441); outside that window Earth and the Moon fall back to
+ * the Meeus series and the planets to Standish elements (standish.ts).
+ * Consumed by the Planetarium world and nav controllers.
  */
 import * as THREE from 'three';
 import type { PlanetData } from '../planetarium/planets/planetData';
-import { dateToJD, moonPosition, sunPosition, type SunPosition } from './ephemeris';
+import { dateToJD, moonPosition, sunNutationLongitudeDeg, sunPosition, type SunPosition } from './ephemeris';
+import { EARTH_MOON_MASS_RATIO, fittedPositionKm, fittedWeight } from './fittedEphemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
+import { earthOrientationQuaternion } from './earthOrientation';
 import {
   STANDISH_MAX_JD,
   STANDISH_MIN_JD,
@@ -107,8 +111,8 @@ export const ECLIPTIC_NORTH_EQUATORIAL: THREE.Vector3 = eclipticToEquatorial(
 ).normalize();
 
 /**
- * Scratch for ttJDFromUtcMs. The JD and ΔT conventions are calendar math —
- * dateToJD and deltaTDaysAtDate read civil UTC components — and that stays:
+ * Scratch for ttJDFromUtcMs. The JD is calendar math — dateToJD reads civil
+ * UTC components, and deltaTDaysAtDate the instant (deltaT.ts) — and that stays:
  * setTime loads the same [[DateValue]] a fresh construction would carry, so
  * every component read is bit-identical, without the hot samplers (hundreds
  * of calls a frame) allocating a Date per sample. Consumed before return,
@@ -185,14 +189,51 @@ export function computeKeplerPositionEquatorial(
   return computeKeplerPositionEcliptic(el, out).applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
+const LIGHT_SPEED_KM_PER_S = 299_792.458;
+const SECONDS_PER_DAY = 86_400;
+// Scratch for the fitted seams. Each is consumed before its function returns;
+// the Moon, Earth and planet seams each have their own, since Earth's calls
+// into the Moon's series.
+const fittedMoonKm = new THREE.Vector3();
+const fittedEarthKm = new THREE.Vector3();
+const fittedEarthMoonKm = new THREE.Vector3();
+const fittedPlanetKm = new THREE.Vector3();
+const analyticBlendScratch = new THREE.Vector3();
+
+/** ICRF km into the scene's frame in AU: J2000 (x, y, z) → (x, z, −y), as
+ *  raDecToVector maps the sky. */
+function icrfKmToSceneAU(km: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  return out.set(km.x / KM_PER_AU, km.z / KM_PER_AU, -km.y / KM_PER_AU);
+}
+
+/** `out` holds the fitted position; ease it toward the analytic one already
+ *  in `analytic` by (1 − weight). */
+function blendTowardAnalytic(out: THREE.Vector3, analytic: THREE.Vector3, weight: number): THREE.Vector3 {
+  return out.sub(analytic).multiplyScalar(weight).add(analytic);
+}
+
 /**
- * Geocentric position of Earth's Moon in the scene's equatorial frame (AU),
- * from the Meeus lunar theory. Replaces the circular clock model for the one
- * moon whose real geometry (phase, nodes, eclipses) the app showcases.
- * Meeus longitudes are ecliptic-of-date; the scene (like its star sphere) is
- * J2000, so accumulated precession is subtracted before the vector is built.
+ * Geocentric position of Earth's Moon in the scene's equatorial frame (AU):
+ * the fitted ephemeris (fittedEphemeris.ts, geometric, 0.5 km) inside its
+ * window, the Meeus series outside it, eased between them over the window's
+ * last two years.
  */
 export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vector3): THREE.Vector3 {
+  const weight = fittedWeight('Moon', jdTT);
+  if (weight > 0 && fittedPositionKm('Moon', jdTT, fittedMoonKm)) {
+    icrfKmToSceneAU(fittedMoonKm, out);
+    if (weight === 1) return out;
+    return blendTowardAnalytic(out, meeusMoonGeocentricEquatorialAU(jdTT, analyticBlendScratch), weight);
+  }
+  return meeusMoonGeocentricEquatorialAU(jdTT, out);
+}
+
+/**
+ * The Meeus Moon, the fallback outside the fitted window. Meeus longitudes
+ * are ecliptic-of-date; the scene (like its star sphere) is J2000, so
+ * accumulated precession is subtracted before the vector is built.
+ */
+function meeusMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vector3): THREE.Vector3 {
   const moon = moonPosition(jdTT);
   const lonRad = (moon.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   const latRad = moon.latitude * DEG;
@@ -212,25 +253,57 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
 const sunScratch: SunPosition = { longitude: 0, distance: 0 };
 
 /**
- * Heliocentric Earth in the scene's equatorial frame (AU): the Meeus
- * geocentric Sun mirrored through the origin — same distance, longitude
- * + 180°, latitude 0 — then precessed of-date → J2000 like the Moon seam.
- * Earth deliberately does NOT use its Standish EMB elements: deriving Earth
- * from the same Meeus theory as the Moon and the sunlight direction keeps
- * Sun–Earth–Moon exactly coherent (full moons render full, eclipse
- * alignments align to the theory's own accuracy), which beats one-model
- * uniformity. Earth's orbit line samples this function too, so nothing about
- * Earth rides the element tables or their epoch window; the Standish EMB row
- * survives as the independent cross-check in planetary.test.ts.
+ * Heliocentric Earth in the scene's equatorial frame (AU), drawn where it was
+ * one Sun–Earth light time ago (about 499 s, 15,000 km back along its orbit).
+ *
+ * That retardation is a convention, and it is load-bearing. Sun at rest, a
+ * solar eclipse needs the Moon about 38 km ahead of the Sun–Earth line (the
+ * light that reaches Earth passed the Moon 1.3 s earlier), and a lunar eclipse
+ * needs it 38 km behind (the shadow that reaches the Moon left Earth 1.3 s
+ * earlier). One drawn Moon cannot be both. Drawing Earth (with the Moon about
+ * it) retarded by its light time from the Sun makes both line up in a single
+ * frame: it is the aberration of the Sun's light (20.5″) that the apparent
+ * longitudes eclipse predictions are made in already carry.
+ *
+ * Inside the fitted window Earth comes from the fitted Earth–Moon barycentre
+ * and Moon (fittedEphemeris.ts) evaluated at the retarded instant; outside it
+ * from the Meeus Sun mirrored through the origin, whose apparent longitude
+ * carries the same aberration, with its nutation term taken out (the scene
+ * is a mean J2000 frame); eased between the two over the window's last two
+ * years. Earth's orbit line samples this function too.
  */
 export function computeEarthPositionEquatorial(
   jdTT: number,
   out?: THREE.Vector3,
 ): THREE.Vector3 {
+  const target = out ?? new THREE.Vector3();
+  const weight = fittedWeight('EarthMoonBarycenter', jdTT);
+  if (weight > 0 && fittedRetardedEarthKm(jdTT, fittedEarthKm)) {
+    icrfKmToSceneAU(fittedEarthKm, target);
+    if (weight === 1) return target;
+    return blendTowardAnalytic(target, meeusEarthPositionEquatorial(jdTT, analyticBlendScratch), weight);
+  }
+  return meeusEarthPositionEquatorial(jdTT, target);
+}
+
+/** Earth's centre one Sun–Earth light time before `jdTT`, km, ICRF; false
+ *  where the fitted series do not reach. */
+function fittedRetardedEarthKm(jdTT: number, out: THREE.Vector3): boolean {
+  if (!fittedPositionKm('EarthMoonBarycenter', jdTT, out)) return false;
+  const retardedJd = jdTT - out.length() / LIGHT_SPEED_KM_PER_S / SECONDS_PER_DAY;
+  if (!fittedPositionKm('EarthMoonBarycenter', retardedJd, out)) return false;
+  if (!fittedPositionKm('Moon', retardedJd, fittedEarthMoonKm)) return false;
+  out.addScaledVector(fittedEarthMoonKm, -1 / (1 + EARTH_MOON_MASS_RATIO));
+  return true;
+}
+
+/** The Meeus Earth, the fallback outside the fitted window. */
+function meeusEarthPositionEquatorial(jdTT: number, out: THREE.Vector3): THREE.Vector3 {
   const sun = sunPosition(jdTT, sunScratch);
-  const lonRad = (sun.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
+  const lonRad =
+    (sun.longitude - sunNutationLongitudeDeg(jdTT) - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   // Negated Sun vector in the λ→−Z ecliptic frame: −(d cos λ, 0, −d sin λ).
-  const ecliptic = (out ?? new THREE.Vector3()).set(
+  const ecliptic = out.set(
     -sun.distance * Math.cos(lonRad),
     0,
     sun.distance * Math.sin(lonRad),
@@ -239,10 +312,11 @@ export function computeEarthPositionEquatorial(
 }
 
 /**
- * Which theory a body's rendered position comes from — the one place the
- * split is decided, so the position path and everything that reasons about
- * its validity can never disagree. Only Earth is Meeus; the rest propagate
- * Standish elements and inherit that fit's epoch window.
+ * Which theory a body's rendered position falls back to outside the fitted
+ * window — the one place the split is decided, so the position path and
+ * everything that reasons about its validity can never disagree. Only Earth
+ * is Meeus; the rest propagate Standish elements and inherit that fit's epoch
+ * window.
  */
 function isMeeusPositioned(planet: PlanetData): boolean {
   return planet.name === 'Earth';
@@ -368,8 +442,10 @@ export function trajectoryLineBodyFraction(
  * intermediate ecliptic frame runs longitude toward −Z. det = +1 throughout,
  * so cross products and spin senses are physically meaningful and the IAU
  * pole + W construction below gives the true absolute rotation phase (which
- * continents face the Sun at a UTC instant — pinned against GMST in
- * planetary.test.ts).
+ * face of a body is toward the Sun at a UTC instant). Earth is the exception:
+ * its orientation comes from earthOrientation.ts (rotation angle and
+ * precessing pole, pinned to ERFA test values), which this cartographic
+ * model is not accurate enough for.
  *
  * The IAU prime-meridian reference is the node of the body's equator on the
  * J2000 Earth equator, at RA = poleRA + 90° (always perpendicular to the
@@ -377,8 +453,8 @@ export function trajectoryLineBodyFraction(
  * moon orbit frames. W is measured easterly from that node, which in this RH
  * frame is a +W rotation about the pole.
  */
-function getBasePrimeDirection(planet: PlanetData, out?: THREE.Vector3): THREE.Vector3 {
-  return raDecToVector(planet.poleRaDeg + 90, 0, 1, out);
+function getBasePrimeDirection(poleRaDeg: number, out?: THREE.Vector3): THREE.Vector3 {
+  return raDecToVector(poleRaDeg + 90, 0, 1, out);
 }
 
 // Scratch for the pole basis: the per-frame planet pass builds nine of these
@@ -388,9 +464,14 @@ const primeScratch = new THREE.Vector3();
 const basisZScratch = new THREE.Vector3();
 const basisScratch = new THREE.Matrix4();
 
-function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number, out = new THREE.Quaternion()): THREE.Quaternion {
-  const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg, 1, poleScratch).normalize();
-  const primeDirection = getBasePrimeDirection(planet, primeScratch)
+function buildPoleBasisQuaternion(
+  poleRaDeg: number,
+  poleDecDeg: number,
+  primeMeridianDeg: number,
+  out = new THREE.Quaternion(),
+): THREE.Quaternion {
+  const poleDirection = raDecToVector(poleRaDeg, poleDecDeg, 1, poleScratch).normalize();
+  const primeDirection = getBasePrimeDirection(poleRaDeg, primeScratch)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
     .normalize();
   // Third basis column, prime×pole: holds *texture* longitude 90°W, not
@@ -402,22 +483,46 @@ function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number, 
   return out.setFromRotationMatrix(basis);
 }
 
+/** Earth alone is oriented by the IERS-style model in earthOrientation.ts
+ *  (rotation angle from the clock, precessing pole) rather than the WGCCRE
+ *  pole + W below; see that module for why. */
+function isEarthOriented(planet: PlanetData): boolean {
+  return planet.name === 'Earth';
+}
+
 /** Pass `out` and the orientation is written into it rather than into a
- *  fresh quaternion; the math is the same either way. */
+ *  fresh quaternion; the math is the same either way. `jd` is TT. */
 export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number, out?: THREE.Quaternion): THREE.Quaternion {
+  if (isEarthOriented(planet)) {
+    return earthOrientationQuaternion(utcMsAtTtJD(jd), jd, out ?? new THREE.Quaternion());
+  }
   const daysSinceJ2000 = getDaysSinceJ2000(jd);
-  const primeMeridianDeg =
+  let poleRaDeg = planet.poleRaDeg;
+  let poleDecDeg = planet.poleDecDeg;
+  let primeMeridianDeg =
     planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
-  return buildPoleBasisQuaternion(planet, primeMeridianDeg, out);
+  // The catalog holds the precession terms as they were at J2000; add their
+  // change since (Neptune's pole moves half a degree a century this way).
+  const precession = planet.rotationPrecession;
+  if (precession) {
+    const startRad = precession.argumentDegAtJ2000 * DEG;
+    const nowRad = startRad + (precession.argumentRateDegPerCentury * daysSinceJ2000 * DEG) / 36525;
+    const sineChange = Math.sin(nowRad) - Math.sin(startRad);
+    poleRaDeg += precession.raSinDeg * sineChange;
+    poleDecDeg += precession.decCosDeg * (Math.cos(nowRad) - Math.cos(startRad));
+    primeMeridianDeg += precession.meridianSinDeg * sineChange;
+  }
+  return buildPoleBasisQuaternion(poleRaDeg, poleDecDeg, primeMeridianDeg, out);
 }
 
 /**
  * Orientation of the body's equatorial frame without the daily spin.
- * Time-independent. (Moon positions propagate JPL element frames in
+ * Time-independent: a body with precession terms has its J2000 pole here.
+ * (Moon positions propagate JPL element frames in
  * satellites.ts; this pins the pole/spin-axis split for orientation work.)
  */
 export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion {
-  return buildPoleBasisQuaternion(planet, 0);
+  return buildPoleBasisQuaternion(planet.poleRaDeg, planet.poleDecDeg, 0);
 }
 
 /**
@@ -443,9 +548,21 @@ export function computeBodyPositionAU(
   out?: THREE.Vector3,
 ): THREE.Vector3 {
   const jd = ttJDFromUtcMs(utcMs);
-  return isMeeusPositioned(planet)
-    ? computeEarthPositionEquatorial(jd, out)
-    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd, elementsScratch), out);
+  if (isMeeusPositioned(planet)) return computeEarthPositionEquatorial(jd, out);
+  // Inside the fitted window a planet is drawn at its system's barycentre
+  // from the fitted ephemeris; Standish elements answer outside it, eased in
+  // over the window's last two years.
+  const weight = fittedWeight(planet.name, jd);
+  if (weight > 0 && fittedPositionKm(planet.name, jd, fittedPlanetKm)) {
+    const target = icrfKmToSceneAU(fittedPlanetKm, out ?? new THREE.Vector3());
+    if (weight === 1) return target;
+    const standish = computeKeplerPositionEquatorial(
+      getStandishElements(planet.name, jd, elementsScratch),
+      analyticBlendScratch,
+    );
+    return blendTowardAnalytic(target, standish, weight);
+  }
+  return computeKeplerPositionEquatorial(getStandishElements(planet.name, jd, elementsScratch), out);
 }
 
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
@@ -461,7 +578,10 @@ export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
 export function computeBodyStateInto(planet: PlanetData, utcMs: number, out: BodyState): BodyState {
   const jd = ttJDFromUtcMs(utcMs);
   computeBodyPositionAU(planet, utcMs, out.positionAU);
-  computeBodyOrientationQuaternion(planet, jd, out.orientationQuaternion);
+  // Earth's rotation angle reads the clock directly; going through the TT
+  // date would only invert ttJDFromUtcMs to get it back.
+  if (isEarthOriented(planet)) earthOrientationQuaternion(utcMs, jd, out.orientationQuaternion);
+  else computeBodyOrientationQuaternion(planet, jd, out.orientationQuaternion);
   out.sunDirection.copy(out.positionAU).multiplyScalar(-1).normalize();
   return out;
 }

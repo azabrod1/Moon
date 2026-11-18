@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  POSITION_MODEL,
   createDefaultPlanetariumState,
   sanitizePlanetariumState,
   sanitizeTourProgress,
@@ -97,6 +98,40 @@ describe('headingBasis — the flight-frame migration flag', () => {
     const once = sanitizePlanetariumState(rawSave({ headingBasis: 'ecliptic' }));
     const twice = sanitizePlanetariumState(JSON.parse(JSON.stringify(once)));
     expect(twice?.headingBasis).toBe('ecliptic');
+  });
+});
+
+describe('positionModel and rideAnchor — saves that follow the bodies', () => {
+  // Absence of positionModel marks a save from before the fitted ephemeris,
+  // which saveAnchor.ts moves once on load, so it may never be defaulted in.
+  it('keeps positionModel absent for a legacy save, and stamps the default state', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.positionModel).toBeUndefined();
+    expect(createDefaultPlanetariumState().positionModel).toBe(POSITION_MODEL);
+  });
+
+  it('round-trips a ride anchor, with and without a parent planet', () => {
+    for (const rideAnchor of [
+      { body: 'Earth', offsetAU: { x: 1e-5, y: -2e-6, z: 3e-7 } },
+      { body: 'Io', parentPlanet: 'Jupiter', offsetAU: { x: 0, y: 1e-5, z: 0 } },
+    ]) {
+      const once = sanitizePlanetariumState(rawSave({ positionModel: POSITION_MODEL, rideAnchor }));
+      const twice = sanitizePlanetariumState(JSON.parse(JSON.stringify(once)));
+      expect(twice?.rideAnchor).toEqual(rideAnchor);
+      expect(twice?.positionModel).toBe(POSITION_MODEL);
+    }
+  });
+
+  it('drops an anchor that is not usable rather than trusting it', () => {
+    for (const rideAnchor of [
+      null,
+      'Earth',
+      { body: '', offsetAU: { x: 0, y: 0, z: 0 } },
+      { body: 'Earth', offsetAU: { x: 0, y: Number.NaN, z: 0 } },
+      { body: 'Earth', offsetAU: { x: 2, y: 0, z: 0 } },
+      { body: 'Io', parentPlanet: 5, offsetAU: { x: 0, y: 0, z: 0 } },
+    ]) {
+      expect(sanitizePlanetariumState(rawSave({ rideAnchor }))?.rideAnchor).toBeUndefined();
+    }
   });
 });
 

@@ -22,8 +22,16 @@
  * world space, where the body is a unit sphere at the origin. Like the
  * scene, the pick draws at most MAX_REGIONS regions (the validator refuses
  * more), so a hit never names a region the faces do not show.
+ *
+ * A giant flattened along its pole (the layout's `shape`) is the same two
+ * kinds on its spheroid: the skin is the spheroid of equatorial radius 1,
+ * met by the exact line test, and a face is the plane's half-ellipse, its
+ * "radius" at a hit the level of the similar spheroid through it
+ * (spheroidLevelRadius) — the nested shells the scene draws every layer as.
+ * With no flattening each of those is the sphere's own arithmetic.
  */
 import * as THREE from 'three';
+import { raySpheroidT, spheroidLevelRadius, SPHERE_SHAPE, type SpheroidShape } from '../astronomy/spheroid';
 import { createCutFaceBasis, cutFaceBasis, insideWedge, type CutFaceSide, type CutFrame } from './cutFrame';
 import { MAX_REGIONS } from './data/interiorTypes';
 
@@ -32,6 +40,9 @@ export interface PickLayout {
   frame: CutFrame;
   /** Display-space outer radii, inside-out and increasing; the last is 1. */
   outerDisplay: readonly number[];
+  /** The body's spheroid in the studio's world frame (InteriorScene.bodyShape):
+   *  absent, or of no flattening, for a sphere. */
+  shape?: SpheroidShape;
 }
 
 export type PickSurface = 'face' | 'skin';
@@ -87,6 +98,18 @@ function sphereNearDistance(origin: THREE.Vector3, direction: THREE.Vector3, rad
   return far > EPSILON ? far : -1;
 }
 
+/** The same for the body's spheroid at equatorial radius 1: a sphere's own
+ *  test when it has no flattening, otherwise the exact line test of
+ *  astronomy/spheroid, whose far root is the near root of the reversed ray. */
+function bodyNearDistance(origin: THREE.Vector3, direction: THREE.Vector3, shape: SpheroidShape): number {
+  if (shape.flattening === 0) return sphereNearDistance(origin, direction, 1);
+  const near = raySpheroidT(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, 1, shape);
+  if (Number.isNaN(near)) return -1;
+  if (near > EPSILON) return near;
+  const far = -raySpheroidT(origin.x, origin.y, origin.z, -direction.x, -direction.y, -direction.z, 1, shape);
+  return far > EPSILON ? far : -1;
+}
+
 /**
  * The nearest visible surface along a ray, or null when the ray misses the
  * body. `origin` and `direction` (unit) are in studio world space.
@@ -100,6 +123,7 @@ export function pickInterior(
   const count = drawnRegionCount(layout.outerDisplay);
   if (count === 0) return null;
   const frame = layout.frame;
+  const shape = layout.shape ?? SPHERE_SHAPE;
   let bestDistance = Infinity;
   let found = false;
 
@@ -111,7 +135,7 @@ export function pickInterior(
   // (The far root is essentially never inside the wedge itself — a near point on
   // the view axis has its far point at wedge angle ~π — so the wedge is not what
   // keeps it unpickable.)
-  const skinDistance = sphereNearDistance(origin, direction, 1);
+  const skinDistance = bodyNearDistance(origin, direction, shape);
   if (skinDistance > 0) {
     scratchPoint.copy(origin).addScaledVector(direction, skinDistance);
     if (!insideWedge(frame, scratchPoint)) {
@@ -140,7 +164,11 @@ export function pickInterior(
       // half-discs meet and a ray through the centre lands on a rounding hair either side
       // of both, belongs to the faces rather than to neither.
       if (scratchPoint.dot(basis.radial) < -EPSILON) continue;
-      const hitRadius = scratchPoint.length();
+      // The hit's level: its radius on a sphere, the similar spheroid through it
+      // on a flattened body — what the section shader resolves the fragment by.
+      const hitRadius = shape.flattening === 0
+        ? scratchPoint.length()
+        : spheroidLevelRadius(scratchPoint.x, scratchPoint.y, scratchPoint.z, shape);
       if (hitRadius > 1) continue; // past the rim: the plane runs on, the face does not
       bestDistance = faceDistance;
       found = true;

@@ -16,6 +16,10 @@ export interface SurfaceHudState {
   eyebrow: string;
   /** Event name while one is in window, else the phase name. */
   headline: string;
+  /** The open sheet's hero already says what the narrative says (the
+   *  system's phase, or nothing worth a line): with the phone sheet open the
+   *  band then steps aside. An event, or a tracked body's own phase, stays. */
+  heroRepeats: boolean;
   /** Narrative subline; `warm` renders highlighted ("peak in 11m"). */
   subText: string;
   subWarm: string | null;
@@ -140,6 +144,7 @@ export class ObservatoryHUD {
   private blEl: HTMLElement | null = null;
   private brEl: HTMLElement | null = null;
   private timebarEl: HTMLElement | null = null;
+  private chipRowEl: HTMLElement | null = null;
   /** Last rendered clock state. The button dispatches an explicit intent so a
    * delayed Pause click can never turn into a resume when it is finally read. */
   private paused = false;
@@ -149,6 +154,9 @@ export class ObservatoryHUD {
   // both from render's band measure.
   private bandTopY = Infinity;
   private clusterMaxY = Infinity;
+  // Bottom edge of the top-right chip row: with bandTopY, the strip of sky
+  // the owner can centre the tracked target in.
+  private chipRowBottomY = -Infinity;
   private lastMarkerCss = '';
   private wired = false;
   /** Removals for the document-level gesture-retire listeners the reliable
@@ -178,6 +186,7 @@ export class ObservatoryHUD {
     this.blEl = this.rootEl?.querySelector('.shud-bl') ?? null;
     this.brEl = this.rootEl?.querySelector('.shud-br') ?? null;
     this.timebarEl = document.getElementById('surface-timebar');
+    this.chipRowEl = this.rootEl?.querySelector('.shud-tr') ?? null;
     if (this.wired) return;
     this.wired = true;
     // Touch devices pinch to zoom; pointer devices scroll. Set once — the input
@@ -294,6 +303,12 @@ export class ObservatoryHUD {
     return this.bandTopY;
   }
 
+  /** The strip of sky between the chip row and the bottom band, in viewport
+   *  px, as last measured; an unmeasured edge is infinite. */
+  freeSkyPx(): { top: number; bottom: number } {
+    return { top: this.chipRowBottomY, bottom: this.bandTopY };
+  }
+
   private anchorCluster(xPx: number, belowYPx: number): void {
     if (!this.discNoteEl || !this.trackPillEl) return;
     // At wide FOV the bracket bottom dives into the HUD's bottom band —
@@ -309,27 +324,28 @@ export class ObservatoryHUD {
 
   /** 8 Hz text pass — no layout writes besides the FOV mark position. */
   render(state: SurfaceHudState): void {
-    // Re-measure the bottom band's top edge here (8 Hz), not per marker
-    // frame: the band moves only with content/viewport changes. 62 = the
-    // cluster's extent below its anchor (note at +12, pill at +32, ~26px
-    // pill height) plus a hairline of clearance.
-    const top = (el: HTMLElement | null) =>
-      el ? el.getBoundingClientRect().top : Infinity;
-    this.bandTopY = Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl));
-    this.clusterMaxY = this.bandTopY - 62;
+    this.rootEl?.classList.toggle('shud-hero-repeats', state.heroRepeats);
     setText('surface-eyebrow', state.eyebrow);
     setText('surface-headline', state.headline);
     if (this.subEl) {
-      // Two text nodes (plain + warm) — rebuilt only when the strings change.
+      // The prose, then the warm countdown — rebuilt only when the strings
+      // change. Separate spans, so the compact band (the phone sheet open)
+      // can keep the countdown alone.
       const key = `${state.subText}|${state.subWarm ?? ''}`;
       if (this.subEl.dataset.key !== key) {
         this.subEl.dataset.key = key;
         this.subEl.textContent = '';
-        this.subEl.append(state.subText);
+        const proseEl = document.createElement('span');
+        proseEl.className = 'shud-prose';
+        proseEl.textContent = state.subText;
+        this.subEl.append(proseEl);
         if (state.subWarm) {
+          const separatorEl = document.createElement('span');
+          separatorEl.className = 'shud-sep';
+          separatorEl.textContent = ' · ';
           const warmEl = document.createElement('b');
           warmEl.textContent = state.subWarm;
-          this.subEl.append(' · ', warmEl);
+          this.subEl.append(separatorEl, warmEl);
         }
       }
     }
@@ -368,6 +384,20 @@ export class ObservatoryHUD {
       this.lookatEl.style.display = state.showLookatChip ? '' : 'none';
       if (state.showLookatChip) setText('surface-lookat-name', state.targetName);
     }
+    // Re-measure the bottom band's top edge here (8 Hz), not per marker
+    // frame: the band moves only with content/viewport changes. Measured
+    // last, so it reads this pass's text and classes. A part the compact
+    // band hides has no box (a rect of zeros would read as a band at the
+    // very top) and does not count. 62 = the cluster's extent below its
+    // anchor (note at +12, pill at +32, ~26px pill height) plus a hairline
+    // of clearance.
+    const top = (el: HTMLElement | null) =>
+      el && el.getClientRects().length > 0 ? el.getBoundingClientRect().top : Infinity;
+    this.bandTopY = Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl));
+    this.clusterMaxY = this.bandTopY - 62;
+    const chipRow = this.chipRowEl;
+    this.chipRowBottomY =
+      chipRow && chipRow.getClientRects().length > 0 ? chipRow.getBoundingClientRect().bottom : -Infinity;
   }
 
   /** Owner teardown: drop the document-level listeners, which would otherwise

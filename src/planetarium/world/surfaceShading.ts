@@ -252,6 +252,10 @@ export type SurfaceAirFx = Record<string, THREE.IUniform>;
 export interface SurfaceShadingFx {
   uSunDirWorld: { value: THREE.Vector3 };       // world sun, for the night-fill terminator
   uSunDirLocal: { value: THREE.Vector3 };       // sun in the body's frame, for the cast-shadow traces
+  /** The mesh's scale in the body's frame: (1, 1 − f, 1) for a globe
+   *  flattened along its pole, (1, 1, 1) for a sphere. The cast-shadow traces
+   *  start from the vertex times this, where the drawn ground is. */
+  uBodyScale: { value: THREE.Vector3 };
   uMoonShadow: { value: THREE.Vector4[] };      // [xyz = moon centre in body frame (AU), w = moon radius AU]
   uMoonShadowCount: { value: number };          // active entries in uMoonShadow
   uPlanetshineColor: { value: THREE.Color };    // parent's reflected-light tint (moons only)
@@ -2430,6 +2434,9 @@ uniform float uNightStrength;
 uniform float uNightLift;
 uniform float uTermWidth;
 uniform vec3 uSunDirLocal;
+#ifdef BODY_SCALE
+uniform vec3 uBodyScale;
+#endif
 uniform float uRingInner;
 uniform float uRingOuter;
 uniform float uSunTan;
@@ -3311,12 +3318,26 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
     outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.55 * lit);
   }
   vec3 sd = normalize(uSunDirLocal);
+#ifdef BODY_SCALE
+  // Where the surface really is in the body's frame: a flattened globe draws
+  // its sphere squashed along the pole (the mesh scale, uBodyScale), and the
+  // traces below must start from the drawn ground, not the unit sphere's.
+  vec3 bodyPos = vObjPos * uBodyScale;
+#endif
   // Ring shadow on the globe: trace toward the Sun to the ring plane
   // (y = 0) and dim by the rings opacity where it lands.
   if (GROUND_ON(uRingOuter > 0.0 && abs(sd.y) > 1e-4)) {
+#ifdef BODY_SCALE
+    float tHit = -bodyPos.y / sd.y;
+#else
     float tHit = -vObjPos.y / sd.y;
+#endif
     if (tHit > 0.0) {
+#ifdef BODY_SCALE
+      vec3 hit = bodyPos + sd * tHit;
+#else
       vec3 hit = vObjPos + sd * tHit;
+#endif
       float t01 = (length(hit.xz) - uRingInner) / (uRingOuter - uRingInner);
       outgoingLight *= 1.0 - 0.9 * ringShadowOpacity(t01) * dayFactor;
     }
@@ -3330,7 +3351,11 @@ ${CLOUD_SHADOW_DIFFUSE}${CLOUD_SHADOW_FILL}${CLOUD_LIGHT_DECK}  // The sine of t
   float sunVisible = 1.0;
   for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
     if (i >= uMoonShadowCount) break;
+#ifdef BODY_SCALE
+    float occ = moonShadowOcclusion(uMoonShadow[i].xyz - bodyPos, uMoonShadow[i].w, sd, uSunTan);
+#else
     float occ = moonShadowOcclusion(uMoonShadow[i].xyz - vObjPos, uMoonShadow[i].w, sd, uSunTan);
+#endif
     sunVisible *= 1.0 - occ * dayFactor;
   }
   outgoingLight *= sunVisible;
@@ -4134,6 +4159,7 @@ export function augmentSurfaceMaterial(
   const fx: SurfaceShadingFx = shared ?? {
     uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
+    uBodyScale: { value: new THREE.Vector3(1, 1, 1) },
     uMoonShadow: { value: Array.from({ length: MAX_MOON_SHADOWS }, () => new THREE.Vector4()) },
     uMoonShadowCount: { value: 0 },
     uPlanetshineColor: { value: new THREE.Color(0x6688aa) },
@@ -4221,6 +4247,7 @@ export function augmentSurfaceMaterial(
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
     shader.uniforms.uSunDirLocal = fx.uSunDirLocal;
+    shader.uniforms.uBodyScale = fx.uBodyScale;
     shader.uniforms.uMoonShadow = fx.uMoonShadow;
     shader.uniforms.uMoonShadowCount = fx.uMoonShadowCount;
     shader.uniforms.uNightColor = uNightColor;
@@ -4350,6 +4377,9 @@ export function augmentSurfaceMaterial(
     ...(hazeCacheCompiled() ? { HAZE_CACHE: '' } : {}),
     // Its development probes and readout, only in a session that asked.
     ...(import.meta.env.DEV && hazeCacheCompiled() && hazeProbeCompiled() ? { HAZE_PROBE: '' } : {}),
+    // The cast-shadow traces from the drawn ground of a flattened globe
+    // (uBodyScale). Always on; off, the text is the one from before it.
+    BODY_SCALE: '',
   };
   // A sector re-augmented from a globe a deck stands over shares that globe's
   // fx, and takes the cloud shadow's define with it (setGroundUnderCloudDeck).

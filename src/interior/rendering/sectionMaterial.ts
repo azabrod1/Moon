@@ -9,7 +9,11 @@
  *
  * The face geometry is a unit half-disc in its own XY plane; the vertex
  * stage hands the fragment its local XY (radius in DISPLAY space, 0..1) and
- * its world position. Region boundaries arrive in display space (the mode
+ * its world position. On a giant flattened along its pole the scene lays the
+ * half-disc on the plane's half-ellipse instead (cutFrame.cutFaceMatrix), and
+ * the display radius is the level of the similar spheroid through the
+ * fragment (uPoleStretch), so every boundary is a spheroid flattened like the
+ * body and enclosing the volume the model gives it. Region boundaries arrive in display space (the mode
  * runs the Readable remap on the CPU), inside-out and increasing, up to
  * MAX_REGIONS of them, each with a blend half-width: a sharp boundary is
  * antialiased over one `fwidth` band, a physical transition blends over its
@@ -151,6 +155,9 @@ export interface SectionUniforms {
   uCount: { value: number };
   /** World → body-space rotation (the inverse of the body's pose). */
   uWorldToBody: { value: THREE.Matrix3 };
+  /** a/c − 1 for a body flattened along its pole (body-space Y), 0 for a sphere: the
+   *  stretch under which every layer of the drawn spheroid is a sphere again. */
+  uPoleStretch: { value: number };
   /** Presentation seconds. */
   uTime: { value: number };
   /** 0..1, how much of a crease the hinge is: 1 closed-ish, 0 at Section. */
@@ -209,6 +216,7 @@ export function createSectionUniforms(): SectionUniforms {
     uFaceFill: { value: new THREE.Vector3() },
     uCount: { value: 1 },
     uWorldToBody: { value: new THREE.Matrix3() },
+    uPoleStretch: { value: 0 },
     uTime: { value: 0 },
     uCorner: { value: 0 },
     uEmphasis: { value: -1 },
@@ -458,6 +466,7 @@ uniform vec3 uFaceFill;
 uniform float uHeatBoost[${MAX_REGIONS}];
 uniform int uCount;
 uniform mat3 uWorldToBody;
+uniform float uPoleStretch;
 uniform float uTime;
 uniform float uCorner;
 uniform int uEmphasis;
@@ -706,10 +715,16 @@ vec4 sectionSample(int k, vec3 bodyPoint, float regionT, out float heatMask) {
 const SECTION_RESOLVE = /* glsl */ `
 // The body sits at the origin and both face planes pass through it, so the
 // world position's length IS the display radius — what the pick and the ruler
-// measure too, so the three agree by construction.
-float sectionRadius = length(vSectionWorld);
-float sectionPx = max(fwidth(sectionRadius), 1e-5); // one screen pixel, display units
+// measure too, so the three agree by construction. A body flattened along its
+// pole draws every layer as a spheroid similar to its own, and there the
+// display radius is the length in the frame stretched along the pole, where
+// those spheroids are concentric spheres (astronomy/spheroid
+// spheroidLevelRadius, which the pick and the ruler read).
 vec3 sectionBodyPoint = uWorldToBody * vSectionWorld;
+float sectionRadius = uPoleStretch > 0.0
+  ? length(vec3(sectionBodyPoint.x, sectionBodyPoint.y * (1.0 + uPoleStretch), sectionBodyPoint.z))
+  : length(vSectionWorld);
+float sectionPx = max(fwidth(sectionRadius), 1e-5); // one screen pixel, display units
 float regionT0 = clamp((uOuter[0] - sectionRadius) / max(uOuter[0], 1e-4), 0.0, 1.0);
 // One diagram per draw: the Materials chain (the pattern and the heat) or the Temperature
 // chain (the place on the scale), never both for a pixel that shows one — uDisplayMode is a

@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { ATMOSPHERES, createAtmosphereMaterial } from '../../planetarium/PlanetFactory';
 import { SUN_ATMOSPHERE_TINT_RGB, sunPhotosphereFragmentShader, sunPhotosphereVertexShader } from '../../shared/shaders/sun';
 import { computeCutFrame, cutFaceBasis, insideWedge } from '../cutFrame';
+import { bodyShape } from '../../astronomy/bodyShape';
+import { spheroidLevelRadius } from '../../astronomy/spheroid';
 import { SKIN_CUT_FRAGMENT_TEXT, applyAtmosphereCut, applyPhotosphereCut, applyRawShaderCut, createSkinCutUniforms } from './skinCut';
 
 const interiorSceneSource = readFileSync(fileURLToPath(new URL('../InteriorScene.ts', import.meta.url)), 'utf8');
@@ -32,6 +34,53 @@ describe('the raw-shader cuts', () => {
     expect(material.uniforms.uCutNormalA).toBe(uniforms.uCutNormalA);
     expect(material.uniforms.uCutCamera).toBe(uniforms.uCutCamera);
     expect(material.version).toBeGreaterThan(0); // needsUpdate was set: the spliced text compiles afresh
+  });
+
+  it("splice into a flattened giant's oblate shell, testing the near side its far fragment is seen through", () => {
+    const uniforms = createSkinCutUniforms();
+    const saturn = bodyShape('Saturn');
+    const material = createAtmosphereMaterial(ATMOSPHERES.Saturn, 1, 'analytic', { initialAlpha: 0.7, initialSunDir: new THREE.Vector3(0, 0, 1), oblate: saturn });
+    applyAtmosphereCut(material, uniforms);
+    const text = material.fragmentShader;
+    expect(text).toContain('gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);');
+    expect(text).toContain('vec3 cutOffset = cutCameraOffset + cutNearT * (vWorldPos - cameraPosition);');
+    expect(text).not.toContain('cutAlong'); // no reflection: the near side is found, not approximated
+    expect(text.indexOf('float cutNearT')).toBeGreaterThan(text.indexOf('vec3 stretchAlongPole(vec3 v)'));
+    // A sphere's shell keeps its reflection, and none of this.
+    const sphere = createAtmosphereMaterial(ATMOSPHERES.Earth, 1, 'analytic', { initialAlpha: 0.7, initialSunDir: new THREE.Vector3(0, 0, 1) });
+    applyAtmosphereCut(sphere, createSkinCutUniforms());
+    expect(sphere.fragmentShader).not.toContain('cutNearT');
+
+    // The GLSL's arithmetic on the CPU: for a far-side fragment of the squashed shell, the
+    // point it tests is on the camera's line, on the shell, and nearer the camera.
+    const stretch = 1 / (1 - saturn.flattening) - 1;
+    const pole = new THREE.Vector3(saturn.poleX, saturn.poleY, saturn.poleZ);
+    const stretchAlongPole = (v: THREE.Vector3) => v.clone().addScaledVector(pole, stretch * v.dot(pole));
+    const shellScale = ATMOSPHERES.Saturn.scale;
+    const camera = new THREE.Vector3(3.1, -2.2, 9.4);
+    let checked = 0;
+    for (let trial = 0; trial < 40; trial++) {
+      // A direction from the camera that meets the shell; the fragment is its far root.
+      const aim = new THREE.Vector3(Math.sin(trial * 1.9) * 0.9, Math.cos(trial * 1.3) * 0.9, Math.sin(trial * 0.7) * 0.9);
+      const direction = aim.sub(camera).normalize();
+      const origin = stretchAlongPole(camera);
+      const along = stretchAlongPole(direction);
+      const a = along.lengthSq(), b = origin.dot(along), c = origin.lengthSq() - shellScale * shellScale;
+      const discriminant = b * b - a * c;
+      if (discriminant <= 0) continue;
+      const tFar = (-b + Math.sqrt(discriminant)) / a;
+      const tNear = (-b - Math.sqrt(discriminant)) / a;
+      const fragment = camera.clone().addScaledVector(direction, tFar);
+      const cameraStretched = stretchAlongPole(camera);
+      const fragmentStretched = stretchAlongPole(fragment);
+      const ray = fragmentStretched.clone().sub(cameraStretched);
+      const nearT = (cameraStretched.lengthSq() - fragmentStretched.lengthSq()) / ray.lengthSq();
+      const tested = camera.clone().addScaledVector(fragment.clone().sub(camera), nearT);
+      expect(tested.distanceTo(camera.clone().addScaledVector(direction, tNear))).toBeLessThan(1e-9);
+      expect(spheroidLevelRadius(tested.x, tested.y, tested.z, saturn)).toBeCloseTo(shellScale, 9);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(20);
   });
 
   it("splice into the Sun's photosphere as the studio builds it", () => {

@@ -92,6 +92,31 @@ describe('sphereHidesPoint', () => {
     expect(sphereHidesPoint(earth, 0, -1, 0, h * 1.5)).toBe(true);
   });
 
+  it('a flattened body hides by its true outline, not its equatorial sphere', () => {
+    // Saturn 2 AU ahead, its pole along +y: a sight line passing 57,000 km
+    // above the centre clears the polar limb (54,364 km) but would graze an
+    // equatorial sphere (60,268 km); the same offset sideways is inside both.
+    const saturn: ForegroundSphere = {
+      x: 0, y: 0, z: -2, radiusAU: 60_268 * AU_PER_KM, distFromCamera: 2, name: 'Saturn',
+      shape: { flattening: 1 - 54_364 / 60_268, poleX: 0, poleY: 1, poleZ: 0 },
+    };
+    const toward = (upKm: number, sideKm: number) => {
+      const x = sideKm * AU_PER_KM, y = upKm * AU_PER_KM, z = -2;
+      const length = Math.hypot(x, y, z);
+      return [x / length, y / length, z / length] as const;
+    };
+    expect(sphereHidesPoint(saturn, ...toward(57_000, 0), 30)).toBe(false);
+    expect(sphereHidesPoint({ ...saturn, shape: undefined }, ...toward(57_000, 0), 30)).toBe(true);
+    expect(sphereHidesPoint(saturn, ...toward(0, 57_000), 30)).toBe(true);
+    // Straight at the centre, side-on, the near ground is on the equator.
+    expect(sphereHidesPoint(saturn, 0, 0, -1, 2 - 61_000 * AU_PER_KM)).toBe(false);
+    expect(sphereHidesPoint(saturn, 0, 0, -1, 2 - 59_500 * AU_PER_KM)).toBe(true);
+    // From above the pole, the near ground is the polar radius from the centre.
+    const fromAbove: ForegroundSphere = { ...saturn, x: 0, y: -2, z: 0 };
+    expect(sphereHidesPoint(fromAbove, 0, -1, 0, 2 - 55_000 * AU_PER_KM)).toBe(false);
+    expect(sphereHidesPoint(fromAbove, 0, -1, 0, 2 - 53_700 * AU_PER_KM)).toBe(true);
+  });
+
   it('a sphere behind the camera hides nothing in front of it', () => {
     const behind = blocker({ name: 'Mars', x: 0, y: 0, z: 5, distFromCamera: 5 });
     expect(sphereHidesPoint(behind, 0, 0, -1, 100)).toBe(false);

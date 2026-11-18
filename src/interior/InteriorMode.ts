@@ -308,7 +308,12 @@ export interface InteriorDevState {
   cutFrame: { view: [number, number, number]; hinge: [number, number, number]; side: [number, number, number] };
   readable: boolean;
   scaleBlend: number;
+  /** The disc's projected radius, px: a flattened giant's equatorial radius, its widest. */
   projectedRadiusPx: number;
+  /** The body's spheroid as the studio draws it (InteriorScene.bodyShape): its
+   *  flattening (0 for a sphere) and its pole in the studio's world frame, so a
+   *  probe can place a level on a face of a flattened giant where it is drawn. */
+  bodyShape: { flattening: number; pole: [number, number, number] };
   /** The fit distance for the stage as it is, and where the camera is, body radii: a zoom is their ratio. */
   fitDistance: number;
   cameraDistance: number;
@@ -582,7 +587,10 @@ export class InteriorMode {
     this.renderer = renderer;
     this.domElement = renderer.domElement;
     this.interiorScene = new InteriorScene(scene, renderer, floatCapable);
-    this.pickLayout = { frame: this.frame, outerDisplay: [1] };
+    // The scene keeps the body's spheroid current in place (a flattened giant's
+    // squash and pole), so the pick and the ruler read the body it draws.
+    this.pickLayout = { frame: this.frame, outerDisplay: [1], shape: this.interiorScene.bodyShape() };
+    this.rulerInput.shape = this.interiorScene.bodyShape();
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enabled = false;
@@ -2634,6 +2642,10 @@ export class InteriorMode {
       readable: this.readable,
       scaleBlend: this.scaleBlend,
       projectedRadiusPx: this.projectedPx,
+      bodyShape: (() => {
+        const shape = this.interiorScene.bodyShape();
+        return { flattening: shape.flattening, pole: [shape.poleX, shape.poleY, shape.poleZ] as [number, number, number] };
+      })(),
       fitDistance: this.fitDistanceNow,
       cameraDistance: this.camera.position.distanceTo(this.controls.target),
       viewOffset: { x: this.viewOffsetXPx, y: this.viewOffsetYPx },

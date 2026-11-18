@@ -18,12 +18,14 @@
  * the rows on screen touches nothing, so a fast clock cannot make the list
  * flicker.
  */
-import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
+import type { EventType } from '../../astronomy/ephemeris';
+import { lunarPhaseAt } from '../../astronomy/lunarPhase';
 import { formatDateCompact } from '../../astronomy/planetary';
 import type { ShadowClassification, ShadowEvent } from '../../astronomy/shadows';
 import {
   bodyDisplayName,
   formatDiscDeg,
+  formatMagnitude,
   selectSurfaceTarget,
   surfaceEventPhrase,
   type SurfaceEventInfo,
@@ -230,6 +232,8 @@ function windowEventGlyph(sight: ReturnType<typeof selectSurfaceTarget>['kind'])
     case 'moon':
       return 'reddened';
     case 'parent':
+    // Never chosen for an event (selectSurfaceTarget); here for the switch.
+    case 'planet':
       return 'shadow-dot';
   }
 }
@@ -512,7 +516,8 @@ export function observatoryPhaseText(
   fromEarth: (PhaseGlyphInput & { text: string }) | null;
 }) | null {
   if (info.kind === 'earth') {
-    const state = computeOrbitalState(new Date(utcMs));
+    // The phase of the Moon as drawn (lunarPhase.ts).
+    const state = lunarPhaseAt(utcMs);
     const moonPhase = barePhase(state.phaseName);
     const onMoon = info.subject === 'Earth';
     const phase = onMoon ? COMPLEMENT_PHASE[moonPhase] ?? moonPhase : moonPhase;
@@ -544,6 +549,44 @@ export function observatoryPhaseText(
     };
   }
   return null;
+}
+
+/**
+ * The surface HUD's line for a lit body it tracks that is not the subject the
+ * hero describes (Phobos from Mars, Europa from Io): "Crescent Phobos",
+ * "Phobos · 12% lit", named the way the hero names a moon-phase subject. A
+ * body in its planet's shadow says so instead (`shadowOf`): a full phase over
+ * a disc gone dark would read as a fault. The headline is the engine's own
+ * label for the event.
+ */
+export function trackedBodyPhaseText(
+  bodyName: string,
+  illumination: number,
+  shadowOf: string | null = null,
+): { headline: string; meta: string } {
+  if (shadowOf) {
+    return { headline: `${bodyName} eclipsed by ${shadowOf}`, meta: `${bodyName} · in ${shadowOf}'s shadow` };
+  }
+  return {
+    headline: `${genericPhaseName(illumination)} ${bodyName}`,
+    meta: `${bodyName} · ${Math.round(illumination * 100)}% lit`,
+  };
+}
+
+/** The same line for a planet the view tracks. It is a point from here, so
+ *  its brightness joins the line, and its phase is named only where it is
+ *  not simply full (Venus's crescent, Mars's gibbous). */
+export function trackedPlanetText(
+  planetName: string,
+  illumination: number,
+  magnitude: number,
+): { headline: string; meta: string } {
+  const phase = genericPhaseName(illumination);
+  const brightness = Number.isFinite(magnitude) ? ` · ${formatMagnitude(magnitude)}` : '';
+  return {
+    headline: phase === 'Full' ? planetName : `${phase} ${planetName}`,
+    meta: `${planetName}${brightness} · ${Math.round(illumination * 100)}% lit`,
+  };
 }
 
 /**

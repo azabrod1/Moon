@@ -13,8 +13,18 @@
  * radius, rim to centre, and the region segments are stretches of that one
  * line rather than steps across a terrace. Each point is a world position
  * on the face; the caller projects them. Pure: three math only, no DOM.
+ *
+ * On a giant flattened along its pole every layer is a spheroid similar to
+ * the body, and a depth names the one whose volumetric-mean radius is that
+ * far below the model's reference radius — the convention the model's own
+ * numbers, the hover card and the faces' boundaries all use. A tick sits
+ * where that spheroid crosses the ruler's line, so the region segments and
+ * the ticks still agree to the pixel; a km step along the line is then the
+ * line's own share of the flattening, between the polar and the equatorial
+ * radius over the mean (for Saturn, 0.934 to 1.035 of a km).
  */
 import * as THREE from 'three';
+import { spheroidRadiusToward, type SpheroidShape } from '../astronomy/spheroid';
 import { cutFaceBasis, createCutFaceBasis, type CutFrame, type CutFaceSide } from './cutFrame';
 import { toDisplayFraction, type ReadableRemap } from './interiorGeometry';
 
@@ -44,6 +54,9 @@ export interface RulerInput {
   outerDisplay: readonly number[];
   regionsInsideOut: readonly RulerRegionInput[];
   annotations: readonly RulerAnnotationInput[];
+  /** The body's spheroid in the studio's world frame (InteriorScene.bodyShape):
+   *  absent, or of no flattening, for a sphere. */
+  shape?: SpheroidShape;
 }
 
 export interface RulerTick {
@@ -108,7 +121,12 @@ export function rulerPoint(input: RulerInput, depthKm: number, out = new THREE.V
 
 function rulerPointAtDisplay(input: RulerInput, display: number, out: THREE.Vector3): THREE.Vector3 {
   const basis = cutFaceBasis(input.frame, input.side, scratchBasis);
-  return out.copy(basis.radial).multiplyScalar(display);
+  const shape = input.shape;
+  if (!shape || shape.flattening === 0) return out.copy(basis.radial).multiplyScalar(display);
+  // On a flattened body the level `display` crosses the radial line at that
+  // fraction of the body's own extent along it.
+  const extent = spheroidRadiusToward(basis.radial.x, basis.radial.y, basis.radial.z, 1, shape);
+  return out.copy(basis.radial).multiplyScalar(display * extent);
 }
 
 /** Lay the ruler out. With `out`, the previous layout's entries and vectors

@@ -7,7 +7,10 @@
  * through every layer: the two section faces are half-discs of the body's
  * radius on the wedge's bounding planes, and the section shader resolves the
  * region at a fragment by its radius, so each face shows every layer as a
- * band from the rim to the centre and nothing is stepped. Both faces and the
+ * band from the rim to the centre and nothing is stepped. (On a giant
+ * flattened along its pole the faces are the planes' half-ellipses,
+ * cutFaceMatrix, and the "radius" is the level of the similar spheroid
+ * through the fragment; the wedge itself is the same planes.) Both faces and the
  * exterior skin's discard read this one frame every frame (as two unit axes
  * and the half-angle), so they can never disagree about where the cut is,
  * and the CPU pick uses the same test the shader does (insideWedge).
@@ -57,6 +60,7 @@
  */
 import * as THREE from 'three';
 import { DEG2RAD } from '../shared/math/angles';
+import type { SpheroidShape } from '../astronomy/spheroid';
 
 export type CutView = 'closed' | 'cutaway' | 'section';
 
@@ -187,6 +191,50 @@ export function wedgeAngle(frame: CutFrame, offsetFromCentre: THREE.Vector3): nu
 export function insideWedge(frame: CutFrame, offsetFromCentre: THREE.Vector3): boolean {
   if (frame.openingAngle <= 0) return false;
   return wedgeAngle(frame, offsetFromCentre) < frame.openingAngle * 0.5;
+}
+
+const matrixBasis = createCutFaceBasis();
+const matrixRadialColumn = new THREE.Vector3();
+const matrixUpColumn = new THREE.Vector3();
+
+/**
+ * Where one face's half-disc geometry is drawn: the matrix that carries the
+ * unit half-disc (x ≥ 0 in its own XY plane, normal +Z) onto the half of the
+ * body's plane section on the radial side of the hinge, the body's equatorial
+ * radius being 1 and `shape` its spheroid in the same (world) frame.
+ *
+ * A sphere's section is the unit disc, and its matrix is the basis rotation
+ * (radial, up, normal). A plane through the centre of a flattened body cuts
+ * it in an ellipse instead: |q|² + k(q·p̂)² = 1 for q in the plane, with
+ * k = 1/(1 − f)² − 1. Every centred ellipse is the unit circle under some
+ * linear map T of its plane (T·Tᵀ the inverse of the ellipse's quadratic
+ * form), and of those this takes the one that keeps the hinge where it is:
+ * lower-triangular in (radial, up), so local Y lands on `up`, scaled to the
+ * hinge's own half-length, and the half-plane x ≥ 0 stays on the radial side.
+ * The two faces therefore still meet along one line, and at Section, where
+ * their planes coincide, they still tile one section between them. T is a
+ * scale and a shear with a positive determinant, so the face keeps its
+ * winding, and its normal stays the plane's.
+ */
+export function cutFaceMatrix(
+  frame: CutFrame,
+  face: CutFaceSide,
+  shape: SpheroidShape,
+  out: THREE.Matrix4 = new THREE.Matrix4(),
+): THREE.Matrix4 {
+  const basis = cutFaceBasis(frame, face, matrixBasis);
+  if (shape.flattening === 0) return out.makeBasis(basis.radial, basis.up, basis.normal);
+  const stretchSquaredLessOne = 1 / ((1 - shape.flattening) * (1 - shape.flattening)) - 1;
+  const poleAlongRadial = shape.poleX * basis.radial.x + shape.poleY * basis.radial.y + shape.poleZ * basis.radial.z;
+  const poleAlongUp = shape.poleX * basis.up.x + shape.poleY * basis.up.y + shape.poleZ * basis.up.z;
+  const upTerm = 1 + stretchSquaredLessOne * poleAlongUp * poleAlongUp;
+  const determinant = 1 + stretchSquaredLessOne * (poleAlongRadial * poleAlongRadial + poleAlongUp * poleAlongUp);
+  const radialScale = Math.sqrt(upTerm / determinant);
+  const radialShear = (-stretchSquaredLessOne * poleAlongRadial * poleAlongUp) / Math.sqrt(determinant * upTerm);
+  const hingeHalfLength = 1 / Math.sqrt(upTerm);
+  matrixRadialColumn.copy(basis.radial).multiplyScalar(radialScale).addScaledVector(basis.up, radialShear);
+  matrixUpColumn.copy(basis.up).multiplyScalar(hingeHalfLength);
+  return out.makeBasis(matrixRadialColumn, matrixUpColumn, basis.normal);
 }
 
 export function openingAngleDegToRad(deg: number): number {

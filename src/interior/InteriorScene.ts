@@ -18,6 +18,16 @@
  * the camera, so whichever face the reader has turned toward them is lit
  * from a three-quarter. Studio light with real pose, per plan §5.
  *
+ * A giant the planetarium draws flattened (astronomy/bodyShape: Jupiter,
+ * Saturn, Uranus and Neptune) is flattened here too, the unit radius being its
+ * equatorial one: the skin, its ghost and its air squashed along the pole it
+ * wears, as the planetarium squashes its globe and shell; the faces laid on
+ * the plane's half-ellipse (cutFrame.cutFaceMatrix); the rings shadowed by the
+ * flattened body; and every layer a spheroid similar to the body's, which the
+ * section shader, the pick and the ruler all resolve by (setShape, which says
+ * what that choice costs). The picture is then two planes and a spheroid.
+ * Every other body is the sphere it always was, to the bit.
+ *
  * The skin is the planetarium's own, not a plainer copy of it: the body's
  * colour map through the same surface shader, and with it whatever detail the
  * planetarium gives that body — Earth's cloud deck on its own shell, its bump
@@ -96,17 +106,23 @@ import {
   type SectionUniforms,
 } from './rendering/sectionMaterial';
 import type { TemperatureRange } from './temperatureScale';
-import { createCutFaceBasis, cutFaceBasis, type CutFrame } from './cutFrame';
+import { createCutFaceBasis, cutFaceBasis, cutFaceMatrix, type CutFaceBasis, type CutFaceSide, type CutFrame } from './cutFrame';
+import { bodyShape } from '../astronomy/bodyShape';
+import type { SpheroidShape } from '../astronomy/spheroid';
 
-/** The body's radius in studio units; every framing number is relative to it. */
+/** The body's radius in studio units — a flattened giant's equatorial radius,
+ *  its widest — and every framing number is relative to it. */
 export const BODY_RADIUS = 1;
 /** Whose rings and whose air the held program set is built from. The programs
  *  are body-independent — every ringed planet's rings are one material shape
  *  with its own uniforms, and so is every planet's analytic air — so one of
- *  each covers the catalog; the Sun's corona is the exception and is held
- *  beside them (buildHeldPrograms). */
+ *  each covers the catalog. Two exceptions are held beside them
+ *  (buildHeldPrograms): the Sun's corona, and the air over a flattened giant,
+ *  which wears the analytic shell's oblate variant — a fragment text of its
+ *  own, shared by every flattened body that has air. */
 const HELD_RING_BODY = 'Saturn';
 const HELD_AIR_BODY = 'Earth';
+const HELD_OBLATE_AIR_BODY = 'Saturn';
 /** Earth's height field, in body radii — the planetarium's own 0.02 of the body. */
 const SKIN_BUMP_SCALE = 0.02;
 /** How deep a measured relief is drawn, by its map key. The planetarium halves
@@ -355,6 +371,13 @@ const tmpRight = new THREE.Vector3();
 const tmpUp = new THREE.Vector3();
 const tmpBack = new THREE.Vector3();
 const tmpEnvQuaternion = new THREE.Quaternion();
+const tmpPole = new THREE.Vector3();
+
+/** How flattened a body is drawn: the catalog's flattening for a planet
+ *  (astronomy/bodyShape — the four giants), 0 for every other body. */
+function bodyFlattening(body: InteriorBody): number {
+  return body.planet ? bodyShape(body.planet.name).flattening : 0;
+}
 
 export class InteriorScene {
   private readonly scene: THREE.Scene;
@@ -400,7 +423,15 @@ export class InteriorScene {
   private ringMesh: THREE.Mesh | null = null;
   private ringFx: RingShadingFx | null = null;
   private ringsWanted = true;
+  /** The air shell's radius in body radii, across the equator on a flattened body. */
+  private atmosphereScale = 1;
   private readonly poseQuaternion = new THREE.Quaternion();
+  /** The body's spheroid in the studio's world frame: the catalog's flattening
+   *  (bodyFlattening), along the pole the skin wears — the posed pole, which
+   *  carries the precession since J2000 that bodyShape's own pole leaves out,
+   *  so the squash, the faces, the air's stretch and the pick share one axis.
+   *  Updated in place; the mode's pick and ruler hold it (bodyShape()). */
+  private readonly shape: SpheroidShape = { flattening: 0, poleX: 0, poleY: 1, poleZ: 0 };
   private readonly ringSunLocal = new THREE.Vector3();
   private readonly sectionUniforms: SectionUniforms;
   private readonly faceGeometry: THREE.CircleGeometry;
@@ -624,16 +655,20 @@ export class InteriorScene {
     const context: PreparedContext = { ghost: null, atmosphere: null, rings: null };
     const atmosphere = body.sun ? SUN_CORONA : ATMOSPHERES[body.id];
     if (atmosphere) {
+      // A flattened giant's air wears the oblate variant, squashed with the
+      // skin at present time (setShape); its pole is the posed one by then.
       const material = createAtmosphereMaterial(atmosphere, BODY_RADIUS, 'analytic', {
         initialAlpha: ATMOSPHERE_ALPHA,
         initialSunDir: this.keyDirection,
+        oblate: body.planet ? bodyShape(body.planet.name) : undefined,
       });
       applyAtmosphereCut(material, this.cutUniforms, body.sun ? atmosphere.scale : undefined);
       context.atmosphere = { material, scale: atmosphere.scale, corona: !!body.sun };
     }
     const rings = RING_CONFIGS[body.id];
     if (rings) {
-      const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN);
+      // Their shadow of the planet is the flattened body's (rings.ts).
+      const { mesh, fx } = createPlanetRings(BODY_RADIUS, rings, RING_SUN_TAN, bodyFlattening(body));
       // The rings take the cut too: the sector inside the wedge goes with the
       // quarter of the body, the way a cutaway of Saturn is drawn, so the near
       // arc never lies across the section it would otherwise cross. Their
@@ -746,6 +781,7 @@ export class InteriorScene {
 
     if (context.atmosphere) {
       this.atmosphereMesh.material = context.atmosphere.material;
+      this.atmosphereScale = context.atmosphere.scale;
       this.atmosphereMesh.scale.setScalar(context.atmosphere.scale);
       this.atmosphereMesh.visible = true;
       this.atmosphereMaterial = context.atmosphere.material;
@@ -876,6 +912,9 @@ export class InteriorScene {
     this.releaseSkinDetail();
     this.skinDetail = prepared.detail;
     this.dressClouds(prepared.clouds);
+    // The incoming body's shape on everything it now wears: the skin and its
+    // traces, the ghost, the air. setPose has posed this body already.
+    this.setShape(bodyFlattening(prepared.body));
     if (fading) {
       this.fadeOutgoing = previousTexture;
       this.fadeUniforms.uSkinFadeMap.value = previousTexture!;
@@ -1085,11 +1124,13 @@ export class InteriorScene {
    * the same key holds the count above zero, so the program survives every
    * body change and is built exactly once per session.
    *
-   * The set is small because the studio's is: the rings, the analytic air, the
-   * Sun's corona (its own program — the disc gate's scale is baked into the
-   * shader text for the Sun alone), the Sun's photosphere, the reveal's ghost
-   * and the cloud deck. The section faces are already one material for the
-   * session, and the skin is never freed because a swap probes the incoming one
+   * The set is small because the studio's is: the rings, the analytic air and
+   * its oblate variant over a flattened giant (a fragment text of its own, the
+   * cut's near-side test included), the Sun's corona (its own program — the
+   * disc gate's scale is baked into the shader text for the Sun alone), the
+   * Sun's photosphere, the reveal's ghost and the cloud deck. The section
+   * faces are already one material for the session, and the skin is never
+   * freed because a swap probes the incoming one
    * while the outgoing one is still alive. Each twin is built through the same
    * factory as the real thing, because a key that differs by one define is a
    * program the real material cannot use.
@@ -1116,15 +1157,17 @@ export class InteriorScene {
     held.add(rings.mesh);
     this.heldRings = rings.mesh;
 
-    const airs: Array<[AtmosphereConfig | undefined, number | undefined]> = [
-      [ATMOSPHERES[HELD_AIR_BODY], undefined],
-      [SUN_CORONA, SUN_CORONA.scale],
+    const airs: Array<[AtmosphereConfig | undefined, number | undefined, SpheroidShape | undefined]> = [
+      [ATMOSPHERES[HELD_AIR_BODY], undefined, undefined],
+      [ATMOSPHERES[HELD_OBLATE_AIR_BODY], undefined, bodyShape(HELD_OBLATE_AIR_BODY)],
+      [SUN_CORONA, SUN_CORONA.scale, undefined],
     ];
-    for (const [config, scale] of airs) {
+    for (const [config, scale, oblate] of airs) {
       if (!config) continue;
       const material = createAtmosphereMaterial(config, BODY_RADIUS, 'analytic', {
         initialAlpha: ATMOSPHERE_ALPHA,
         initialSunDir: this.keyDirection,
+        oblate,
       });
       applyAtmosphereCut(material, this.cutUniforms, scale);
       this.heldMaterials.push(material);
@@ -1386,12 +1429,91 @@ export class InteriorScene {
     tmpBasis.makeRotationFromQuaternion(quaternion).invert();
     this.worldToBody.setFromMatrix4(tmpBasis);
     this.sectionUniforms.uWorldToBody.value.copy(this.worldToBody);
+    this.setShape(bodyFlattening(body));
   }
 
   /** The pose the body wears right now, for the mode's body-space anchor of
    *  the cut. Read-only by contract: copy it, never write it. */
   pose(): THREE.Quaternion {
     return this.poseQuaternion;
+  }
+
+  /** The body's spheroid in the studio's world frame, for the mode's pick and
+   *  ruler: one object, kept current in place. Read-only by contract. */
+  bodyShape(): SpheroidShape {
+    return this.shape;
+  }
+
+  /**
+   * Draw the body flattened by `flattening` along the pole it wears, the way
+   * the planetarium draws the giants (PlanetFactory): the meshes, never the
+   * group, squashed (1, 1 − f, 1) in the body's frame, and every layer with
+   * them. Each layer of the model is drawn as a spheroid similar to the body's
+   * — the level the faces resolve a region by (sectionMaterial) — enclosing
+   * the volume its volumetric-mean radius gives it, the convention the models
+   * are written in.
+   *
+   * That is a choice, and its cost is known. A real giant's level surfaces
+   * flatten less with depth: Clairaut's equation on the models' own densities
+   * has them, at 0.6 of the radius, about 0.63 (Saturn) and 0.78 (Jupiter) as
+   * flattened as the surface. A similar spheroid there lies inside the level
+   * surface over the poles by up to 1.5% of the radius for Saturn (Saturn is
+   * more condensed than its model, so nearer 2%) and 0.6% for Jupiter, and
+   * outside it over the equator by half that — within the spread the models
+   * give those boundaries (4 to 9% of the radius), and nothing at the surface,
+   * where the flattening is seen. A depth-dependent flattening would need a
+   * density profile, which not every model has (Jupiter's rivals leave theirs
+   * unknown).
+   *
+   * At f = 0 every mesh is set to exactly what a sphere has always had.
+   */
+  private setShape(flattening: number): void {
+    const shape = this.shape;
+    tmpPole.set(0, 1, 0).applyQuaternion(this.poseQuaternion).normalize();
+    shape.flattening = flattening;
+    shape.poleX = tmpPole.x;
+    shape.poleY = tmpPole.y;
+    shape.poleZ = tmpPole.z;
+    const squash = 1 - flattening;
+    // The skin's local frame is the body's (it wears the pose), so its Y is the pole;
+    // the surface shader's cast-shadow traces start from the same squashed ground.
+    this.skinMesh.scale.set(1, squash, 1);
+    this.skinFx?.uBodyScale.value.set(1, squash, 1);
+    this.sectionUniforms.uPoleStretch.value = flattening > 0 ? 1 / squash - 1 : 0;
+    if (flattening > 0) {
+      // The ghost stands for the removed wedge of the skin, so it wears the
+      // skin's pose and squash, or a translucent cap would stand over each pole.
+      this.ghostMesh.quaternion.copy(this.poseQuaternion);
+      this.ghostMesh.scale.set(1, squash, 1);
+      // The air is squashed with the globe it wraps, and its oblate variant
+      // measures along the same pole (PlanetFactory's createAtmosphereGlow).
+      this.atmosphereMesh.quaternion.copy(this.poseQuaternion);
+      this.atmosphereMesh.scale.set(this.atmosphereScale, this.atmosphereScale * squash, this.atmosphereScale);
+      const poleUniform = this.atmosphereMaterial?.uniforms.uPoleWorld;
+      if (poleUniform) (poleUniform.value as THREE.Vector3).copy(tmpPole);
+    } else {
+      // A sphere's ghost has never worn the pose (its map is not turned with the
+      // skin's); it is left exactly as it was, and so is a sphere's air.
+      this.ghostMesh.quaternion.identity();
+      this.ghostMesh.scale.set(1, 1, 1);
+      this.atmosphereMesh.quaternion.identity();
+      this.atmosphereMesh.scale.setScalar(this.atmosphereScale);
+    }
+  }
+
+  /** Lay one face on its plane: the basis rotation on a sphere, the half-ellipse
+   *  of the section (cutFrame.cutFaceMatrix, a scale and a shear the mesh's own
+   *  position, quaternion and scale cannot hold) on a flattened body. */
+  private poseFace(mesh: THREE.Mesh, frame: CutFrame, side: CutFaceSide, basis: CutFaceBasis): void {
+    if (this.shape.flattening > 0) {
+      mesh.matrixAutoUpdate = false;
+      cutFaceMatrix(frame, side, this.shape, mesh.matrix);
+      mesh.matrixWorldNeedsUpdate = true;
+      return;
+    }
+    mesh.matrixAutoUpdate = true;
+    tmpBasis.makeBasis(basis.radial, basis.up, basis.normal);
+    mesh.quaternion.setFromRotationMatrix(tmpBasis);
   }
 
   /**
@@ -1410,12 +1532,10 @@ export class InteriorScene {
     // The faces' planes are the discard's planes: one basis feeds both.
     const faceA = cutFaceBasis(frame, 'a', tmpFace);
     this.cutUniforms.uCutNormalA.value.copy(faceA.normal);
-    tmpBasis.makeBasis(faceA.radial, faceA.up, faceA.normal);
-    this.faceA.quaternion.setFromRotationMatrix(tmpBasis);
+    this.poseFace(this.faceA, frame, 'a', faceA);
     const faceB = cutFaceBasis(frame, 'b', tmpFace);
     this.cutUniforms.uCutNormalB.value.copy(faceB.normal);
-    tmpBasis.makeBasis(faceB.radial, faceB.up, faceB.normal);
-    this.faceB.quaternion.setFromRotationMatrix(tmpBasis);
+    this.poseFace(this.faceB, frame, 'b', faceB);
   }
 
   setPresentationTime(seconds: number): void {

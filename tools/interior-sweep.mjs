@@ -462,12 +462,16 @@ async function bandCase(context, viewport) {
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius, and the Section disc faces the camera, so a
-  // radius lands where it says. In the band (30,000–40,000 km, centred on the boundary at 35,000)
-  // versus the envelope at 49,500 km (a known temperature, outside both of Saturn's bands — the
-  // envelope's own runs 40,000–45,000). Read across the hinge: the hinge itself is where the two
-  // faces meet, and a seam through the block would be variance this check reads as a hatch.
-  const inBandR = ((35_000 / reference) * radiusPx) * scale;
-  const outBandR = ((49_500 / reference) * radiusPx) * scale;
+  // radius lands where it says — along a line from the centre, that fraction of the body's own
+  // extent that way: Saturn is drawn flattened, and screen-right (the frame's side) is short of
+  // its equatorial radius by as much of the flattening as the pole leans into it. In the band
+  // (30,000–40,000 km, centred on the boundary at 35,000) versus the envelope at 49,500 km (a
+  // known temperature, outside both of Saturn's bands — the envelope's own runs 40,000–45,000).
+  // Read across the hinge: the hinge itself is where the two faces meet, and a seam through the
+  // block would be variance this check reads as a hatch.
+  const extent = extentToward(current.bodyShape, current.cutFrame.side);
+  const inBandR = ((35_000 / reference) * extent * radiusPx) * scale;
+  const outBandR = ((49_500 / reference) * extent * radiusPx) * scale;
   const size = 14;
   // The temperature ramp runs radially, so a block out of the band still carries a
   // gradient, and the core's 8,000 km physical blend is a radial one too; the ramp is
@@ -479,6 +483,16 @@ async function bandCase(context, viewport) {
   await page.screenshot({ path: path.join(outDir, `${viewport.name}-Saturn-band-true-temperature.png`) });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
+}
+
+/** How far the body reaches from its centre along a unit world direction, in equatorial radii
+ *  (astronomy/spheroid spheroidRadiusToward): 1 on a sphere, less toward a flattened giant's pole. */
+function extentToward(shape, direction) {
+  if (!(shape?.flattening > 0)) return 1;
+  const polar = 1 - shape.flattening;
+  const cosPole = direction[0] * shape.pole[0] + direction[1] * shape.pole[1] + direction[2] * shape.pole[2];
+  const sinSquared = Math.max(0, 1 - cosPole * cosPole);
+  return polar / Math.sqrt(polar * polar * sinSquared + cosPole * cosPole);
 }
 
 /** Each render path draws the disc in both modes and reports itself. */

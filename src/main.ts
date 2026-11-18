@@ -109,6 +109,7 @@ import {
   setSessionHazeCache, type HazeProbe,
 } from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
+import { clipWorldLabelsAroundGlass } from './app/labelGlassClip';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
   seaWindTexture, seaWindTextureFrom, setSeaWindMips,
@@ -125,6 +126,9 @@ import {
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
+import { loadFittedEphemeris } from './planetarium/world/ephemerisLoader';
+import { fittedEphemerisInstalled } from './astronomy/fittedEphemeris';
+import { correctedMoonNames } from './astronomy/moonCorrections';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
 import { onFullscreenChange } from './app/fullscreen';
@@ -4511,6 +4515,9 @@ async function init() {
   // promise (and surfaces the real error — this kick must not double-report,
   // and an unguarded early rejection would leak as unhandled).
   loadBrightStarCatalog().catch(() => {});
+  // The ephemeris the same way: every position comes from it, and the
+  // solar-system build waits for it (its loader never rejects).
+  void loadFittedEphemeris();
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
   // days-old bundles while looking current). It rides with the debug overlay
@@ -4520,6 +4527,14 @@ async function init() {
   if (buildEl && window.__dbgEnabled) {
     buildEl.textContent = `build ${__BUILD_TAG__}`;
     buildEl.style.display = 'block';
+    // And which positions this session runs on: a failed ephemeris or
+    // moon-corrections load is otherwise silent (the analytic models answer
+    // instead).
+    void loadFittedEphemeris().then(() => {
+      buildEl.textContent =
+        `build ${__BUILD_TAG__} · ${fittedEphemerisInstalled() ? 'JPL ephemeris' : 'analytic positions'}` +
+        ` · ${correctedMoonNames().length} moons corrected`;
+    });
   }
 
   let lastTime = performance.now();
@@ -4553,6 +4568,13 @@ async function init() {
     if (glassRegistry && glassRouteLive()) {
       glassMoved = glassRegistry.scan() || glassRegistry.moving;
       glassScannedTick = tickSeq;
+      // The engine blurs only the canvas: clip the DOM world labels out from
+      // under its panels, or they read sharp through the glass
+      // (app/labelGlassClip.ts). Written only when the panels move.
+      clipWorldLabelsAroundGlass(glassRegistry.cssBoxes(), window.innerWidth, window.innerHeight);
+    } else {
+      // The browser's own backdrop blur covers the labels.
+      clipWorldLabelsAroundGlass([], window.innerWidth, window.innerHeight);
     }
     const forced = forcedDrawRequest || glassMoved;
     forcedDrawRequest = false;

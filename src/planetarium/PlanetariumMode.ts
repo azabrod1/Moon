@@ -21242,7 +21242,7 @@ export class PlanetariumMode {
     const sunDownDeg = Math.asin(SUN_RADIUS_AU) * RAD2DEG + horizonDipDeg(radiusKm, SITE_EYE_HEIGHT_KM);
     const rows: SurfacePlaceRow[] = [{
       name: 'Surface view',
-      note: 'the view follows what you look at',
+      note: 'follows your target',
       meta: '',
       current: current === null,
       onPick: () => this.pickSurfacePlace(null),
@@ -21269,7 +21269,7 @@ export class PlanetariumMode {
       }
       rows.push({
         name: place.name,
-        note: night ? `${place.note} · night` : place.note,
+        note: [place.note, night ? 'night' : ''].filter(Boolean).join(' · '),
         meta,
         current: current !== null && current.name === place.name,
         onPick: () => this.pickSurfacePlace(site),

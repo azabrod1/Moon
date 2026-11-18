@@ -21,7 +21,8 @@ export interface SitePlace {
   latitudeDeg: number;
   /** East-positive. */
   longitudeDeg: number;
-  /** What the place is, in a few words ("Apollo 11"). */
+  /** What the place is, in a word or two ("Apollo 11"); empty when the
+   *  name says it. The list row is narrow. */
   note: string;
 }
 
@@ -32,9 +33,9 @@ export const SITE_PLACES: Readonly<Record<string, readonly SitePlace[]>> = {
     { name: 'Taurus–Littrow', latitudeDeg: 20.1911, longitudeDeg: 30.7723, note: 'Apollo 17' },
     // Near the eastern limb: libration swings Earth up and down over the
     // horizon through the month.
-    { name: 'Mare Marginis', latitudeDeg: 12.7, longitudeDeg: 86.52, note: 'the eastern limb' },
-    { name: 'The south pole', latitudeDeg: -90, longitudeDeg: 0, note: 'the Sun skims the horizon' },
-    { name: 'Von Kármán crater', latitudeDeg: -45.4446, longitudeDeg: 177.5991, note: 'Chang’e 4, far side' },
+    { name: 'Mare Marginis', latitudeDeg: 12.7, longitudeDeg: 86.52, note: 'eastern limb' },
+    { name: 'The south pole', latitudeDeg: -90, longitudeDeg: 0, note: '' },
+    { name: 'Von Kármán crater', latitudeDeg: -45.4446, longitudeDeg: 177.5991, note: 'Chang’e 4' },
   ],
 };
 

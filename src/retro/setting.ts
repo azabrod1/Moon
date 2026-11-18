@@ -35,7 +35,7 @@ export const lookSetting = {
   read(storage: LookStorage | null = browserStorage()): Look | null {
     try {
       const value = storage?.getItem(KEY);
-      return value === 'modern' || value === 'retro' ? value : null;
+      return LOOKS.find((look) => look === value) ?? null;
     } catch {
       return null;
     }

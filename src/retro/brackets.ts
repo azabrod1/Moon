@@ -65,26 +65,27 @@ export class RetroTargetBrackets {
     parent.appendChild(this.el);
   }
 
-  /** Frame `name`'s disc, or hide with a null box. Writes the DOM only on a change. */
-  show(name: string, disc: ScreenBox | null, bigPixel: number, viewportWidth: number, viewportHeight: number): void {
-    const box = disc ? bracketBox(disc, bigPixel, viewportWidth, viewportHeight) : null;
+  /** Frame the body's disc, or hide where too little of the frame would show.
+   *  Writes the DOM only on a change. */
+  show(target: ScreenBox & { name: string }, bigPixel: number, viewportWidth: number, viewportHeight: number): void {
+    const box = bracketBox(target, bigPixel, viewportWidth, viewportHeight);
     if (!box) {
       this.hide();
       return;
     }
-    const key = `${name}|${box.left}|${box.top}|${box.right}|${box.bottom}|${bigPixel}`;
+    const key = `${target.name}|${box.left}|${box.top}|${box.right}|${box.bottom}|${bigPixel}`;
     if (key === this.shownKey) return;
     this.shownKey = key;
     this.el.style.left = `${box.left}px`;
     this.el.style.top = `${box.top}px`;
     this.el.style.width = `${box.right - box.left}px`;
     this.el.style.height = `${box.bottom - box.top}px`;
-    this.nameEl.textContent = name.toUpperCase();
+    this.nameEl.textContent = target.name.toUpperCase();
     this.el.hidden = false;
   }
 
   hide(): void {
-    if (this.shownKey === '' && this.el.hidden) return;
+    if (this.shownKey === '') return;
     this.shownKey = '';
     this.el.hidden = true;
   }

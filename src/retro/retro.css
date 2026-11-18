@@ -1,4 +1,5 @@
-/* The Retro look's interface (src/retro): loaded only while the look is on.
+/* The Retro look's interface (src/retro): added the first time the look is
+   turned on.
 
    A 1990s screen: bitmap type, banded gradients of a few flat colours,
    one-pixel white-and-black frames, hard drop shadows, nothing soft, round
@@ -44,9 +45,6 @@ html.retro {
   --font-mono: 'Retro Sans 10', monospace;
   --panel-bg: #111188;
   --obs-glass: #111188;
-  --rt-yellow: #ffdd22;
-  --rt-green: #44ff44;
-  --rt-navy: #001177;
   /* A card: six bands of four pixels from light blue down, then flat. */
   --rt-card: linear-gradient(to bottom,
     #6688ee 0 calc(4 * var(--ui-px)), #4466dd 0 calc(8 * var(--ui-px)),

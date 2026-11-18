@@ -1647,16 +1647,9 @@ function upscaleSharpenStopsLive(): number | null {
  * covered render to hide a compile.
  */
 function applyUpscalePasses(): void {
-  if (retro.on && composerBuiltFor?.cam === planetariumCamera) {
-    // The Retro look's pass (src/retro) draws the canvas from the finishing
-    // pass's own target: none of the resamples runs.
-    if (upscalePass) upscalePass.enabled = false;
-    if (sharpenPass) sharpenPass.enabled = false;
-    if (downsamplePass) downsamplePass.enabled = false;
-    if (outputTargetPass instanceof FusedOutputPass) outputTargetPass.setBox(false, downsampleFilter);
-    return;
-  }
-  const mode = sceneRatioMode();
+  // The Retro look's pass (src/retro) draws the canvas from the finishing
+  // pass's own target: none of the resamples runs, as at the native ratio.
+  const mode = retro.on ? 'native' : sceneRatioMode();
   const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {

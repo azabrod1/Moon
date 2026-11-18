@@ -27,7 +27,7 @@ describe('the Retro look', () => {
     expect(palette).toHaveLength(256);
     const lookup = retroLookup(palette);
     const steps = RETRO_LOOKUP_STEPS;
-    const at = (red: number, green: number, blue: number) => Array.from(lookup.slice((green * steps * steps + red + steps * blue) * 4, (green * steps * steps + red + steps * blue) * 4 + 3));
+    const at = (red: number, green: number, blue: number) => Array.from(lookup.subarray(4 * (green * steps * steps + red + steps * blue)).slice(0, 3));
     expect(at(0, 0, 0)).toEqual([0, 0, 0]);
     expect(at(31, 31, 31)).toEqual([255, 255, 255]);
     const [red, green, blue] = hexToRgb('#ffdd22').map((channel) => Math.round((channel / 255) * (steps - 1)));

@@ -157,22 +157,24 @@ function retroPaletteTexture(): THREE.DataTexture {
 }
 
 export class RetroPass extends Pass {
-  private readonly reduce = material(REDUCE_SHADER, {
-    tInput: { value: null }, uInputSize: { value: new THREE.Vector2() }, uBuffer: { value: new THREE.Vector2() },
-    uBlock: { value: 1 }, uVirtual: { value: new THREE.Vector2() },
-  });
-  private readonly present = material(PRESENT_SHADER, {
-    tSmall: { value: null }, tPalette: { value: null }, uBuffer: { value: new THREE.Vector2() },
-    uBlock: { value: 1 }, uVirtual: { value: new THREE.Vector2() },
-  });
-  private readonly reduceQuad = new FullScreenQuad(this.reduce);
-  private readonly presentQuad = new FullScreenQuad(this.present);
   /** One texel per big pixel: raw 8-bit storage, read by exact texel. */
   private readonly small = new THREE.WebGLRenderTarget(1, 1, {
     type: THREE.UnsignedByteType, colorSpace: THREE.NoColorSpace, depthBuffer: false,
     minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
   });
-  private readonly buffer = new THREE.Vector2();
+  /** The grid, in one set of uniform objects both steps share. */
+  private readonly gridUniforms = {
+    uBuffer: { value: new THREE.Vector2() }, uBlock: { value: 1 }, uVirtual: { value: new THREE.Vector2() },
+  };
+  private readonly inputUniforms = { tInput: { value: null as THREE.Texture | null }, uInputSize: { value: new THREE.Vector2() } };
+  private readonly paletteUniform = { value: null as THREE.DataTexture | null };
+  private readonly reduce = material(REDUCE_SHADER, { ...this.inputUniforms, ...this.gridUniforms });
+  // setSize keeps the small target's texture object, so it is bound once.
+  private readonly present = material(PRESENT_SHADER, {
+    tSmall: { value: this.small.texture }, tPalette: this.paletteUniform, ...this.gridUniforms,
+  });
+  private readonly reduceQuad = new FullScreenQuad(this.reduce);
+  private readonly presentQuad = new FullScreenQuad(this.present);
 
   constructor(private readonly source: FrameSource) {
     super();
@@ -182,29 +184,23 @@ export class RetroPass extends Pass {
   render(renderer: THREE.WebGLRenderer): void {
     const input = this.source.target;
     if (!input || !this.renderToScreen) return;
-    renderer.getDrawingBufferSize(this.buffer);
-    const grid = retroGrid(this.buffer.x, this.buffer.y, renderer.getPixelRatio());
+    const shared = this.gridUniforms;
+    const buffer = renderer.getDrawingBufferSize(shared.uBuffer.value);
+    const grid = retroGrid(buffer.x, buffer.y, renderer.getPixelRatio());
     if (this.small.width !== grid.virtual.width || this.small.height !== grid.virtual.height) {
       this.small.setSize(grid.virtual.width, grid.virtual.height);
     }
+    shared.uBlock.value = grid.block;
+    shared.uVirtual.value.set(grid.virtual.width, grid.virtual.height);
     const drawn = drawnSize(input);
-    const r = this.reduce.uniforms;
-    r.tInput.value = input.texture;
-    (r.uInputSize.value as THREE.Vector2).set(drawn.width, drawn.height);
-    (r.uBuffer.value as THREE.Vector2).copy(this.buffer);
-    r.uBlock.value = grid.block;
-    (r.uVirtual.value as THREE.Vector2).set(grid.virtual.width, grid.virtual.height);
+    this.inputUniforms.tInput.value = input.texture;
+    this.inputUniforms.uInputSize.value.set(drawn.width, drawn.height);
     renderer.setRenderTarget(this.small);
     this.reduceQuad.render(renderer);
-    const p = this.present.uniforms;
-    p.tSmall.value = this.small.texture;
-    p.tPalette.value = retroPaletteTexture();
-    (p.uBuffer.value as THREE.Vector2).copy(this.buffer);
-    p.uBlock.value = grid.block;
-    (p.uVirtual.value as THREE.Vector2).set(grid.virtual.width, grid.virtual.height);
+    this.paletteUniform.value = retroPaletteTexture();
     renderer.setRenderTarget(null);
     this.presentQuad.render(renderer);
-    r.tInput.value = null;
+    this.inputUniforms.tInput.value = null;
   }
 
   dispose(): void {

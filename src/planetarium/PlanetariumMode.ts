@@ -8235,10 +8235,7 @@ export class PlanetariumMode {
     this.revealedBody = null;
   }
 
-  /** Container-level visibility for the HTML label layers. They stay renderable
-   *  whenever labels are on OR a body is being revealed (per-child hiding does
-   *  the rest), fold away in surface view, and honour the modal hide. */
-  private prominentScratch: ReturnType<typeof projectSphereToScreen> | undefined;
+  private readonly prominentCentre = new THREE.Vector3();
 
   /**
    * The body drawn largest on screen this frame and its disc's box in CSS px,
@@ -8262,10 +8259,8 @@ export class PlanetariumMode {
       // Moons are registered as `moon:<name>`; the Sun's sphere is padded past its disc.
       const name = sphere.name.startsWith('moon:') ? sphere.name.slice('moon:'.length) : sphere.name;
       const radius = name === 'Sun' ? SUN_DATA.radiusAU : sphere.radiusAU;
-      const disc = projectSphereToScreen(
-        { x: camera.x + sphere.x, y: camera.y + sphere.y, z: camera.z + sphere.z }, radius, this.camera, width, height, this.prominentScratch,
-      );
-      this.prominentScratch = disc;
+      const centre = this.prominentCentre.set(camera.x + sphere.x, camera.y + sphere.y, camera.z + sphere.z);
+      const disc = projectSphereToScreen(centre, radius, this.camera, width, height, this.sphereScreenProjection);
       if (disc.ndcZ >= 1 || disc.footprintKind === 'none') continue;
       if (disc.x < 0 || disc.x > width || disc.y < 0 || disc.y > height) continue;
       if (disc.diameterPx > maxFraction * Math.min(width, height) || disc.diameterPx <= bestDiameter) continue;
@@ -8275,6 +8270,9 @@ export class PlanetariumMode {
     return best;
   }
 
+  /** Container-level visibility for the HTML label layers. They stay renderable
+   *  whenever labels are on OR a body is being revealed (per-child hiding does
+   *  the rest), fold away in surface view, and honour the modal hide. */
   private syncWorldLabelContainers(): void {
     const allowed = !this.worldLabelsModalHidden
       && !this.worldLabelsTourHidden

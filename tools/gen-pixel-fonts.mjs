@@ -39,7 +39,7 @@ const ARCHIVES = {
 };
 
 /** Each output: its source, its file, and the family and style it is named by in CSS. */
-export const RETRO_FONTS = [
+const RETRO_FONTS = [
   { archive: 'adobe', source: 'helvB08', file: 'RetroSans-Bold8', family: 'Retro Sans 8', style: 'Bold', bold: true },
   { archive: 'adobe', source: 'helvB10', file: 'RetroSans-Bold10', family: 'Retro Sans 10', style: 'Bold', bold: true },
   { archive: 'adobe', source: 'helvR10', file: 'RetroSans-Regular10', family: 'Retro Sans 10', style: 'Regular', bold: false },
@@ -53,7 +53,7 @@ export const RETRO_FONTS = [
  *  arrows its text uses (dashes, quotes, the ellipsis, ‹ ›, ← → ↑ ↓, −, ≤ ≥ ≈). */
 const EXTRA = new Set([0x2013, 0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2026, 0x2039, 0x203a,
   0x2190, 0x2191, 0x2192, 0x2193, 0x2212, 0x2248, 0x2264, 0x2265]);
-export function keepCode(code) {
+function keepCode(code) {
   return (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || EXTRA.has(code);
 }
 
@@ -61,8 +61,7 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-async function archivePath(key) {
-  const archive = ARCHIVES[key];
+async function archivePath(archive) {
   const file = path.join(cache, path.basename(archive.url));
   if (!existsSync(file)) {
     mkdirSync(cache, { recursive: true });
@@ -82,18 +81,21 @@ function readFromArchive(archiveFile, member) {
 
 async function main() {
   mkdirSync(output, { recursive: true });
-  const notices = new Map();
+  // Each archive fetched and checked once, its licence read with it.
+  const sources = {};
+  for (const [key, archive] of Object.entries(ARCHIVES)) {
+    const file = await archivePath(archive);
+    sources[key] = { file, folder: archive.folder, notice: readFromArchive(file, `${archive.folder}/COPYING`) };
+  }
   for (const spec of RETRO_FONTS) {
-    const archive = ARCHIVES[spec.archive];
-    const archiveFile = await archivePath(spec.archive);
-    const font = parseBdf(readFromArchive(archiveFile, `${archive.folder}/${spec.source}.bdf`));
+    const { file, folder } = sources[spec.archive];
+    const font = parseBdf(readFromArchive(file, `${folder}/${spec.source}.bdf`));
     const woff = wrapWoff(buildTrueType(font, {
       familyName: spec.family, styleName: spec.style, bold: spec.bold, monospace: spec.monospace ?? false, keep: keepCode,
     }));
     const target = path.join(output, `${spec.file}.woff`);
     writeFileSync(target, woff);
     console.log(`[gen:fonts] ${spec.file}.woff  ${woff.length} bytes  from ${spec.source}.bdf  (pixel size ${font.pixelSize}, ascent ${font.ascent}, descent ${font.descent})`);
-    if (!notices.has(spec.archive)) notices.set(spec.archive, readFromArchive(archiveFile, `${archive.folder}/COPYING`));
   }
   const text = [
     'The Retro look\'s bitmap fonts (public/fonts/Retro*.woff), made by tools/gen-pixel-fonts.mjs.',
@@ -104,16 +106,14 @@ async function main() {
     'Their licences follow, as the X.Org releases carry them.',
     '',
     '==== font-adobe-75dpi: COPYING ====',
-    notices.get('adobe').trim(),
+    sources.adobe.notice.trim(),
     '',
     '==== font-misc-misc: COPYING ====',
-    notices.get('misc').trim(),
+    sources.misc.notice.trim(),
     '',
   ].join('\n');
   writeFileSync(path.join(output, 'RETRO-FONTS.txt'), text);
   console.log('[gen:fonts] RETRO-FONTS.txt');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
-  await main();
-}
+await main();

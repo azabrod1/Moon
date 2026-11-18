@@ -6,9 +6,9 @@
  *  - the picture: a post-process on the finished frame (RetroPass.ts) — big
  *    pixels, 256 colours, an ordered dither;
  *  - the interface: retro.css (bitmap type, banded cards, framed buttons),
- *    loaded only while the look is on, with every font size the app's CSS
- *    sets mapped to a bitmap face (typography.ts) and the menu's pixel icons
- *    (icons.ts);
+ *    added the first time the look is turned on, with every font size the
+ *    app's CSS sets mapped to a bitmap face (typography.ts) and the menu's
+ *    pixel icons (icons.ts);
  *  - green target brackets on the body most prominent on screen (brackets.ts);
  *  - its own Look row, added to the ☰ Display page.
  *
@@ -143,7 +143,7 @@ export function createRetro(host: RetroHost): Retro {
       }
       brackets ??= new RetroTargetBrackets();
       const canvas = host.renderer.domElement;
-      brackets.show(target.name, target, pictureGrid().cssPixel, canvas.clientWidth, canvas.clientHeight);
+      brackets.show(target, pictureGrid().cssPixel, canvas.clientWidth, canvas.clientHeight);
     },
   };
 }

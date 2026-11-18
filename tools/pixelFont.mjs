@@ -29,7 +29,7 @@ export const UNITS_PER_PIXEL = 64;
  *  every glyph by code point. */
 export function parseBdf(text) {
   const lines = text.split(/\r?\n/);
-  const font = { pixelSize: 0, ascent: 0, descent: 0, copyright: [], glyphs: new Map(), family: '', weight: '' };
+  const font = { pixelSize: 0, ascent: 0, descent: 0, copyright: [], glyphs: new Map() };
   let inCopyright = false;
   let index = 0;
   while (index < lines.length) {
@@ -43,8 +43,6 @@ export function parseBdf(text) {
     } else if (keyword === 'PIXEL_SIZE') font.pixelSize = Number(rest[0]);
     else if (keyword === 'FONT_ASCENT') font.ascent = Number(rest[0]);
     else if (keyword === 'FONT_DESCENT') font.descent = Number(rest[0]);
-    else if (keyword === 'FAMILY_NAME') font.family = rest.join(' ').replace(/"/g, '');
-    else if (keyword === 'WEIGHT_NAME') font.weight = rest.join(' ').replace(/"/g, '');
     else if (keyword === 'STARTCHAR') {
       const glyph = { code: -1, advance: 0, width: 0, height: 0, xOffset: 0, yOffset: 0, rows: [] };
       index++;
@@ -173,8 +171,7 @@ function glyfRecord(rectangles) {
     previousX = x;
     previousY = y;
   }
-  writer.raw(flags).raw(xBytes.bytes).raw(yBytes.bytes);
-  while (writer.length % 4) writer.u8(0);
+  writer.raw(flags).raw(xBytes.bytes).raw(yBytes.bytes).pad4();
   return { bytes: writer.out(), bounds, points: points.length, contours: rectangles.length };
 }
 
@@ -248,8 +245,7 @@ export function buildTrueType(font, { familyName, styleName, bold, monospace, ke
 
   const codeToGlyph = new Map(codes.map((code, index) => [code, index + 1]));
   const advances = glyphList.map((glyph) => glyph.advance * scale);
-  const boundsList = records.map((record) => record.bounds);
-  const drawn = boundsList.filter(Boolean);
+  const drawn = records.map((record) => record.bounds).filter(Boolean);
   const xMin = Math.min(...drawn.map((b) => b[0]));
   const yMin = Math.min(...drawn.map((b) => b[1]));
   const xMax = Math.max(...drawn.map((b) => b[2]));
@@ -324,14 +320,13 @@ function assembleSfnt(tables) {
   const { searchRange, entrySelector, rangeShift } = binarySearchFields(tags.length, 16);
   const header = new Writer();
   header.u32(0x00010000).u16(tags.length).u16(searchRange).u16(entrySelector).u16(rangeShift);
-  let offset = 12 + tags.length * 16;
+  const headerSize = 12 + tags.length * 16;
   const body = new Writer();
   const entries = [];
   for (const tag of tags) {
     const data = tables[tag];
-    entries.push({ tag, checksum: checksum(data), offset, length: data.length });
+    entries.push({ tag, checksum: checksum(data), offset: headerSize + body.length, length: data.length });
     body.raw(data).pad4();
-    offset = 12 + tags.length * 16 + body.length;
   }
   for (const entry of entries) header.tag(entry.tag).u32(entry.checksum).u32(entry.offset).u32(entry.length);
   const font = new Uint8Array(header.length + body.length);

@@ -59,11 +59,12 @@ export function retroFaceFor(modernPx: number): RetroFace {
  * clock and the speed) and the target brackets. A selector part that mentions
  * one is skipped. Add a region here whenever retro.css hand-sets a face.
  */
-export const RETRO_FIXED_FACE_REGIONS: readonly string[] = ['#top-bar h1', '.tr-clock', '.speed-center', '#retro-target'];
-
-/** Elements inside those regions that modern rules name directly (an id
- *  outranks the region's own rule), skipped for the same reason. */
-export const RETRO_FIXED_FACE_INSIDE: readonly string[] = ['#planetarium-speed-value', '#planetarium-speed-label'];
+export const RETRO_FIXED_FACE_REGIONS: readonly string[] = [
+  '#top-bar h1', '.tr-clock', '.speed-center', '#retro-target',
+  // Elements inside those regions that modern rules name directly (an id
+  // outranks the region's own rule), skipped for the same reason.
+  '#planetarium-speed-value', '#planetarium-speed-label',
+];
 
 /** One rule of the stylesheet that sets a font size or a family. */
 export interface FontRule {
@@ -117,9 +118,8 @@ export function retroTypographyCss(rules: readonly FontRule[]): string {
     const declarations = mirrorDeclarations(rule);
     if (!declarations) continue;
     const parts = splitSelectorList(rule.selector)
-      .filter((part) => ![...RETRO_FIXED_FACE_REGIONS, ...RETRO_FIXED_FACE_INSIDE].some((region) => part.includes(region)))
       // The retro block's own rules are already in retro terms.
-      .filter((part) => !part.includes('.retro'));
+      .filter((part) => !part.includes('.retro') && !RETRO_FIXED_FACE_REGIONS.some((region) => part.includes(region)));
     if (parts.length === 0) continue;
     const body = `${parts.map((part) => `html.retro ${part}`).join(', ')} { ${declarations} }`;
     lines.push(rule.media ? `@media ${rule.media} { ${body} }` : body);
@@ -153,10 +153,9 @@ export function fontRulesOf(sheets: Iterable<CSSStyleSheet>): FontRule[] {
   return found;
 }
 
-/** Add the mirror rules to the page once, just before `before` (retro.css). */
+/** Add the mirror rules to the page just before `before` (retro.css). Called once (index.ts). */
 export function installRetroTypography(before: HTMLStyleElement): void {
   const doc = before.ownerDocument;
-  if (doc.getElementById('retro-typography')) return;
   const style = doc.createElement('style');
   style.id = 'retro-typography';
   style.textContent = retroTypographyCss(fontRulesOf(Array.from(doc.styleSheets).filter((sheet) => sheet.ownerNode !== before)));

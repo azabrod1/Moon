@@ -71,7 +71,7 @@ describe('precedence', () => {
   });
 });
 
-describe('the Dark side of planets and moons control', () => {
+describe('the Dark side lighting control', () => {
   it('offers True to life and Lit up, in that order, with True to life the default', () => {
     expect(NIGHT_SIDES).toEqual(['real', 'brightened']);
     expect(NIGHT_SIDES.map((m) => NIGHT_SIDES_LABELS[m])).toEqual(['True to life', 'Lit up']);

@@ -18,8 +18,10 @@
  *     thresholds the stars blinked whenever the view moved.
  *  2. Present: each canvas pixel shows its big pixel, counted from the top-left
  *     as the interface's grid is, cut to the 256-colour palette (palette.ts)
- *     with an 8 × 8 ordered dither fixed to the big pixel, faded out towards
- *     black so empty space stays black.
+ *     with an 8 × 8 ordered dither fixed to the big pixel. Near black the
+ *     dither is one step of the lookup, so a glow thins out into black rather
+ *     than ending in a ring, and the faintest colours fade to black so empty
+ *     space stays black.
  *
  * Nothing upstream changes, so the rest of the app never needs to know this
  * pass exists, and it imports nothing from the app: all it reads is the
@@ -96,10 +98,15 @@ void main() {
   float rowFromTop = float(uVirtual.y - 1 - big.y);
   vec2 canvasMin = vec2(float(big.x) * uBlock, rowFromTop * uBlock);
   vec2 canvasMax = min(canvasMin + uBlock, uBuffer);
-  // The same span in the frame's texels, which are stored bottom-up.
+  // The same span in the frame's texels, which are stored bottom-up: exactly
+  // (spanLo, spanHi), which can end mid-texel (a 7-pixel block over a
+  // half-resolution frame is 3.5 texels), and the texels it touches (lo, hi),
+  // which neighbouring blocks then share.
   vec2 scale = uInputSize / uBuffer;
-  ivec2 lo = ivec2(floor(vec2(canvasMin.x, uBuffer.y - canvasMax.y) * scale));
-  ivec2 hi = max(lo + 1, ivec2(ceil(vec2(canvasMax.x, uBuffer.y - canvasMin.y) * scale)));
+  vec2 spanLo = vec2(canvasMin.x, uBuffer.y - canvasMax.y) * scale;
+  vec2 spanHi = vec2(canvasMax.x, uBuffer.y - canvasMin.y) * scale;
+  ivec2 lo = ivec2(floor(spanLo));
+  ivec2 hi = max(lo + 1, ivec2(ceil(spanHi)));
   hi = min(hi, ivec2(uInputSize));
   ivec2 last = ivec2(uInputSize) - 1;
   vec3 sum = vec3(0.0);
@@ -167,7 +174,8 @@ void main() {
   }
   float lone = (1.0 - smoothstep(0.8, 1.8, ringLit)) * (1.0 - smoothstep(0.03, 0.08, ringLow));
   // Its light above the sky, and where its middle is: the one big pixel
-  // holding that draws it, so a point across two blocks is drawn once.
+  // whose exact span holds that draws it, so a point across two blocks, or
+  // in a texel two blocks share, is drawn once.
   float sky = toLight(ringLow);
   float light = 0.0;
   vec2 moment = vec2(0.0);
@@ -179,7 +187,7 @@ void main() {
     }
   }
   vec2 middle = vec2(centre) + 0.5 + moment / max(light, 1e-6);
-  bool here = all(greaterThanEqual(middle, vec2(lo))) && all(lessThan(middle, vec2(hi)));
+  bool here = all(greaterThanEqual(middle, spanLo)) && all(lessThan(middle, spanHi));
   // As the full-resolution frame drew it: its brightest pixel there, which
   // grows more slowly than its light, a brighter point being bigger.
   float fullLight = light * uPixelArea;
@@ -214,6 +222,18 @@ const POINT_CURVE = { scale: 0.27, power: 0.68 };
  *  palette's mean spacing, times the strength tuned on frames of the app. */
 const DITHER = (0.75 / Math.cbrt(256)) * 0.8;
 
+/** One step of the lookup: near black the dither moves a colour by exactly
+ *  this, so a colour between two steps comes out as that share of the upper
+ *  one's pixels. With less, everything from 4/255 up rounded to the darkest
+ *  grey and everything below to black, and a glow's faint edge showed as a
+ *  flat grey band ending in a hard ring. */
+const LOOKUP_STEP = 1 / (RETRO_LOOKUP_STEPS - 1);
+
+/** Where a colour fades to black, in its brightest channel: empty sky, and
+ *  the noise in it, stay black under the dither. */
+const BLACK_FROM = 2 / 255;
+const BLACK_TO = 6 / 255;
+
 const PRESENT_SHADER = /* glsl */ `
 precision highp float;
 precision highp int;
@@ -237,7 +257,9 @@ void main() {
   ivec2 big = clamp(ivec2(floor(gl_FragCoord.x / uBlock), floor((uBuffer.y - gl_FragCoord.y) / uBlock)), ivec2(0), uVirtual - 1);
   vec3 colour = texelFetch(tSmall, ivec2(big.x, uVirtual.y - 1 - big.y), 0).rgb;
   float brightest = max(colour.r, max(colour.g, colour.b));
-  colour += (bayer8(big) - 0.5) * ${DITHER.toFixed(6)} * smoothstep(0.02, 0.1, brightest);
+  colour *= smoothstep(${BLACK_FROM.toFixed(6)}, ${BLACK_TO.toFixed(6)}, brightest);
+  float spread = mix(${LOOKUP_STEP.toFixed(6)}, ${DITHER.toFixed(6)}, smoothstep(0.03, 0.1, brightest));
+  colour += (bayer8(big) - 0.5) * spread;
   ivec3 key = clamp(ivec3(floor(colour * ${RETRO_LOOKUP_STEPS - 1}.0 + 0.5)), ivec3(0), ivec3(${RETRO_LOOKUP_STEPS - 1}));
   fragColor = vec4(texelFetch(tPalette, ivec2(key.r + ${RETRO_LOOKUP_STEPS} * key.b, key.g), 0).rgb, 1.0);
 }

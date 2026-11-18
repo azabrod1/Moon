@@ -16,7 +16,8 @@
  * composer, keep the resample passes off while `on` (the pass reads the
  * finishing pass's own target and draws the canvas itself), draw the scene at
  * `sceneRatio()` while it is on (coarser than the canvas, since a picture of
- * about 200 lines needs no more: grid.ts), and hand `frame` the most
+ * about 240 lines needs no more: grid.ts), draw the Sun's veiling glare and
+ * the bloom at `glare`'s share of their strength, and hand `frame` the most
  * prominent body after each planetarium frame.
  *
  * `?retro=1` or `?retro=0` overrides the saved look for one load
@@ -43,9 +44,27 @@ export interface RetroHost {
   changed(): void;
 }
 
+/**
+ * The share of the planetarium's glow the look keeps. A 1990s screen had no
+ * wide glare, and the app's, as soft as it is in the Modern look, reaches a
+ * third of the way across the screen from the Sun; cut to the palette, its
+ * faint part is a disc you see. A third of the veil ends its faint edge at
+ * about 0.6 of the radius (the wash falls as distance^-2.24, sun.ts), and a
+ * third of the bloom keeps the ship's highlights from blurring into a halo.
+ */
+export interface RetroGlare {
+  /** Of the Sun's veiling glare (PlanetariumMode.setVeilScale). */
+  veil: number;
+  /** Of the bloom's strength. */
+  bloom: number;
+}
+const RETRO_GLARE: RetroGlare = { veil: 0.35, bloom: 0.35 };
+
 export interface Retro {
   /** Whether the look is on. */
   readonly on: boolean;
+  /** The glow to keep while the look is on, or null while it is off. */
+  readonly glare: RetroGlare | null;
   /** The scene ratio to draw the planetarium at for a `cssWidth × cssHeight`
    *  canvas at `outputRatio`, or null while the look is off. */
   sceneRatio(cssWidth: number, cssHeight: number, outputRatio: number): number | null;
@@ -135,6 +154,9 @@ export function createRetro(host: RetroHost): Retro {
   return {
     get on() {
       return look === 'retro';
+    },
+    get glare() {
+      return look === 'retro' ? RETRO_GLARE : null;
     },
     sceneRatio(cssWidth, cssHeight, outputRatio) {
       return look === 'retro' ? retroSceneRatio(cssWidth, cssHeight, outputRatio) : null;

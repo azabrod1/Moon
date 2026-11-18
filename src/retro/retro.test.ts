@@ -6,15 +6,15 @@ import { resolveBootLook } from './setting';
 import { retroTypographyCss } from './typography';
 
 describe('the Retro look', () => {
-  it('makes a 16:10 window a 320 × 200 screen, and an interface pixel a whole number of device pixels', () => {
-    expect(retroGrid(1280, 800, 1)).toEqual({ block: 4, virtual: { width: 320, height: 200 }, cssPixel: 4 });
-    expect(retroGrid(2560, 1600, 2)).toEqual({ block: 8, virtual: { width: 320, height: 200 }, cssPixel: 4 });
+  it('makes a 4:3 window a 320 × 240 screen, and an interface pixel a whole number of device pixels', () => {
+    expect(retroGrid(1280, 960, 1)).toEqual({ block: 4, virtual: { width: 320, height: 240 }, cssPixel: 4 });
+    expect(retroGrid(2560, 1920, 2)).toEqual({ block: 8, virtual: { width: 320, height: 240 }, cssPixel: 4 });
     // The last big pixels hang off an edge rather than leave a gap.
     const odd = retroGrid(1366, 768, 1);
     expect(odd.virtual.width * odd.block).toBeGreaterThanOrEqual(1366);
     for (const ratio of [1, 1.25, 2, 3]) expect(Number.isInteger(retroInterfacePixel(ratio) * ratio)).toBe(true);
     // The scene under it: three of its pixels per big pixel, never below half the canvas's.
-    expect(retroSceneRatio(390, 844, 2)).toBe(1.5);
+    expect(retroSceneRatio(390, 844, 2)).toBe(2);
     expect(retroSceneRatio(1280, 800, 2)).toBe(1);
   });
 

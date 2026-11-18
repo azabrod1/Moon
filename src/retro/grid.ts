@@ -2,10 +2,10 @@
  * The Retro look's two grids.
  *
  * The picture's: a whole number of canvas pixels per big pixel (`block`),
- * chosen so the canvas's short side holds about RETRO_LINES of them — a
- * 320 × 200 VGA screen on a 16:10 window. Anchored at the canvas's top-left;
- * where the canvas is not a whole number of blocks, the last column and row
- * hang off the right and bottom edges and are cut there.
+ * chosen so the canvas's short side holds about RETRO_LINES of them — VGA's
+ * 320 × 240 on a 4:3 window, 384 × 240 on a 16:10 one. Anchored at the
+ * canvas's top-left; where the canvas is not a whole number of blocks, the
+ * last column and row hang off the right and bottom edges and are cut there.
  *
  * The scene under the picture is drawn coarser to match (retroSceneRatio):
  * about SCENE_PIXELS_PER_BLOCK of its pixels across each big pixel, which is
@@ -15,11 +15,11 @@
  *
  * The interface's: a whole number of DEVICE pixels, about one and a half
  * (three on a 2× display, one on a 1× monitor), finer than the picture's on
- * purpose — on a strict 200-line grid the app's own menu, at about eighteen
+ * purpose — on a strict 240-line grid the app's own menu, at about eighteen
  * rows, would not fit on the screen.
  */
 
-export const RETRO_LINES = 200;
+export const RETRO_LINES = 240;
 
 export interface RetroGrid {
   /** Canvas pixels per big pixel, a whole number of at least 1. */

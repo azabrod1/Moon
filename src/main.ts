@@ -280,7 +280,7 @@ const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search
 const retro = createRetro({
   renderer,
   canDraw: useBloom,
-  changed: () => { refreshQualityPin(); applySceneResolution('look'); forcedDrawRequest = true; },
+  changed: () => { refreshQualityPin(); applySceneResolution('look'); applyRetroGlare(); forcedDrawRequest = true; },
 });
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
@@ -1344,7 +1344,19 @@ let autoExposure = true;
 // The boot builds one at module load and the first mode switch asked for the
 // same one again, which threw away every pass program only to relink it on
 // the next frame.
-let composerBuiltFor: { cam: THREE.Camera; bloom: object; enabled: boolean; lens: number } | null = null;
+let composerBuiltFor: { cam: THREE.Camera; bloom: { strength: number }; enabled: boolean; lens: number } | null = null;
+
+/** The Retro look's share of the planetarium's glow (src/retro/index.ts
+ *  RetroGlare): the Sun's veil, and the bloom while the planetarium's
+ *  composer is the live one. All of both with the look off. */
+function applyRetroGlare(): void {
+  const glare = retro.glare;
+  planetariumMode?.setVeilScale(glare?.veil ?? 1);
+  const built = composerBuiltFor;
+  if (bloomPass && built && built.cam === planetariumCamera) {
+    bloomPass.strength = built.bloom.strength * (glare?.bloom ?? 1);
+  }
+}
 
 function buildComposer(
   cam: THREE.Camera,
@@ -1594,6 +1606,7 @@ function buildComposer(
   // finishing pass's own target and the three sampling sites' uniforms.
   sizeComposerToScene(cam);
   applyUpscalePasses();
+  applyRetroGlare();
 }
 
 /** Which side of the canvas the live frame's scene is drawn on: smaller
@@ -3019,6 +3032,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           void import('./interior/InteriorMode').catch(() => {});
           void import('./volumeCompare/VolumeCompareMode').catch(() => {});
         });
+        applyRetroGlare();
       }
       debugLog('Activating Planetarium mode');
       plmActivated = false;

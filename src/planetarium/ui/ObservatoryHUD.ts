@@ -379,10 +379,13 @@ export class ObservatoryHUD {
       this.whenEl.textContent = '';
       this.whenEl.append(dateEl);
       if (cut >= 0) {
+        const separatorEl = document.createElement('span');
+        separatorEl.className = 'shud-wsep';
+        separatorEl.textContent = ' · ';
         const timeEl = document.createElement('span');
         timeEl.className = 'shud-time';
         timeEl.textContent = state.whenText.slice(cut + 3);
-        this.whenEl.append(timeEl);
+        this.whenEl.append(separatorEl, timeEl);
       }
     }
     setText('surface-when-tag', state.whenTag);

@@ -310,6 +310,7 @@ import {
   lensMaxFrameScale,
   lensSourceBoundOfOutputRect,
   makeLensWarpContext,
+  lensRadial,
   viewAngleAtOutputNdcY,
   type LensLocalScale,
   type LensWarpContext,
@@ -21643,13 +21644,15 @@ export class PlanetariumMode {
    *  where siteGazeAltitudeDeg rests it for this field of view: on a high
    *  target, lowered under a low one so the horizon is in the picture, and
    *  never into the ground after a target that has set (the HUD says where
-   *  it went). */
-  private aimFromSite(standing: SiteFrame, forward: THREE.Vector3): void {
+   *  it went). Returns how far above the gaze the target is left, degrees
+   *  (zero when it is centred or out of the frame below). */
+  private aimFromSite(standing: SiteFrame, forward: THREE.Vector3): number {
     const aim = altAz(forward, standing);
     const lookAltitude = siteGazeAltitudeDeg(aim.altitudeDeg, displayFovDeg(this.camera));
     const look = directionFromAltAz(lookAltitude, aim.azimuthDeg, standing, this.tmpSiteLook);
     this.camera.up.copy(Math.abs(look.dot(standing.zenith)) > 0.999 ? standing.north : standing.zenith);
     this.camera.lookAt(this.tmpSiteSunDirection.copy(this.camera.position).add(look));
+    return Math.max(0, aim.altitudeDeg - lookAltitude);
   }
 
   /** The ground under the site, this frame: the Sun's direction from the eye,
@@ -21893,8 +21896,20 @@ export class PlanetariumMode {
     if (this.surfaceTracking) {
       const forward = this.tmpSurfaceZenith.copy(targetPos).sub(this.camera.position);
       if (forward.lengthSq() > 0) forward.normalize();
+      const lens = this.camera.userData.lens as { strength: number; effectiveStrength?: number } | undefined;
+      const lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+      const viewportHeight = Math.max(1, this.renderer.domElement.clientHeight);
+      let liftPx = this.surfaceAimLiftAppliedPx;
       if (standing) {
-        this.aimFromSite(standing, forward);
+        // A site's framing may already hold the target above centre (the
+        // horizon brought in under it). The sheet's lift then adds only what
+        // is left of it, so the two never stack the target off the top.
+        const raisedDeg = this.aimFromSite(standing, forward);
+        if (raisedDeg > 0 && liftPx > 0) {
+          const halfFieldRad = (displayFovDeg(this.camera) * DEG2RAD) / 2;
+          const raisedPx = (viewportHeight / 2) * (lensRadial(raisedDeg * DEG2RAD, lensStrength) / lensRadial(halfFieldRad, lensStrength));
+          liftPx = Math.max(0, liftPx - raisedPx);
+        }
       } else {
         this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
         this.camera.lookAt(targetPos);
@@ -21903,15 +21918,9 @@ export class PlanetariumMode {
       // target that far up the finished frame, through the lens map the
       // picture is drawn with. Recomputed every frame from the live FOV, so a
       // pinch keeps the target where it is.
-      if (this.surfaceAimLiftAppliedPx > 0.05) {
-        const lens = this.camera.userData.lens as { strength: number; effectiveStrength?: number } | undefined;
-        const viewportHeight = Math.max(1, this.renderer.domElement.clientHeight);
+      if (liftPx > 0.05) {
         this.camera.rotateX(
-          -viewAngleAtOutputNdcY(
-            (2 * this.surfaceAimLiftAppliedPx) / viewportHeight,
-            displayFovDeg(this.camera),
-            lens ? lens.effectiveStrength ?? lens.strength : 0,
-          ),
+          -viewAngleAtOutputNdcY((2 * liftPx) / viewportHeight, displayFovDeg(this.camera), lensStrength),
         );
       }
     }

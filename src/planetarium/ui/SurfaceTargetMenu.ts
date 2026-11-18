@@ -183,12 +183,15 @@ export class SurfaceTargetMenu {
   private show(list: 'targets' | 'places'): void {
     this.shownList = list;
     this.rootEl?.classList.add('visible');
+    // The surface HUD's caption would read through the card's glass.
+    document.body.classList.add('look-menu-open');
     if (this.listEl) this.listEl.scrollTop = 0;
   }
 
   close(): void {
     if (!this.isOpen()) return;
     this.rootEl?.classList.remove('visible');
+    document.body.classList.remove('look-menu-open');
     this.shownList = null;
     this.placeSearch = null;
     this.shownPlaceRows = [];

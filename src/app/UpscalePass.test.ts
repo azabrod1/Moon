@@ -6,8 +6,6 @@ import {
 import { easuConstants, rcasSharpness, RCAS_DEFAULT_STOPS } from './fsr1';
 import { FusedOutputPass } from './FusedOutputPass';
 import { outputDitherIsWired, setOutputDither } from './outputDither';
-import { RetroPresentPass } from './RetroPresentPass';
-import { retroGrid } from './retroScreen';
 
 /** What the passes ask of a renderer, and nothing else. */
 function stubRenderer(bufferW: number, bufferH: number) {
@@ -328,8 +326,8 @@ describe('DownsamplePass', () => {
 });
 
 describe('the output dither, on every route', () => {
-  type Route = 'direct' | 'easu' | 'easu+rcas' | 'downsample' | 'finishing box' | 'retro';
-  const ROUTES: Route[] = ['direct', 'easu', 'easu+rcas', 'downsample', 'finishing box', 'retro'];
+  type Route = 'direct' | 'easu' | 'easu+rcas' | 'downsample' | 'finishing box';
+  const ROUTES: Route[] = ['direct', 'easu', 'easu+rcas', 'downsample', 'finishing box'];
 
   /**
    * One frame through the chain as main builds it — the finishing pass (fused
@@ -366,14 +364,7 @@ describe('the output dither, on every route', () => {
     // A frame drawn larger than the canvas, averaged inside the finishing pass
     // (app/FusedOutputPass.ts): the downsample is off and the finishing pass
     // draws the canvas. The `?fused=0` chain has no such route.
-    // The Retro look: the finishing pass draws the small grid into its own
-    // target, averaged by its box where it carries one, and the retro pass
-    // shows it (app/RetroPresentPass.ts).
-    const grid = retroGrid(1728, 1117, 2, finishing instanceof FusedOutputPass ? 1.5 : 1);
-    if (finishing instanceof FusedOutputPass) finishing.setBox(route === 'finishing box' || route === 'retro', 'box');
-    finishing.outputSize = route === 'retro' ? grid.virtual : null;
-    const retro = new RetroPresentPass(finishing, () => grid);
-    retro.enabled = route === 'retro';
+    if (finishing instanceof FusedOutputPass) finishing.setBox(route === 'finishing box', 'box');
     const up = new UpscalePass(finishing);
     const sharpen = new SharpenPass(up);
     const down = new DownsamplePass(finishing);
@@ -385,15 +376,12 @@ describe('the output dither, on every route', () => {
       { name: 'easu', pass: up, material: materialOf(up) },
       { name: 'rcas', pass: sharpen, material: materialOf(sharpen) },
       { name: 'downsample', pass: down, material: materialOf(down) },
-      { name: 'retro', pass: retro, material: retro.material },
     ].filter((c) => c.pass.enabled);
     chain.forEach((c, i) => { c.pass.renderToScreen = i === chain.length - 1; });
     // A scene larger than the canvas on the downsample route, smaller on the
     // upscale ones: the passes read their sizes, not the route.
     const larger = route === 'downsample' || route === 'finishing box';
-    const read = route === 'retro'
-      ? new THREE.WebGLRenderTarget(grid.scene.width, grid.scene.height)
-      : new THREE.WebGLRenderTarget(larger ? 2592 : 1296, larger ? 1676 : 838);
+    const read = new THREE.WebGLRenderTarget(larger ? 2592 : 1296, larger ? 1676 : 838);
     for (const c of chain) {
       current = c;
       c.pass.render(renderer, read, read, 0, false);
@@ -414,16 +402,6 @@ describe('the output dither, on every route', () => {
         const label = `${fused ? 'fused' : '?fused=0'} ${route}`;
         const draws = frame(fused, route);
         expect(draws.filter((d) => d.canvas), label).toHaveLength(1);
-        if (route === 'retro') {
-          // The retro pass draws the canvas and its Bayer pattern is the
-          // frame's one dither: no triangular grain anywhere, and the
-          // finishing pass's grid-sized write averaged where it can be.
-          expect(draws.map((d) => [d.pass, d.canvas]), label).toEqual([['finishing', false], ['retro', true]]);
-          expect(draws.every((d) => d.dither === 0), label).toBe(true);
-          expect(draws.find((d) => d.pass === 'retro')!.wired, label).toBe(false);
-          expect(draws.find((d) => d.pass === 'finishing')!.box, label).toBe(fused ? 1 : 0);
-          continue;
-        }
         const dithered = draws.filter((d) => d.dither !== 0);
         expect(dithered, label).toHaveLength(1);
         expect(dithered[0].canvas, label).toBe(true);

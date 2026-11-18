@@ -3,10 +3,10 @@
  * prominent body on screen, with its name in the small instrument font, as a
  * 1990s space game framed what it had in its sights.
  *
- * The body and its disc on screen come from PlanetLabels.prominentSphere (the
- * lens-correct `projectSphereToScreen`, so the corners hug the drawn limb).
- * The box is placed on the picture's own grid — whole big pixels, `--px`
- * (app/retroScreen.ts), counted from the canvas's top-left like the grid —
+ * The body and its disc on screen come from PlanetariumMode's
+ * prominentBodyOnScreen (the lens-correct `projectSphereToScreen`, so the
+ * corners hug the drawn limb). The box is placed on the picture's own grid —
+ * whole big pixels, `--px` (grid.ts), counted from the canvas's top-left —
  * and its strokes are one big pixel thick, so the corners look drawn into
  * the picture rather than laid over it. Shown only in the Retro look; the
  * layer sits with the world labels, under the interface's panels.

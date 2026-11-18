@@ -21,7 +21,6 @@ import {
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
-  ORBIT_LINE_WIDTH_PX,
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
@@ -131,7 +130,6 @@ import {
   getStarColor,
   setStarfieldGain,
   setStarfieldPixelRatio,
-  setStarfieldMinimumPx,
   starfieldFaintLimitMag,
 } from './world/starfield';
 import { MoonDots } from './world/MoonDots';
@@ -595,8 +593,6 @@ import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frame
 import {
   NIGHT_SIDES, NIGHT_SIDES_NOTES, nightSidesSummary, type NightSides, type NightSidesControl,
 } from '../app/nightSidesSetting';
-import { LOOKS, LOOK_NOTES, type Look, type LookControl } from '../app/retroSetting';
-import { RetroTargetBrackets } from './ui/RetroTargetBrackets';
 import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
@@ -2820,8 +2816,6 @@ export class PlanetariumMode {
   /** The Display page's Night sides row, owned by the entry point (it applies
    *  the value before this mode exists and saves it on its own key). */
   private readonly nightSides: NightSidesControl;
-  /** And its Look row (app/retroSetting.ts), owned the same way. */
-  private readonly look: LookControl;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2878,8 +2872,6 @@ export class PlanetariumMode {
     frameRate: FrameRateControl,
     // And the Display page's Night sides row.
     nightSides: NightSidesControl,
-    // And its Look row.
-    look: LookControl,
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2897,7 +2889,6 @@ export class PlanetariumMode {
     this.quality = quality;
     this.frameRate = frameRate;
     this.nightSides = nightSides;
-    this.look = look;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -3588,8 +3579,6 @@ export class PlanetariumMode {
         this.planetPointsFilled = false;
         this.scene.add(this.planetPoints.points);
       }
-      // Made after main may already have set the Retro look's floor.
-      this.applyPointMinimum();
 
       // The ☰ preferences come from their own keys, with a save from before
       // the keys existed read once more as the fallback and copied onto them.
@@ -5124,8 +5113,6 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
-    // The Retro look's brackets belong to this mode's picture.
-    this.retroTarget?.hide();
     // An activation interrupted before its restore landed must not leave the
     // gate closed for the next one.
     this.restoring = false;
@@ -5299,67 +5286,6 @@ export class PlanetariumMode {
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
-  /** The smallest diameter, in scene pixels, every star, moon dot and planet
-   *  point is drawn at: 0 except in the Retro look, whose coarse grid would
-   *  average a sub-pixel point away (main.ts, app/retroScreen.ts). */
-  private pointMinimumPx = 0;
-
-  /** And the narrowest an orbit line is drawn, in CSS px: its own width
-   *  except in the Retro look, where that is about half a big pixel and the
-   *  grid's average would break it into dashes. */
-  private orbitLineMinimumCssPx = 0;
-
-  /** One big pixel of the Retro look's picture, in CSS px; 0 outside it.
-   *  The target brackets are drawn on that grid. */
-  private retroBigPixel = 0;
-  private retroTarget: RetroTargetBrackets | null = null;
-
-  /** Set by main whenever the look or the grid moves. */
-  setPointMinimumPx(minimumPx: number, orbitLineMinimumCssPx = 0, retroBigPixelCss = 0): void {
-    this.pointMinimumPx = minimumPx;
-    this.orbitLineMinimumCssPx = orbitLineMinimumCssPx;
-    this.retroBigPixel = retroBigPixelCss;
-    this.applyPointMinimum();
-    if (retroBigPixelCss <= 0) this.retroTarget?.hide();
-  }
-
-  /** Where the brackets may show: where world labels may (no modal, no tour
-   *  stop, not the map), out of the surface view, and while this mode is up. */
-  private retroTargetAllowed(): boolean {
-    return this.active
-      && !this.worldLabelsModalHidden
-      && !this.worldLabelsTourHidden
-      && !this.isMapOpen()
-      && this.landedView !== 'surface';
-  }
-
-  /** The Retro look's brackets on the body most prominent on screen: after the
-   *  label pass, from its foreground spheres. Hidden outside the look and
-   *  wherever retroTargetAllowed says no; syncWorldLabelContainers and
-   *  deactivate hide them on the way into such a state. */
-  private updateRetroTarget(labelPassRan: boolean): void {
-    const labels = this.planetLabels;
-    if (this.retroBigPixel <= 0 || !labels || !labelPassRan || !this.retroTargetAllowed()) {
-      this.retroTarget?.hide();
-      return;
-    }
-    const target = labels.prominentSphere(12, 0.92);
-    this.retroTarget ??= new RetroTargetBrackets();
-    const width = this.renderer.domElement.clientWidth;
-    const height = this.renderer.domElement.clientHeight;
-    this.retroTarget.show(target ? bodyDisplayName(target.name) : '', target, this.retroBigPixel, width, height);
-  }
-
-  private applyPointMinimum(): void {
-    if (this.starfield) setStarfieldMinimumPx(this.starfield, this.pointMinimumPx);
-    this.moonDots?.setMinimumPx(this.pointMinimumPx);
-    this.planetPoints?.setMinimumPx(this.pointMinimumPx);
-    const lineWidth = Math.max(ORBIT_LINE_WIDTH_PX, this.orbitLineMinimumCssPx);
-    for (const line of this.solarSystem?.orbitLines ?? []) {
-      (line.material as { linewidth: number }).linewidth = lineWidth;
-    }
-  }
-
   /**
    * The scene's pixel ratio moved and nothing else did — a graphics-quality
    * level, a Dynamic rung, the `?upscale=` pin (main.ts applySceneResolution).
@@ -5397,7 +5323,6 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
     if (this.planetPoints) this.planetPoints.setPixelRatio(sceneRatio, outputRatio);
-    this.applyPointMinimum();
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
     // The cloud field's guard is measured in the scene target's own pixels and
     // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
@@ -8056,9 +7981,7 @@ export class PlanetariumMode {
     // touch reveal still counting down. Everything else keeps the steady-state
     // cost at zero.
     const pickerWanted = !blocked && (this.hoverEligible || touchActive || gestureActive || this.hasPendingTap);
-    // The Retro look's target brackets read the same spheres, labels or not.
-    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted
-      || this.retroBigPixel > 0;
+    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted;
 
     if (runOccluders) {
       const scenePositions = this.ensurePickScenePositions();
@@ -8113,7 +8036,6 @@ export class PlanetariumMode {
     }
 
     this.syncWorldLabelContainers();
-    this.updateRetroTarget(runOccluders);
   }
 
   private ensurePickScenePositions(): Map<string, { x: number; y: number; z: number }> {
@@ -8316,6 +8238,43 @@ export class PlanetariumMode {
   /** Container-level visibility for the HTML label layers. They stay renderable
    *  whenever labels are on OR a body is being revealed (per-child hiding does
    *  the rest), fold away in surface view, and honour the modal hide. */
+  private prominentScratch: ReturnType<typeof projectSphereToScreen> | undefined;
+
+  /**
+   * The body drawn largest on screen this frame and its disc's box in CSS px,
+   * for an overlay that frames it (the Retro look's brackets, src/retro).
+   * Null wherever the world labels are down (the map, the surface view, a
+   * modal or a tour stop, labels and markers both off), or where no disc is
+   * between `minDiameterPx` and `maxFraction` of the viewport's short side
+   * with its centre on screen. From the spheres the label pass gathered.
+   */
+  prominentBodyOnScreen(minDiameterPx = 12, maxFraction = 0.92): { name: string; left: number; top: number; right: number; bottom: number } | null {
+    const labels = this.planetLabels;
+    if (!this.active || !labels || this.isMapOpen() || this.landedView === 'surface'
+      || this.worldLabelsModalHidden || this.worldLabelsTourHidden || !(this.showBodyLabels || this.showBodyMarkers)) return null;
+    const width = this.renderer.domElement.clientWidth;
+    const height = this.renderer.domElement.clientHeight;
+    const camera = this.camera.position;
+    let best: { name: string; left: number; top: number; right: number; bottom: number } | null = null;
+    let bestDiameter = minDiameterPx;
+    for (const sphere of labels.foregroundSpheres) {
+      if (sphere.name === 'ship') continue;
+      // Moons are registered as `moon:<name>`; the Sun's sphere is padded past its disc.
+      const name = sphere.name.startsWith('moon:') ? sphere.name.slice('moon:'.length) : sphere.name;
+      const radius = name === 'Sun' ? SUN_DATA.radiusAU : sphere.radiusAU;
+      const disc = projectSphereToScreen(
+        { x: camera.x + sphere.x, y: camera.y + sphere.y, z: camera.z + sphere.z }, radius, this.camera, width, height, this.prominentScratch,
+      );
+      this.prominentScratch = disc;
+      if (disc.ndcZ >= 1 || disc.footprintKind === 'none') continue;
+      if (disc.x < 0 || disc.x > width || disc.y < 0 || disc.y > height) continue;
+      if (disc.diameterPx > maxFraction * Math.min(width, height) || disc.diameterPx <= bestDiameter) continue;
+      bestDiameter = disc.diameterPx;
+      best = { name: bodyDisplayName(name), left: disc.minX, top: disc.minY, right: disc.maxX, bottom: disc.maxY };
+    }
+    return best;
+  }
+
   private syncWorldLabelContainers(): void {
     const allowed = !this.worldLabelsModalHidden
       && !this.worldLabelsTourHidden
@@ -8335,7 +8294,6 @@ export class PlanetariumMode {
     if (this.moonLabelContainer && this.moonLabelContainer.style.display !== moonDisplay) {
       this.moonLabelContainer.style.display = moonDisplay;
     }
-    if (!this.retroTargetAllowed()) this.retroTarget?.hide();
   }
 
   /**
@@ -8430,7 +8388,7 @@ export class PlanetariumMode {
       const distFromCamera = Math.sqrt(x * x + y * y + z * z);
       const radiusAU = SUN_DATA.radiusAU * 1.1;
       if (distFromCamera > radiusAU) {
-        this.planetLabels.addForegroundSphere({ x, y, z, radiusAU, distFromCamera, name: 'Sun', drawnRadiusAU: SUN_DATA.radiusAU });
+        this.planetLabels.addForegroundSphere({ x, y, z, radiusAU, distFromCamera, name: 'Sun' });
       }
     }
 
@@ -13572,11 +13530,6 @@ export class PlanetariumMode {
     // Night sides, on the Display page: both values are offered everywhere.
     wireSegmented(document.getElementById('settings-night-sides-seg'), (value) => {
       this.nightSides.set(value as NightSides);
-      this.syncDisplayPage();
-    });
-    // Look, on the same page: offered only where the composer can draw Retro.
-    wireSegmented(document.getElementById('settings-look-seg'), (value) => {
-      this.look.set(value as Look);
       this.syncDisplayPage();
     });
 
@@ -23468,13 +23421,6 @@ export class PlanetariumMode {
     setSegmentValue(seg, mode);
     setText('settings-night-sides-note', NIGHT_SIDES_NOTES[mode]);
     this.menuPanel.setTierValue('display', nightSidesSummary(mode));
-    const look = this.look.look();
-    const lookField = document.getElementById('settings-look-field');
-    if (lookField) lookField.hidden = !this.look.offered();
-    const lookSeg = document.getElementById('settings-look-seg');
-    setSegmentOffered(lookSeg, LOOKS);
-    setSegmentValue(lookSeg, look);
-    setText('settings-look-note', LOOK_NOTES[look]);
   }
 
   /** The rung ladder under "Now rendering": a pip per rung with the one being

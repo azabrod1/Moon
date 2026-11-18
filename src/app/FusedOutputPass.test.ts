@@ -360,28 +360,6 @@ describe('FusedOutputPass with the box', () => {
     expect((pass.material as THREE.RawShaderMaterial).uniforms.uBox.value).toBe(0);
   });
 
-  it('averages into its own target when that target is given its own size (the Retro grid)', () => {
-    const { renderer, bound } = stubRenderer(2560, 1600);
-    const pass = new FusedOutputPass({ bloom: null, lens: null, box: true });
-    pass.renderToScreen = false;
-    pass.setBox(true, 'box');
-    pass.outputSize = { width: 320, height: 200 };
-    const scene = new THREE.WebGLRenderTarget(480, 300);
-    pass.render(renderer, scene, scene);
-    const u = (pass.material as THREE.RawShaderMaterial).uniforms;
-    expect(u.uBox.value).toBe(1);
-    expect(bound()).toBe(pass.target);
-    expect([pass.target!.width, pass.target!.height]).toEqual([320, 200]);
-    expect((u.uInputSize.value as THREE.Vector2).toArray()).toEqual([480, 300]);
-    expect((u.uOutputSize.value as THREE.Vector2).toArray()).toEqual([320, 200]);
-    // 1.5 exactly: every footprint covers two texels.
-    expect((u.uBoxTaps.value as THREE.Vector2).toArray()).toEqual([2, 2]);
-    // A canvas write ignores the size: the box measures the drawing buffer.
-    pass.renderToScreen = true;
-    pass.render(renderer, scene, scene);
-    expect((u.uOutputSize.value as THREE.Vector2).toArray()).toEqual([2560, 1600]);
-  });
-
   it('ignores the box on a text that does not carry it', () => {
     const pass = new FusedOutputPass({ bloom: null, lens: null });
     pass.setBox(true, 'box');

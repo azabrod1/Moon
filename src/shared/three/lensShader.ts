@@ -184,33 +184,16 @@ export function pointSpriteFalloff(
  * starfield) — the pre-distortion contract must never drift between them.
  *
  * The surrounding shader declares `attribute float size`, `uniform float
- * pixelRatio`, `uniform float pointMinPx` (the smallest diameter, in scene
- * pixels, a point is drawn at: 0, a no-op, except in the Retro look, which
- * raises it to about one big pixel so stars survive its coarse grid —
- * app/retroScreen.ts — and leaves `pointFloorLight` for the shader to scale
- * its alpha by), the varyings `vec2 vLensOutputCentre`, `float
+ * pixelRatio`, the varyings `vec2 vLensOutputCentre`, `float
  * vLensTargetDiameterPx`, `vec4 vLensSourceToOutputPx` and `float
  * vLensSamplesPerAxis`, and interpolates a block providing
  * lensWarpSourceNdc/lensUnwarpOutputNdc (lensShaderGLSL, or a superset like
  * the sun-glare mask block).
  */
-/** How much more light than its own a point raised to the Retro look's floor
- *  may show: the floor spreads a sub-pixel star's light over a whole big pixel,
- *  and at exactly its own light the grid's average would still cut it to black. */
-export const POINT_FLOOR_GAIN = 4;
-
 export const lensPointSpriteVertexGLSL = /* glsl */ `
           vec2 sourceCentre = gl_Position.xy / gl_Position.w;
           vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
-          float pointNaturalPx = size * pixelRatio;
-          vLensTargetDiameterPx = max(pointNaturalPx, pointMinPx);
-          // A point raised to the floor keeps its own light, spread over the
-          // larger disc, times POINT_FLOOR_GAIN, and never more than full: a
-          // bright star becomes a solid big pixel, a faint one stays too faint
-          // to show. The consumer multiplies its alpha by this. Exactly 1 with
-          // no floor, so an unfloored frame is unchanged.
-          float pointShare = pointNaturalPx / max(vLensTargetDiameterPx, 1e-6);
-          float pointFloorLight = min(1.0, ${POINT_FLOOR_GAIN.toFixed(1)} * pointShare * pointShare);
+          vLensTargetDiameterPx = size * pixelRatio;
           // One source pixel each way as output px: the lens's local scale
           // here. Central differences; the warp is smooth, so a one-pixel
           // step is exact to float precision. The identity with the lens off.

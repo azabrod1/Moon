@@ -9,8 +9,8 @@
  * must always arrive together, and this module makes sure they do by leaning
  * on ordinary inheritance:
  *
- *  - The root carries the default face (index.html's retro block: Retro
- *    Sans 10, the size most of the interface is in).
+ *  - The root carries the default face (retro.css: Retro Sans 10, the size
+ *    most of the interface is in).
  *  - Every rule in the stylesheet that sets a font size in px gets a mirror
  *    rule, `html.retro <its selector>`, that sets the face for that size,
  *    family and size together. Everything inside the element without a size
@@ -23,14 +23,14 @@
  *
  * The mirror rules keep their original selectors, so their specificity and
  * order relative to one another are the stylesheet's own; `!important` puts
- * them over the modern rules they mirror. They are inserted BEFORE the main
- * stylesheet, so the retro block's own hand-set faces win a tie, and the few
+ * them over the modern rules they mirror. They are inserted just before
+ * retro.css, so its own hand-set faces win a tie, and the few
  * regions that set a face of their own (RETRO_FIXED_FACE_REGIONS: the title,
  * the instrument readouts) are left out of the mapping altogether, so a more
  * specific mapped rule inside them cannot win either.
  *
  * Read from the live stylesheet when the look is first turned on, so a size
- * added to index.html later is mapped without anyone remembering to.
+ * added to the app's CSS later is mapped without anyone writing a rule for it.
  */
 
 /** A bitmap face: its CSS family and its size in font pixels. */
@@ -54,10 +54,10 @@ export function retroFaceFor(modernPx: number): RetroFace {
 }
 
 /**
- * Regions the mapping never touches, because index.html's retro block gives
- * them a face of its own: the title band's heading, the cockpit readouts (the
+ * Regions the mapping never touches, because retro.css gives them a face of
+ * its own: the title band's heading, the cockpit readouts (the
  * clock and the speed) and the target brackets. A selector part that mentions
- * one is skipped. Add a region here whenever the retro block hand-sets a face.
+ * one is skipped. Add a region here whenever retro.css hand-sets a face.
  */
 export const RETRO_FIXED_FACE_REGIONS: readonly string[] = ['#top-bar h1', '.tr-clock', '.speed-center', '#retro-target'];
 
@@ -153,11 +153,12 @@ export function fontRulesOf(sheets: Iterable<CSSStyleSheet>): FontRule[] {
   return found;
 }
 
-/** Add the mirror rules to the page once, ahead of the main stylesheet. */
-export function installRetroTypography(doc: Document = document): void {
+/** Add the mirror rules to the page once, just before `before` (retro.css). */
+export function installRetroTypography(before: HTMLStyleElement): void {
+  const doc = before.ownerDocument;
   if (doc.getElementById('retro-typography')) return;
   const style = doc.createElement('style');
   style.id = 'retro-typography';
-  style.textContent = retroTypographyCss(fontRulesOf(Array.from(doc.styleSheets)));
-  doc.head.insertBefore(style, doc.head.querySelector('style'));
+  style.textContent = retroTypographyCss(fontRulesOf(Array.from(doc.styleSheets).filter((sheet) => sheet.ownerNode !== before)));
+  before.before(style);
 }

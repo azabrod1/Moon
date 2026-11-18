@@ -182,12 +182,6 @@ export class OutputTargetPass extends OutputPass {
    *  one's and patches it again. */
   subRect: SubRectUniforms;
 
-  /** The size its own target is drawn at instead of the scene's, or null. The
-   *  Retro look's grid (app/retroScreen.ts): the frame is finished once per
-   *  big pixel and app/RetroPresentPass.ts shows it. Never the canvas's size:
-   *  a write to the canvas ignores it. */
-  outputSize: { width: number; height: number } | null = null;
-
   constructor() {
     super();
     this.needsSwap = false;
@@ -231,11 +225,8 @@ export class OutputTargetPass extends OutputPass {
     }
     // At the read buffer's own size, sub-rectangle and all: the frame lands in
     // the same corner of this target as it did in the one it came from, which
-    // is what lets the resample read it with the same rectangle. Or at the
-    // size asked for, filling the target, which is what the Retro look's pass
-    // reads.
-    const size = this.outputSize ?? readBuffer;
-    const target = this.ensureTarget(size.width, size.height, true)!;
+    // is what lets the resample read it with the same rectangle.
+    const target = this.ensureTarget(readBuffer.width, readBuffer.height, true)!;
     super.render(renderer, target, readBuffer, deltaTime, maskActive);
   }
 

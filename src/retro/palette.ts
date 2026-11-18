@@ -6,17 +6,17 @@
  * sky, greens, sand, ochre, rust, reds, violets — what the planets are made
  * of), black, and fifteen slots kept for the interface so its yellow, green,
  * navy and banded blues are exact rather than the nearest picture colour.
- * RETRO_INTERFACE_COLOURS are the same values index.html's retro block uses.
+ * RETRO_INTERFACE_COLOURS are the same values retro.css uses.
  *
  * Each ramp is a line of constant hue in OKLab from dark to light, its chroma
  * eased off at both ends (dark and light colours cannot be very colourful) and
  * pulled into the sRGB gamut, which is what a palette artist did by eye. The
  * numbers were tuned on frames of the app in the mock (planning/, not
- * committed) and are pinned by retroPalette.test.ts.
+ * committed).
  *
  * The lookup maps every colour at 5 bits a channel to its nearest palette
  * colour in OKLab, so the shader cuts a pixel with one fetch
- * (app/RetroPresentPass.ts). 32 768 entries against 256 colours is about eight
+ * (RetroPass.ts). 32 768 entries against 256 colours is about eight
  * million distance tests: built once, the first time the look is turned on,
  * in a few tens of milliseconds.
  */

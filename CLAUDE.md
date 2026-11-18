@@ -52,7 +52,6 @@ A Three.js app. `src/planetarium/` is the whole solar system at real scale, wher
 - The interface is plain HTML in `index.html`. If you rename an element's id, rename it in the code too.
 - Only one menu or panel is open at a time. A new one must close the others, and be closed by them.
 - Planet colours come from the catalog, and names go through `bodyDisplayName`. Write interface text plainly, like the text around it.
-- New interface CSS must also read right in the Retro look (`html.retro` in `index.html`): sizes in whole `--ui-px`, bitmap faces only, nothing soft or see-through.
 - Texture paths are built at run time, so the build cannot check them. Open the app to confirm a new one loads.
 
 ## Data and caching

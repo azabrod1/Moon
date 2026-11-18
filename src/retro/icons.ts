@@ -2,8 +2,8 @@
  * The Retro look's pixel icons: 12 × 12 pictures drawn one cell to one
  * interface pixel, as the menus of the time drew theirs. Each becomes an SVG
  * of squares (`shape-rendering: crispEdges`) in a data URI on a custom
- * property of <html>, `--rt-icon-<name>`, which index.html's retro block puts
- * on the rows and buttons. An SVG rather than a PNG so it is exact at any
+ * property of <html>, `--rt-icon-<name>`, which retro.css puts on the rows and
+ * buttons. An SVG rather than a PNG so it is exact at any
  * whole-number scale; written here rather than as files so the picture is in
  * the source, a letter per cell.
  */

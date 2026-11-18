@@ -1,6 +1,7 @@
 /**
  * Surface-view HUD for the Observatory:
- * bottom-left narrative stack (eyebrow / headline / subline with the warm
+ * bottom-left narrative stack (eyebrow, with the Places pill where the
+ * landed body has places to stand / headline / subline with the warm
  * peak countdown / mono when-line), bottom-right FOV cluster with a
  * log-scale hairline, breathing corner brackets over the tracked target with
  * the mono disc annotation and tracking pill, and the top-right
@@ -36,6 +37,9 @@ export interface SurfaceHudState {
   discNote: string | null;
   /** Swap chip label ("Switch to the Moon"), or null to hide. */
   swapLabel: string | null;
+  /** The Places pill beside the eyebrow: offered where the landed body has
+   *  named places to stand. */
+  placesOffered: boolean;
   /** Clock paused — the transport strip's pause button flips to "Resume". */
   paused: boolean;
 }
@@ -139,6 +143,7 @@ export class ObservatoryHUD {
   private trackPillEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
   private lookatEl: HTMLElement | null = null;
+  private placeEl: HTMLElement | null = null;
   private fovMarkEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
   private blEl: HTMLElement | null = null;
@@ -170,6 +175,7 @@ export class ObservatoryHUD {
     private onObservatory: () => void,
     private onTargetMenu: () => void,
     private onTimeAction: (action: SurfaceTimeAction) => void,
+    private onPlaceMenu: () => void,
   ) {}
 
   bind(): void {
@@ -181,6 +187,7 @@ export class ObservatoryHUD {
     this.trackPillEl = document.getElementById('surface-trackpill');
     this.swapEl = document.getElementById('surface-swap');
     this.lookatEl = document.getElementById('surface-lookat');
+    this.placeEl = document.getElementById('surface-place');
     this.fovMarkEl = document.getElementById('surface-fov-mark');
     this.subEl = document.getElementById('surface-sub');
     this.blEl = this.rootEl?.querySelector('.shud-bl') ?? null;
@@ -201,6 +208,10 @@ export class ObservatoryHUD {
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
     const swapTeardown = bindReliableSurfacePress(this.swapEl, () => this.onSwap());
     if (swapTeardown) this.documentTeardowns.push(swapTeardown);
+    // Its eyebrow rewrites at the HUD's text rate, the case the reliable
+    // press exists for.
+    const placeTeardown = bindReliableSurfacePress(this.placeEl, () => this.onPlaceMenu());
+    if (placeTeardown) this.documentTeardowns.push(placeTeardown);
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
@@ -376,6 +387,7 @@ export class ObservatoryHUD {
       if (this.discNoteEl.textContent !== note) this.discNoteEl.textContent = note;
       this.discNoteEl.style.visibility = note ? '' : 'hidden';
     }
+    if (this.placeEl) this.placeEl.style.display = state.placesOffered ? '' : 'none';
     if (this.swapEl) {
       this.swapEl.style.display = state.swapLabel ? '' : 'none';
       if (state.swapLabel) setText('surface-swap-name', state.swapLabel);

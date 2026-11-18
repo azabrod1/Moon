@@ -1464,6 +1464,16 @@
       color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
     }
     .shud-eyebrow i { font-style: normal; letter-spacing: 0; color: var(--obs-accent); font-size: 11px; }
+    /* Where you stand, beside the line that says it. Only this pill takes
+       pointer events: a drag that starts anywhere else in the band still
+       looks around. */
+    .shud-place {
+      flex: none; padding: 4px 10px; border-radius: 999px; pointer-events: auto; cursor: pointer;
+      background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); --glass-blur: 8px; backdrop-filter: blur(var(--glass-blur));
+      font-family: var(--font); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--obs-t2); text-shadow: none;
+    }
+    .shud-place:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-bl h1 {
       margin: 10px 0 0; font-size: 34px; font-weight: 200; letter-spacing: 0.01em;
       color: var(--obs-t1); text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 2px 24px rgba(0, 0, 0, 0.6);
@@ -5403,7 +5413,7 @@
         </div>
         <div class="shud-bottom">
           <div class="shud-bl">
-            <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
+            <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span><button class="shud-place" id="surface-place" type="button" style="display:none" title="Choose where to stand" data-glass>Places</button></div>
             <h1 id="surface-headline">--</h1>
             <div class="shud-sub" id="surface-sub"></div>
           </div>
@@ -5718,7 +5728,7 @@
       <div id="surface-target-menu">
         <div class="stm-card pn pn-high" data-glass>
           <div class="stm-head">
-            <h3>Look at</h3>
+            <h3 id="surface-target-title">Look at</h3>
             <button class="pk-x" id="surface-target-menu-close" aria-label="Close">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
             </button>

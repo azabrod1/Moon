@@ -30,6 +30,8 @@ export interface Site {
   longitudeDeg: number;
   /** Eye height above the ground (Earth: above the ellipsoid), km. */
   heightKm: number;
+  /** A named place's name (sitePlaces.ts); absent for bare coordinates. */
+  name?: string;
 }
 
 /** A site's local frame, in the scene frame. */

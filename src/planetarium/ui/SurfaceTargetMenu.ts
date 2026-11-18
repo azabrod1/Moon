@@ -1,10 +1,15 @@
 /**
  * The Look-at menu: a compact centered card listing the landed sky's
  * pickable targets (Sun / parent planet / moons / the other planets) with
- * their live apparent sizes, or for a planet its brightness. The root element is a full-screen click-catcher — the Observatory
- * panel and the mobile sheet are not clickable behind it, and tapping
- * outside the card closes. Rows rebuild on every open (apparent sizes are
- * live quantities); nothing renders per-frame.
+ * their live apparent sizes, or for a planet its brightness. The root
+ * element is a full-screen click-catcher — the Observatory panel and the
+ * mobile sheet are not clickable behind it, and tapping outside the card
+ * closes. Rows rebuild on every open (apparent sizes are live quantities);
+ * nothing renders per-frame.
+ *
+ * The same card also lists where to stand ("Stand at", `openPlaces`), so the
+ * two lists share one open state and every path that closes one closes the
+ * other. Each open writes its own title and sub-line.
  */
 import {
   formatDiscDeg,
@@ -15,10 +20,24 @@ import {
 } from '../surfaceView';
 import { cssHexColor } from '../../shared/color';
 
+/** One row of the "Stand at" list. */
+export interface SurfacePlaceRow {
+  name: string;
+  /** Under the name, smaller ("Apollo 11 · night"). */
+  note: string;
+  /** Right-aligned live reading ("Earth 73° up"). */
+  meta: string;
+  /** Where the view stands now. */
+  current: boolean;
+  onPick: () => void;
+}
+
 export class SurfaceTargetMenu {
   private rootEl: HTMLElement | null = null;
   private listEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
+  private titleEl: HTMLElement | null = null;
+  private shownList: 'targets' | 'places' | null = null;
   private wired = false;
 
   /** `onClose` fires on every open→closed transition, whatever triggered it
@@ -33,6 +52,7 @@ export class SurfaceTargetMenu {
     this.rootEl = document.getElementById('surface-target-menu');
     this.listEl = document.getElementById('surface-target-list');
     this.subEl = document.getElementById('surface-target-sub');
+    this.titleEl = document.getElementById('surface-target-title');
     if (this.wired) return;
     this.wired = true;
     document
@@ -47,6 +67,7 @@ export class SurfaceTargetMenu {
    *  (set on in-view opens, null pre-entry). */
   open(choices: SurfaceTargetChoice[], currentKey: string | null, subText: string): void {
     if (!this.rootEl || !this.listEl) return;
+    if (this.titleEl) this.titleEl.textContent = 'Look at';
     if (this.subEl) this.subEl.textContent = subText;
     this.listEl.textContent = '';
     for (const choice of choices) {
@@ -82,17 +103,62 @@ export class SurfaceTargetMenu {
       row.addEventListener('click', () => this.onPick(choice.target));
       this.listEl.appendChild(row);
     }
-    this.rootEl.classList.add('visible');
-    this.listEl.scrollTop = 0;
+    this.show('targets');
+  }
+
+  /** The "Stand at" list: places on the landed body, each picked through
+   *  its own row callback. */
+  openPlaces(rows: SurfacePlaceRow[], subText: string): void {
+    if (!this.rootEl || !this.listEl) return;
+    if (this.titleEl) this.titleEl.textContent = 'Stand at';
+    if (this.subEl) this.subEl.textContent = subText;
+    this.listEl.textContent = '';
+    for (const place of rows) {
+      const row = document.createElement('button');
+      row.className = 'pk-row stm-row' + (place.current ? ' stm-current' : '');
+      const info = document.createElement('span');
+      info.className = 'pk-info';
+      const name = document.createElement('b');
+      name.textContent = place.name;
+      const note = document.createElement('small');
+      note.textContent = place.note;
+      info.append(name, note);
+      row.appendChild(info);
+      if (place.current) {
+        const pill = document.createElement('span');
+        pill.className = 'pk-tag-here';
+        pill.textContent = 'here';
+        row.appendChild(pill);
+      }
+      const meta = document.createElement('span');
+      meta.className = 'stm-meta';
+      meta.textContent = place.meta;
+      row.appendChild(meta);
+      row.addEventListener('click', () => place.onPick());
+      this.listEl.appendChild(row);
+    }
+    this.show('places');
+  }
+
+  private show(list: 'targets' | 'places'): void {
+    this.shownList = list;
+    this.rootEl?.classList.add('visible');
+    if (this.listEl) this.listEl.scrollTop = 0;
   }
 
   close(): void {
     if (!this.isOpen()) return;
     this.rootEl?.classList.remove('visible');
+    this.shownList = null;
     this.onClose();
   }
 
   isOpen(): boolean {
     return this.rootEl?.classList.contains('visible') ?? false;
+  }
+
+  /** Which list the open card shows; null when closed. */
+  openList(): 'targets' | 'places' | null {
+    return this.isOpen() ? this.shownList : null;
   }
 }

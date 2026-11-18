@@ -157,6 +157,7 @@ import {
 } from './planetPoints';
 import { STAR_POINT_MAPPING } from './world/starPointMapping';
 import { SITE_GROUND_ALBEDO_LINEAR, SiteGround } from './world/siteGround';
+import { SITE_EYE_HEIGHT_KM, SITE_PLACES, type SitePlace } from './sitePlaces';
 import { lunarOrientationQuaternion } from '../astronomy/lunarOrientation';
 import {
   altAz,
@@ -520,7 +521,7 @@ import {
   type ObservatorySubjectInfo,
 } from './ui/ObservatoryPanel';
 import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
-import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
+import { SurfaceTargetMenu, type SurfacePlaceRow } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { TutorialSpotlight } from './ui/TutorialSpotlight';
@@ -1773,8 +1774,9 @@ export class PlanetariumMode {
   private planetPointsFilled = false;
   /** The surface view's site (stage 2): where on the landed body the eye
    *  stands, a few metres up. Session state, cleared with the landing like
-   *  the picked target; null keeps the sliding vantage. Moon only for now
-   *  (devStandAt). */
+   *  the picked target, not saved with the journey yet; null keeps the
+   *  sliding vantage. Set from the Places list (openSurfacePlaceMenu) or
+   *  devStandAt; Moon only for now. */
   private surfaceSite: Site | null = null;
   /** The ground under the site (world/siteGround.ts), built at activation so
    *  the boot warm-up compiles it; drawn only while a site is stood on. */
@@ -2499,7 +2501,7 @@ export class PlanetariumMode {
     },
     () => this.toggleObservatoryPanel(),
     () => {
-      if (this.surfaceTargetMenu.isOpen()) this.closeSurfaceTargetMenu();
+      if (this.surfaceTargetMenu.openList() === 'targets') this.closeSurfaceTargetMenu();
       else this.openSurfaceTargetMenu();
     },
     (action) => {
@@ -2512,6 +2514,10 @@ export class PlanetariumMode {
       else if (action === 'faster') this.stepTimeRate(1);
       else this.timeJumpToNow();
       this.renderSurfaceHud();
+    },
+    () => {
+      if (this.surfaceTargetMenu.openList() === 'places') this.closeSurfaceTargetMenu();
+      else this.openSurfacePlaceMenu();
     },
   );
   private surfaceTargetMenu = new SurfaceTargetMenu(
@@ -20293,7 +20299,7 @@ export class PlanetariumMode {
     const companion = this.swapCompanionTarget();
     const state: SurfaceHudState = {
       eyebrow: site
-        ? `Standing on ${bodyDisplayName(this.landedOn.name)} · ${formatSiteCoordinates(site)}`
+        ? `${site.name ? `Standing at ${site.name}` : `Standing on ${bodyDisplayName(this.landedOn.name)}`} · ${formatSiteCoordinates(site)}`
         : `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
       heroRepeats,
@@ -20310,6 +20316,7 @@ export class PlanetariumMode {
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
       swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
+      placesOffered: this.surfacePlacesOffered(),
     };
     this.observatoryHud.render(state);
     this.surfaceAimLiftGoalPx = this.measureSurfaceAimLiftPx();
@@ -21183,11 +21190,100 @@ export class PlanetariumMode {
   private readonly siteBelowHorizon = (direction: THREE.Vector3): boolean =>
     this.surfaceSiteStanding !== null && direction.dot(this.surfaceSiteStanding.zenith) < 0;
 
-  /** The surface view's site, while the landing is on its body. */
+  /** The surface view's site, while the landing is on its body. The tour
+   *  and the historic missions frame their own views: a site waits them out. */
   private activeSurfaceSite(): Site | null {
     const site = this.surfaceSite;
     if (!site || !this.landedOn || this.landedOn.name !== site.body) return null;
+    if (this.tutorial || this.isMissionActive()) return null;
     return site;
+  }
+
+  /** The landed body's named places, when it has ground to stand on and
+   *  nothing else is framing the view. */
+  private surfacePlaces(): readonly SitePlace[] | null {
+    const landed = this.landedOn;
+    if (!landed || this.landedView !== 'surface') return null;
+    if (this.tutorial || this.isMissionActive()) return null;
+    if (!SITE_GROUND_ALBEDO_LINEAR[landed.name]) return null;
+    return SITE_PLACES[landed.name] ?? null;
+  }
+
+  private surfacePlacesOffered(): boolean {
+    return (this.surfacePlaces()?.length ?? 0) > 0;
+  }
+
+  /** Stand at a site on the landed body, or back at the surface view's own
+   *  vantage (null), keeping the target in view. */
+  private standAtSite(site: Site | null): void {
+    this.surfaceSite = site;
+    this.surfaceSiteRiseCache = null;
+    this.noteSunViewDiscontinuity();
+    this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
+  }
+
+  /** The "Stand at" list: the surface view's own vantage first, then the
+   *  body's named places, each with Earth's altitude (or the parent's,
+   *  for a moon) and day or night there now. */
+  private openSurfacePlaceMenu(): void {
+    const places = this.surfacePlaces();
+    const landed = this.landedOn;
+    if (!places || !landed) return;
+    this.closeMenuPanel();
+    this.closeDeck();
+    this.closeToolsMenu();
+    this.setWorldLabelsVisible(false);
+    const now = this.timeState.currentUtcMs;
+    const radiusKm = this.getLandedBodyRadiusAU() * KM_PER_AU;
+    const current = this.activeSurfaceSite();
+    const parentName = landed.type === 'moon' ? this.observatoryParentPlanetName() : null;
+    // Night once all of the Sun's disc is under the dipped horizon (its
+    // radius at 1 AU: a moon's distance from the Sun barely changes it).
+    const sunDownDeg = Math.asin(SUN_RADIUS_AU) * RAD2DEG + horizonDipDeg(radiusKm, SITE_EYE_HEIGHT_KM);
+    const rows: SurfacePlaceRow[] = [{
+      name: 'Surface view',
+      note: 'the view follows what you look at',
+      meta: '',
+      current: current === null,
+      onPick: () => this.pickSurfacePlace(null),
+    }];
+    for (const place of places) {
+      const site: Site = {
+        body: landed.name,
+        latitudeDeg: place.latitudeDeg,
+        longitudeDeg: place.longitudeDeg,
+        heightKm: SITE_EYE_HEIGHT_KM,
+        name: place.name,
+      };
+      const sunAltitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'sun' }, now);
+      const night = Number.isFinite(sunAltitudeDeg) && sunAltitudeDeg < -sunDownDeg;
+      let meta = '';
+      if (parentName) {
+        const parentAltitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'parent' }, now);
+        const parent = bodyDisplayName(parentName).replace(/^the /, '');
+        if (Number.isFinite(parentAltitudeDeg)) {
+          meta = parentAltitudeDeg >= 1
+            ? `${parent} ${Math.round(parentAltitudeDeg)}° up`
+            : parentAltitudeDeg > -1 ? `${parent} on the horizon` : `${parent} down`;
+        }
+      }
+      rows.push({
+        name: place.name,
+        note: night ? `${place.note} · night` : place.note,
+        meta,
+        current: current !== null && current.name === place.name,
+        onPick: () => this.pickSurfacePlace(site),
+      });
+    }
+    this.surfaceTargetMenu.openPlaces(
+      rows,
+      `Stand at a place on ${bodyDisplayName(landed.name)}: the sky turns and sets around you.`,
+    );
+  }
+
+  private pickSurfacePlace(site: Site | null): void {
+    this.closeSurfaceTargetMenu();
+    this.standAtSite(site);
   }
 
   /** The landed body's drawn mesh (the one the Sun's occlusion scan sees). */
@@ -21334,9 +21430,7 @@ export class PlanetariumMode {
       return true;
     }
     if (this.landedOn?.name !== 'Moon') return false;
-    this.surfaceSite = { body: 'Moon', latitudeDeg, longitudeDeg, heightKm: heightM / 1000 };
-    this.surfaceSiteRiseCache = null;
-    this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
+    this.standAtSite({ body: 'Moon', latitudeDeg, longitudeDeg, heightKm: heightM / 1000 });
     return true;
   }
 

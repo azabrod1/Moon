@@ -71,10 +71,10 @@ describe('precedence', () => {
   });
 });
 
-describe('the Night sides control', () => {
-  it('offers Real and Brightened, in that order, with Real the default', () => {
+describe('the Dark side of planets and moons control', () => {
+  it('offers True to life and Lit up, in that order, with True to life the default', () => {
     expect(NIGHT_SIDES).toEqual(['real', 'brightened']);
-    expect(NIGHT_SIDES.map((m) => NIGHT_SIDES_LABELS[m])).toEqual(['Real', 'Brightened']);
+    expect(NIGHT_SIDES.map((m) => NIGHT_SIDES_LABELS[m])).toEqual(['True to life', 'Lit up']);
   });
 
   it('says what each value does in a line of its own', () => {
@@ -83,12 +83,12 @@ describe('the Night sides control', () => {
       expect(note.length, mode).toBeGreaterThan(0);
       expect(note.endsWith('.'), mode).toBe(true);
     }
-    // Brightened says out loud that it is not the real sky.
+    // Lit up says out loud that it is not the real sky.
     expect(NIGHT_SIDES_NOTES.brightened).toContain('Brighter than it really is');
   });
 
   it('names what the value is about on the root row', () => {
-    expect(nightSidesSummary('real')).toBe('Real nights');
-    expect(nightSidesSummary('brightened')).toBe('Brightened nights');
+    expect(nightSidesSummary('real')).toBe('Dark sides true to life');
+    expect(nightSidesSummary('brightened')).toBe('Dark sides lit up');
   });
 });

@@ -2,7 +2,10 @@
  * A place to stand: the pure geometry of a site on a body — where it is, which
  * way is up, north and east there, the altitude and azimuth of anything in the
  * sky, how far the horizon dips, and when a body crosses a given altitude.
- * No scene or DOM access: callers pass the body's orientation and the
+ * It also holds the spot picker's side of the same geometry (a point on the
+ * globe back to a latitude and longitude, a ray against the sphere, typed
+ * coordinates) and the rule for where the gaze rests so a low target is
+ * framed with the horizon. No scene or DOM access: callers pass the body's orientation and the
  * directions they have; siteView.test.ts holds the whole chain (site frame,
  * Earth's orientation, the ephemeris, parallax) to JPL Horizons' topocentric
  * azimuth and elevation on Earth and on the Moon.

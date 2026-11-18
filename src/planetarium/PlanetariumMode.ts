@@ -13630,6 +13630,7 @@ export class PlanetariumMode {
       if (this.landedOn && this.landedView === 'orbit') this.toggleSurfaceView();
     });
     document.getElementById('landed-entry-pick')?.addEventListener('click', () => this.openSitePicker());
+    document.getElementById('observatory-pick')?.addEventListener('click', () => this.openSitePicker());
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.mapDiving) return;
       if (this.nearbyLandTarget) {
@@ -21247,6 +21248,10 @@ export class PlanetariumMode {
    *  vantage (null), keeping the target in view. */
   private standAtSite(site: Site | null): void {
     this.surfaceSite = site;
+    // Remembered per body for the session, so switching to Earth and back,
+    // or flying off and landing again, returns to the spot.
+    if (site) this.siteByBody.set(site.body, site);
+    else if (this.landedOn) this.siteByBody.delete(this.landedOn.name);
     this.surfaceSiteRiseCache = null;
     this.noteSunViewDiscontinuity();
     this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
@@ -21281,6 +21286,8 @@ export class PlanetariumMode {
   /** The spot the picker's pin marks: a latitude and longitude on the landed
    *  body, with a place's name when it came from the list. */
   private sitePickerSpot: { latitudeDeg: number; longitudeDeg: number; name?: string } | null = null;
+  /** The last spot stood at on each body, this session. */
+  private readonly siteByBody = new Map<string, Site>();
   /** The picker was opened from the sky view: Cancel goes back there. */
   private sitePickerFromSurface = false;
   private sitePickerTextStampMs = 0;
@@ -21570,6 +21577,7 @@ export class PlanetariumMode {
   private landedEntryShown = false;
   private landedEntryPickShown = false;
   private landedEntrySub = '';
+  private panelPickLabel = '';
 
   /** Show the entry buttons while the landed orbit view is the whole
    *  screen: not in the sky view, the map, the tour, a mission or the
@@ -21591,6 +21599,18 @@ export class PlanetariumMode {
       && !this.arrivalVeilUp()
       && !this.arrivalInFlight
       && !(this.observatoryPanel.isOpen() && this.observatoryPanel.sheetFormActive());
+    // The Observatory panel carries the picker too, in either view: on a
+    // phone its sheet covers the buttons below, and a panel that opens on
+    // arrival would otherwise hide the only way in.
+    const offered = !!landed && this.sitePickerOffered() && !this.isMapOpen();
+    const panelLabel = !offered ? '' : this.activeSurfaceSite() ? 'Stand somewhere else' : 'Pick a spot to stand';
+    if (panelLabel !== this.panelPickLabel) {
+      this.panelPickLabel = panelLabel;
+      const panelPick = document.getElementById('observatory-pick');
+      if (panelPick) panelPick.style.display = panelLabel ? '' : 'none';
+      if (panelLabel) setText('observatory-pick-label', panelLabel);
+      this.observatoryPanel.refreshSheetLayout();
+    }
     const pick = show && this.sitePickerOffered();
     const site = show ? this.activeSurfaceSite() : null;
     const sub = !show || !landed
@@ -21753,6 +21773,7 @@ export class PlanetariumMode {
   devStandAt(latitudeDeg: number | null, longitudeDeg = 0, heightM = 2): boolean {
     if (latitudeDeg === null) {
       this.surfaceSite = null;
+      if (this.landedOn) this.siteByBody.delete(this.landedOn.name);
       return true;
     }
     if (this.landedOn?.name !== 'Moon') return false;
@@ -22529,7 +22550,8 @@ export class PlanetariumMode {
     this.closeSurfaceTargetMenu();
     this.closeSitePicker();
     this.surfacePickedTarget = null;
-    this.surfaceSite = null;
+    // New ground: the spot last stood at on it, if there was one.
+    this.surfaceSite = this.siteByBody.get(target.name) ?? null;
     this.landedOn = target;
     // The landed system's moons are about to be drawn up close: mark them
     // warm-eligible (late-arriving photos/normals queue on arrival) and queue
@@ -23588,6 +23610,8 @@ export class PlanetariumMode {
             ...(saved.landedSite.name ? { name: saved.landedSite.name } : {}),
           }
         : null;
+      if (this.surfaceSite) this.siteByBody.set(this.surfaceSite.body, this.surfaceSite);
+      else this.siteByBody.delete(saved.landedOn.name);
     } else {
       this.resetCruiseCamera();
     }

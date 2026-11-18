@@ -1198,6 +1198,17 @@
       0% { box-shadow: 0 0 0 1px rgba(var(--ember-rgb), 0.8), 0 0 26px rgba(var(--ember-rgb), 0.4); }
       100% { box-shadow: none; }
     }
+    .obs-pick {
+      width: 100%; height: 38px; box-sizing: border-box; margin-top: 8px; padding: 0 12px;
+      display: flex; align-items: center; gap: 9px; border-radius: var(--r-m);
+      border: 1px solid var(--obs-hairline); background: rgba(255, 255, 255, 0.03);
+      color: var(--obs-t1); font-family: var(--font); font-size: 12.5px; font-weight: 500;
+      text-align: left; cursor: pointer;
+    }
+    .obs-pick svg { width: 16px; height: 16px; flex: none; color: #8fb0ff; }
+    .obs-pick:hover { border-color: rgba(var(--accent-rgb), 0.45); }
+    .obs-pick:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    @media (hover: none) { .obs-pick { height: 44px; } }
     .obs-coach {
       position: relative; margin: 10px 2px 2px; padding: 11px 13px; border-radius: var(--r-m);
       border: 1px solid rgba(var(--accent-rgb), 0.45); background: #0c101c;
@@ -1410,7 +1421,11 @@
     .shud-chevron:hover { border-color: rgba(var(--accent-rgb), 0.5); }
     .shud-chevron i { font-style: normal; font-size: 15px; line-height: 1; transform: translateY(-1px); }
     .shud-discnote {
-      position: absolute; left: 0; top: 0; transform: translateX(-50%); white-space: nowrap;
+      position: absolute; left: 0; top: 0; transform: translateX(-50%);
+      /* One line where it fits; a long one (a point too small to resolve,
+         with its altitude) wraps inside a phone's width rather than running
+         off both edges. */
+      width: max-content; max-width: calc(100% - 24px); text-align: center; line-height: 1.5;
       font-family: var(--obs-mono); font-size: 10.5px; letter-spacing: 0.1em;
       color: var(--obs-t2); text-transform: uppercase;
       text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6);
@@ -5457,9 +5472,16 @@
           <!-- No heading: the window it points at is already titled "Look up",
                and the same words twice in a stack read as a stutter. -->
           <b><i>NEW</i></b>
-          <p>Step through here and you&rsquo;re standing on the ground, looking up. Everything overhead is at its real size and its real place.</p>
+          <p>Step through here to look up from the surface. Everything overhead is at its real size and in its real place.</p>
           <button type="button" id="observatory-coach-got">Got it</button>
         </div>
+        <!-- Where the landed body has ground to stand on: the spot picker,
+             reachable while the panel (the sheet, on a phone) covers the
+             landed view's own buttons. -->
+        <button class="obs-pick" id="observatory-pick" type="button" style="display:none">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17.6 C10 17.6 15.2 12.7 15.2 8.5 a5.2 5.2 0 1 0 -10.4 0 C4.8 12.7 10 17.6 10 17.6 Z"></path><circle cx="10" cy="8.5" r="1.9"></circle></svg>
+          <span id="observatory-pick-label">Pick a spot to stand</span>
+        </button>
         <div id="observatory-earth-rows">
           <div class="obs-sec">Jump to</div>
           <div class="obs-jrow2">

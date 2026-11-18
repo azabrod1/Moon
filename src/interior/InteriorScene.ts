@@ -1455,15 +1455,14 @@ export class InteriorScene {
    *
    * That is a choice, and its cost is known. A real giant's level surfaces
    * flatten less with depth: Clairaut's equation on the models' own densities
-   * has them, at 0.6 of the radius, about 0.63 (Saturn) and 0.78 (Jupiter) as
+   * has them, at 0.6 of the radius, about 0.57 (Saturn) and 0.78 (Jupiter) as
    * flattened as the surface. A similar spheroid there lies inside the level
-   * surface over the poles by up to 1.5% of the radius for Saturn (Saturn is
-   * more condensed than its model, so nearer 2%) and 0.6% for Jupiter, and
-   * outside it over the equator by half that — within the spread the models
-   * give those boundaries (4 to 9% of the radius), and nothing at the surface,
-   * where the flattening is seen. A depth-dependent flattening would need a
-   * density profile, which not every model has (Jupiter's rivals leave theirs
-   * unknown).
+   * surface over the poles by up to 1.7% of the radius for Saturn and 0.6%
+   * for Jupiter, and outside it over the equator by half that — within the
+   * spread the models give those boundaries (4 to 9% of the radius), and
+   * nothing at the surface, where the flattening is seen. A depth-dependent
+   * flattening would need a density profile, which not every model has
+   * (Jupiter's rivals leave theirs unknown).
    *
    * At f = 0 every mesh is set to exactly what a sphere has always had.
    */

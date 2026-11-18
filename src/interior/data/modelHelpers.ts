@@ -33,6 +33,17 @@ export function endpoints(
   return { kind: 'endpoints', inner: sourced(innerValue, source, basis), outer: sourced(outerValue, source, basis), interpolation };
 }
 
+/** A quantity from samples across the region, [radiusKm, value] deepest first, for a
+ *  region whose quantity bends too far between its boundaries for two endpoints to hold. */
+export function profile(
+  samples: readonly (readonly [radiusKm: number, value: number])[],
+  source: string,
+  basis: 'measured' | 'inferred' | 'modelled',
+  interpolation: 'linear' | 'log' | 'none' = 'linear',
+): Quantity {
+  return { kind: 'profile', samples: samples.map(([radiusKm, value]) => ({ radiusKm, value })), interpolation, source, basis };
+}
+
 export const UNKNOWN: Quantity = { kind: 'unknown' };
 
 export function sharp(location: Uncertainty | null = null): Boundary {

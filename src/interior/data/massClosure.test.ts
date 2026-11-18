@@ -9,6 +9,10 @@
  *
  * The models known not to close are listed with what is wrong, and each must
  * still miss: the day one is fixed, this test asks for its entry to go.
+ *
+ * Saturn's pressures are derived from its densities (saturn.ts says how), so
+ * they are held here to the hydrostatic balance of them: edit one and the
+ * other has to follow.
  */
 import { describe, expect, it } from 'vitest';
 import { MASSES_KG } from '../../volumeCompare/compareLogic';
@@ -129,6 +133,40 @@ function integratedMassKg(model: InteriorModel): number | null {
   return massKg;
 }
 
+/** Saturn's spin: Mankovich & Fuller's baseline period, from ring seismology, 10 h 33 m 38 s. */
+const SATURN_SPIN_RAD_S = (2 * Math.PI) / (10 * 3600 + 33 * 60 + 38);
+
+/** The hydrostatic pressure, GPa, at each of `radiiKm`, integrated down from `topKm` where it is
+ *  `topGPa`: dP/dl = −ρ (G m/l² − ⅔ω²l) on level surfaces of mean radius l, to first order in the
+ *  spin (the level-surface mean of the centrifugal pull is ⅔ω²l). Every density below `topKm` must be known. */
+function hydrostaticPressureGPa(model: InteriorModel, radiiKm: readonly number[], topKm: number, topGPa: number, spinRadS: number): number[] {
+  const steps = 200_000;
+  const widthKm = topKm / steps;
+  const density = new Float64Array(steps);
+  const enclosedKg = new Float64Array(steps);
+  let massKg = 0;
+  let regionIndex = 0;
+  for (let step = 0; step < steps; step++) {
+    const radiusKm = (step + 0.5) * widthKm;
+    while (model.regions[regionIndex].outerRadiusKm < radiusKm) regionIndex++;
+    const region = model.regions[regionIndex];
+    const quantity = region.densityKgM3;
+    if (quantity.kind === 'unknown') throw new Error(`${model.modelId}/${region.key}: no density to balance`);
+    density[step] = densityAt(quantity, radiusKm, regionIndex === 0 ? 0 : model.regions[regionIndex - 1].outerRadiusKm, region.outerRadiusKm);
+    const shellKg = 4 * Math.PI * (radiusKm * 1000) ** 2 * density[step] * widthKm * 1000;
+    enclosedKg[step] = massKg + shellKg / 2;
+    massKg += shellKg;
+  }
+  const pressureAtEdgePa = new Float64Array(steps + 1);
+  pressureAtEdgePa[steps] = topGPa * 1e9;
+  for (let step = steps - 1; step >= 0; step--) {
+    const radiusM = (step + 0.5) * widthKm * 1000;
+    const gravity = (GRAVITATIONAL_CONSTANT * enclosedKg[step]) / (radiusM * radiusM) - (2 / 3) * spinRadS * spinRadS * radiusM;
+    pressureAtEdgePa[step] = pressureAtEdgePa[step + 1] + density[step] * gravity * widthKm * 1000;
+  }
+  return radiiKm.map((radiusKm) => pressureAtEdgePa[Math.round(radiusKm / widthKm)] / 1e9);
+}
+
 function everyModel(): InteriorModel[] {
   return interiorBodyIds().flatMap((bodyId) => coverageModels(coverageFor(bodyId)));
 }
@@ -203,5 +241,27 @@ describe('mass closure', () => {
     const insideRout = regionMassKg(core.densityKgM3, 0, core.outerRadiusKm, 0, 0.59 * saturn.referenceRadiusKm)! / earthMassKg;
     expect(insideRout).toBeGreaterThan(55.1 - 2 * 1.7);
     expect(insideRout).toBeLessThan(55.1 + 2 * 1.7);
+  });
+
+  it("holds Saturn's pressures within 5% of the hydrostatic balance of its own densities", () => {
+    const saturn = coverageModels(coverageFor('Saturn'))[0];
+    const atmosphere = saturn.regions[saturn.regions.length - 1];
+    const envelope = saturn.regions[saturn.regions.length - 2];
+    if (envelope.pressureGPa.kind !== 'endpoints' || atmosphere.pressureGPa.kind !== 'endpoints') throw new Error('Saturn\'s pressures are endpoints');
+    // The envelope's top is the atmosphere's base: one pressure there, where the integral starts.
+    const topGPa = envelope.pressureGPa.outer.value;
+    expect(atmosphere.pressureGPa.inner.value).toBe(topGPa);
+    const unbalanced: string[] = [];
+    let innerKm = 0;
+    for (const region of saturn.regions.slice(0, -1)) {
+      const pressure = region.pressureGPa;
+      if (pressure.kind !== 'endpoints') throw new Error(`Saturn/${region.key}: pressures are endpoints`);
+      const [atInner, atOuter] = hydrostaticPressureGPa(saturn, [innerKm, region.outerRadiusKm], envelope.outerRadiusKm, topGPa, SATURN_SPIN_RAD_S);
+      for (const [end, stated, balanced] of [['inner', pressure.inner.value, atInner], ['outer', pressure.outer.value, atOuter]] as const) {
+        if (!(Math.abs(stated / balanced - 1) <= 0.05)) unbalanced.push(`${region.key} ${end}: ${stated} GPa stated, ${balanced.toFixed(1)} GPa holds the densities up`);
+      }
+      innerKm = region.outerRadiusKm;
+    }
+    expect(unbalanced).toEqual([]);
   });
 });

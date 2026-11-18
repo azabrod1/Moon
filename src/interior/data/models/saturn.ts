@@ -7,11 +7,14 @@
  *
  * The densities are Mankovich & Fuller's best-fitting model, read off their
  * Fig. 2b; the model weighs 1.05 Saturns with them, and massClosure.test.ts
- * holds it to the planet. Fortney & Nettelmann (2010), credited with the
- * pressures and temperatures, gives no Saturn profile, and the pressures do
- * not balance these densities: hydrostatic equilibrium gives about 2000 GPa
- * at the centre (not 1000), 170 at the core's edge (not 400) and 80 at the
- * top of the metallic layer (not 150). They await a source that has them.
+ * holds it to the planet. The pressures are what holds those densities up:
+ * hydrostatic balance on level surfaces, to first order in the spin at the
+ * paper's period of 10 h 33 m 38 s, down from the 0.1 GPa the atmosphere
+ * gives its base. The paper prints no pressures, but its convective envelope
+ * passes 10⁶ bar, as this one does above the core (1.7 × 10⁶). Built on
+ * densities 5% over Saturn's mass, they may run some 10% high; the test keeps
+ * the two in step. The temperatures, credited to Fortney & Nettelmann (2010),
+ * are not in that review, which gives no Saturn profile; they await a source.
  */
 import type { InteriorModel } from '../interiorTypes';
 import { claim, distributed, endpoints, heat, modelSpread, profile, qualitative, row, sharp, sourced } from '../modelHelpers';
@@ -48,7 +51,7 @@ export const SATURN_MODEL: InteriorModel = {
       boundary: distributed(8000, MANKOVICH, modelSpread(30_000, 40_000, ['Mankovich & Fuller 2021']), qualitative('A gradient, not a surface: the heavy-element fraction fades outward')),
       composition: sourced('Rock and ice, about 17 Earth masses of them, dissolved into hydrogen and helium and stably layered', MANKOVICH, 'inferred'),
       temperatureK: endpoints(12_000, 8000, FORTNEY, 'modelled'),
-      pressureGPa: endpoints(1000, 400, FORTNEY, 'modelled'),
+      pressureGPa: endpoints(1900, 170, MANKOVICH, 'modelled'),
       // The best-fitting model of Mankovich & Fuller's Fig. 2b, every 5000 km, to
       // two figures: the figure reads to about ±40 kg/m³, against mean radius (its
       // curve reaches zero at r/R = 1), and their 1024 fits span 6500–8000 at the
@@ -74,14 +77,14 @@ export const SATURN_MODEL: InteriorModel = {
       boundary: distributed(3000, FORTNEY, modelSpread(40_000, 45_000, ['Fortney & Nettelmann 2010']), qualitative('The change from molecular to metallic fluid is continuous')),
       composition: sourced('Hydrogen as a liquid metal, with less helium than above: the helium has rained out', STEVENSON, 'modelled'),
       temperatureK: endpoints(8000, 6000, FORTNEY, 'modelled'),
-      pressureGPa: endpoints(400, 150, FORTNEY, 'modelled'),
+      pressureGPa: endpoints(170, 75, MANKOVICH, 'modelled'),
       // From the same figure: Fortney & Nettelmann give no Saturn density.
       densityKgM3: endpoints(890, 620, MANKOVICH, 'modelled'),
       heat: heat([{ kind: 'heliumRain', note: 'Helium droplets falling through the hydrogen release gravitational energy, the extra light Saturn gives off.' }], 'heat from the core', 'convection'),
       claims: [
         claim('existence', [
           row('magnetic', 'supports', DOUGHERTY, { observed: 'A dipole field almost perfectly aligned with the spin axis, measured from inside the rings', inferred: 'A dynamo in a conducting fluid shell deep inside: metallic hydrogen', assumed: 'Dynamo theory; a stably stratified layer above smooths the field', uncertain: 'The depth of the dynamo', mission: 'Cassini', year: 2018 }),
-          row('labHighPressure', 'supports', WEIR, { observed: 'Fluid hydrogen becomes a metal near 140 GPa in shock experiments', inferred: 'Saturn crosses that pressure about halfway down', assumed: 'Saturn\'s pressure profile', uncertain: 'The transition\'s width', year: 1996 }),
+          row('labHighPressure', 'supports', WEIR, { observed: 'Fluid hydrogen becomes a metal near 140 GPa in shock experiments', inferred: 'Saturn passes that pressure about 22,000 km down, low in this layer', assumed: 'Saturn\'s pressure profile, from hydrostatic balance on its densities', uncertain: 'The transition\'s width: the layer\'s upper part lies at 75–140 GPa, below the pressure measured here', year: 1996 }),
         ]),
       ],
     },
@@ -94,7 +97,7 @@ export const SATURN_MODEL: InteriorModel = {
       boundary: distributed(400, LINDAL, null, null),
       composition: sourced('Hydrogen and helium as a dense supercritical fluid, helium-depleted toward the base', FORTNEY, 'modelled'),
       temperatureK: endpoints(6000, 500, FORTNEY, 'modelled'),
-      pressureGPa: endpoints(150, 0.1, FORTNEY, 'modelled'),
+      pressureGPa: endpoints(75, 0.1, MANKOVICH, 'modelled'),
       // From the same figure, whose curve is straight enough here for two ends
       // (within 20 kg/m³); at the top it reads within a pixel of 50.
       densityKgM3: endpoints(620, 50, MANKOVICH, 'modelled'),

@@ -23,7 +23,7 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { PlayerShip, type ShipProfile } from './PlayerShip';
+import { PlayerShip, type ShipOverride, type ShipProfile } from './PlayerShip';
 import { hazeCacheGpuBytes, sessionHazeCacheWarmup, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, POSITION_MODEL, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode, type RideAnchor } from './PlanetariumStore';
@@ -322,6 +322,7 @@ import {
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
+  SHIP_REFERENCE_RADIUS_AU,
   SHIP_OCCLUDER_RADIUS_AU,
   SHIP_ANY_HULL_EXTENT_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
@@ -8248,6 +8249,15 @@ export class PlanetariumMode {
    */
   setVeilScale(scale: number): void {
     this.veilScale = Number.isFinite(scale) ? Math.max(0, scale) : 1;
+  }
+
+  /**
+   * Fly the ship `build` makes, at the ship's reference radius, in place of
+   * the default one (PlayerShip.setOverride), or the default ship for null.
+   * For a look with its own ship (the Retro look's, src/retro).
+   */
+  setShipOverride(build: ((referenceRadiusAU: number) => ShipOverride) | null): void {
+    this.player.setOverride(build ? build(SHIP_REFERENCE_RADIUS_AU) : null);
   }
 
   /**

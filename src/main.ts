@@ -280,7 +280,7 @@ const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search
 const retro = createRetro({
   renderer,
   canDraw: useBloom,
-  changed: () => { refreshQualityPin(); applySceneResolution('look'); applyRetroGlare(); forcedDrawRequest = true; },
+  changed: () => { refreshQualityPin(); applySceneResolution('look'); applyRetroLook(); forcedDrawRequest = true; },
 });
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
@@ -1346,12 +1346,14 @@ let autoExposure = true;
 // the next frame.
 let composerBuiltFor: { cam: THREE.Camera; bloom: { strength: number }; enabled: boolean; lens: number } | null = null;
 
-/** The Retro look's share of the planetarium's glow (src/retro/index.ts
- *  RetroGlare): the Sun's veil, and the bloom while the planetarium's
- *  composer is the live one. All of both with the look off. */
-function applyRetroGlare(): void {
+/** What the Retro look asks of the planetarium (src/retro/index.ts): its
+ *  share of the glow (the Sun's veil, and the bloom while the planetarium's
+ *  composer is the live one) and its own ship. All of both, and the app's own
+ *  ship, with the look off. */
+function applyRetroLook(): void {
   const glare = retro.glare;
   planetariumMode?.setVeilScale(glare?.veil ?? 1);
+  planetariumMode?.setShipOverride(retro.ship);
   const built = composerBuiltFor;
   if (bloomPass && built && built.cam === planetariumCamera) {
     bloomPass.strength = built.bloom.strength * (glare?.bloom ?? 1);
@@ -1606,7 +1608,7 @@ function buildComposer(
   // finishing pass's own target and the three sampling sites' uniforms.
   sizeComposerToScene(cam);
   applyUpscalePasses();
-  applyRetroGlare();
+  applyRetroLook();
 }
 
 /** Which side of the canvas the live frame's scene is drawn on: smaller
@@ -3032,7 +3034,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           void import('./interior/InteriorMode').catch(() => {});
           void import('./volumeCompare/VolumeCompareMode').catch(() => {});
         });
-        applyRetroGlare();
+        applyRetroLook();
       }
       debugLog('Activating Planetarium mode');
       plmActivated = false;

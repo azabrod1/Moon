@@ -1,8 +1,11 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
+import { SHIP_HULL_MAX_EXTENT_AU, SHIP_REFERENCE_RADIUS_AU } from '../planetarium/cruiseView';
 import { bracketBox } from './brackets';
 import { retroGrid, retroInterfacePixel, retroSceneRatio } from './grid';
 import { RETRO_LOOKUP_STEPS, hexToRgb, retroLookup, retroPalette } from './palette';
 import { resolveBootLook } from './setting';
+import { createRetroShip } from './ship';
 import { retroTypographyCss } from './typography';
 
 describe('the Retro look', () => {
@@ -47,6 +50,25 @@ describe('the Retro look', () => {
     expect(css).toContain('html.retro .mono { font-family: inherit !important; }');
     // A region retro.css sets a face for itself is left alone.
     expect(css).not.toContain('.tr-clock');
+  });
+
+  it('builds a ship inside the camera-safety extent the app sets for its own', () => {
+    // Its farthest solid point (the flames are light, not hull), at the app's
+    // half-size ship group: the camera's near plane and zoom floor are set
+    // from this extent (planetarium/cruiseView.ts).
+    const { model } = createRetroShip(SHIP_REFERENCE_RADIUS_AU);
+    model.updateMatrixWorld(true);
+    let farthest = 0;
+    const point = new THREE.Vector3();
+    model.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || (mesh.material as THREE.Material).blending === THREE.AdditiveBlending) return;
+      const positions = mesh.geometry.getAttribute('position');
+      for (let index = 0; index < positions.count; index++) {
+        farthest = Math.max(farthest, point.fromBufferAttribute(positions, index).applyMatrix4(mesh.matrixWorld).length());
+      }
+    });
+    expect(farthest * 0.5).toBeLessThan(SHIP_HULL_MAX_EXTENT_AU);
   });
 
   it('puts the target brackets on the big-pixel grid, inside the viewport', () => {

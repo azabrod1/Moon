@@ -25,7 +25,8 @@
  *
  * Shading is the scene's own Lambert law (`radiance` is albedo ×
  * SUN_LIGHT_INTENSITY / π × the Sun's colour, dimmed by the caller in
- * eclipse), times the cosine of the Sun's altitude: flat ground. Colour only
+ * eclipse with the tint the body's disc is drawn with, red in Earth's
+ * umbra), times the cosine of the Sun's altitude: flat ground. Colour only
  * — Earth's ground marks the sea in alpha for the glow pass, and this layer
  * must not write it. The tone-mapping chunks make it right on the no-float
  * route, where the scene draws straight to the screen, and are no-ops in the

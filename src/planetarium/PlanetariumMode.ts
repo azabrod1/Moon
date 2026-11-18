@@ -1374,6 +1374,9 @@ export class PlanetariumMode {
    *  the ownership hysteresis in computeVisibleSunFraction — a conjunct pair
    *  trading the lead frame to frame must not flip the carve/silhouette. */
   private sunDominantOccluderMesh: THREE.Object3D | null = null;
+  /** Last frame's horizon (the landed body's limb, at a site) was the
+   *  Sun's dominant occluder: the emergence flash skips that clearing. */
+  private sunHorizonOccludedLastFrame = false;
   /** Captured direction of the best challenger / the incumbent while the
    *  hysteresis picks between them (alloc-free scratch). */
   private tmpBestOccluderDirection = new THREE.Vector3();
@@ -7803,20 +7806,31 @@ export class PlanetariumMode {
 
   private applyMoonShading(m: MoonMesh, shading: MoonShadingState) {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
-    const fraction = shading.sunVisibleFraction;
-    const isEarthMoon = m.data.name === 'Moon' && m.data.parentPlanet === 'Earth';
     // The colour is the body's albedo grade times this frame's shade: written
     // through the grade so a graded Moon stays graded through every frame.
-    if (isEarthMoon && shading.inUmbra) {
-      writeShadedAlbedo(material, m.data.name, [
-        Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R),
-        Math.max(fraction, 0.07),
-        Math.max(fraction, 0.05),
-      ]);
+    writeShadedAlbedo(material, m.data.name, PlanetariumMode.moonShadeRgb(m.data, shading, this.moonShadeScratch));
+  }
+
+  private readonly moonShadeScratch: [number, number, number] = [1, 1, 1];
+
+  /** The sunlight an eclipsed moon is lit by, per channel: the sun-visible
+   *  fraction, with Earth's Moon held at the refracted-red floor in the
+   *  umbra. The disc and the ground under a site on it (updateSiteGround)
+   *  both take it, so the two can never disagree. */
+  private static moonShadeRgb(
+    moon: { name: string; parentPlanet: string },
+    shading: MoonShadingState,
+    out: [number, number, number],
+  ): [number, number, number] {
+    const fraction = shading.sunVisibleFraction;
+    if (moon.name === 'Moon' && moon.parentPlanet === 'Earth' && shading.inUmbra) {
+      out[0] = Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R);
+      out[1] = Math.max(fraction, 0.07);
+      out[2] = Math.max(fraction, 0.05);
     } else {
-      const shade = Math.max(fraction, 0.03);
-      writeShadedAlbedo(material, m.data.name, [shade, shade, shade]);
+      out[0] = out[1] = out[2] = Math.max(fraction, 0.03);
     }
+    return out;
   }
 
   /** Re-pose the landed system's shadow guides + transit spots for this frame. */
@@ -8832,6 +8846,8 @@ export class PlanetariumMode {
    *  glitch. The stored flash keeps decaying on its own. */
   private noteSunViewDiscontinuity(): void {
     this.sunFlashResetPending = true;
+    // A site's "rises in …" holds only while the clock runs without a jump.
+    this.surfaceSiteRiseCache = null;
     this.sunSilhouetteSnapPending = true;
     // The night-side exposure too: a meter still easing out of the sky just
     // left would show that sky's exposure on this one for half a second.
@@ -9469,6 +9485,15 @@ export class PlanetariumMode {
       this.lastSunVisibleFraction = appearanceEligible ? bodyVisibleFraction : 1;
       this.sunFlashResetPending = false;
     }
+    // At a site the landed body's limb is the horizon, and a sunrise is not
+    // an emergence: on a fast clock the Sun clears it in a frame, every lunar
+    // day, and a flash each time would strobe. The frame after the horizon
+    // let go counts too, since that is the frame the fraction jumps.
+    const horizonOccludes = this.surfaceSiteStanding !== null
+      && this.sunDominantOccluderMesh !== null
+      && this.sunDominantOccluderMesh === this.landedBodyMesh();
+    const horizonRise = horizonOccludes || this.sunHorizonOccludedLastFrame;
+    this.sunHorizonOccludedLastFrame = horizonOccludes;
     this.sunEmergenceFlash = advanceSunEmergenceFlash({
       previousVisibleFraction: this.lastSunVisibleFraction,
       // Body-only: a flash marks a solid limb clearing, not the soft step of
@@ -9476,7 +9501,7 @@ export class PlanetariumMode {
       visibleFraction: bodyVisibleFraction,
       flash: this.sunEmergenceFlash,
       dt,
-      eligible: appearanceEligible,
+      eligible: appearanceEligible && !horizonRise,
     });
     this.lastSunVisibleFraction = appearanceEligible ? bodyVisibleFraction : 1;
 
@@ -21165,6 +21190,14 @@ export class PlanetariumMode {
     return site;
   }
 
+  /** The landed body's drawn mesh (the one the Sun's occlusion scan sees). */
+  private landedBodyMesh(): THREE.Object3D | null {
+    const landed = this.landedOn;
+    if (!landed) return null;
+    if (landed.type === 'moon') return this.moonMeshByName.get(landed.name)?.mesh ?? null;
+    return this.planetMeshByName.get(landed.name)?.mesh ?? null;
+  }
+
   /** The landed body's orientation as drawn (the Moon's from the lunar
    *  model via the moon seam, a planet's from its pole and spin). */
   private landedBodyOrientation(): THREE.Quaternion | null {
@@ -21185,6 +21218,8 @@ export class PlanetariumMode {
     const dipDeg = horizonDipDeg(this.getLandedBodyRadiusAU() * KM_PER_AU, site.heightKm);
     this.surfaceSiteTargetAltitudeDeg = aim.altitudeDeg;
     this.surfaceSiteTargetDown = aim.altitudeDeg + angularRadiusDeg < -dipDeg;
+    // Up: the next time it is down, when it rises again is a new question.
+    if (!this.surfaceSiteTargetDown) this.surfaceSiteRiseCache = null;
   }
 
   /** Track from a site: the horizon level (up is the zenith), and a target
@@ -21202,6 +21237,8 @@ export class PlanetariumMode {
    *  the horizon's dip, and the regolith's radiance in the scene's own units
    *  (albedo × SUN_LIGHT_INTENSITY / π × the Sun's colour, as a white Lambert
    *  disc under the Sun reads), dimmed by the body's eclipse shade. */
+  private readonly siteGroundShade: [number, number, number] = [1, 1, 1];
+
   private updateSiteGround(standing: SiteFrame | null, site: Site | null): void {
     const ground = this.siteGround;
     if (!ground) return;
@@ -21211,12 +21248,22 @@ export class PlanetariumMode {
       return;
     }
     const toSun = this.tmpSiteSunDirection.copy(this.solarSystem.sun.position).sub(this.camera.position);
-    const shade = this.landedOn?.type === 'moon' ? this.moonMeshByName.get(this.landedOn.name)?.shadeSmoothed ?? 1 : 1;
-    const scale = (SUN_LIGHT_INTENSITY / Math.PI) * shade;
+    // In eclipse, the light the disc is drawn with: red in Earth's umbra.
+    const shade = this.siteGroundShade;
+    shade[0] = shade[1] = shade[2] = 1;
+    const moon = this.landedOn?.type === 'moon' ? this.moonMeshByName.get(this.landedOn.name) : undefined;
+    if (moon) {
+      PlanetariumMode.moonShadeRgb(
+        moon.data,
+        { sunVisibleFraction: moon.shadeSmoothed ?? 1, inUmbra: moon.shadeUmbraSticky === true },
+        shade,
+      );
+    }
+    const scale = SUN_LIGHT_INTENSITY / Math.PI;
     this.siteGroundRadiance.setRGB(
-      albedo[0] * SUN_LIGHT_LINEAR[0] * scale,
-      albedo[1] * SUN_LIGHT_LINEAR[1] * scale,
-      albedo[2] * SUN_LIGHT_LINEAR[2] * scale,
+      albedo[0] * SUN_LIGHT_LINEAR[0] * scale * shade[0],
+      albedo[1] * SUN_LIGHT_LINEAR[1] * scale * shade[1],
+      albedo[2] * SUN_LIGHT_LINEAR[2] * scale * shade[2],
     );
     const dipRad = horizonDipDeg(this.getLandedBodyRadiusAU() * KM_PER_AU, site.heightKm) * DEG2RAD;
     ground.update(standing.zenith, toSun, dipRad, this.siteGroundRadiance);
@@ -21253,9 +21300,15 @@ export class PlanetariumMode {
     const name = this.surfaceTargetDisplayName(this.surfaceTarget);
     const key = surfaceTargetKey(this.surfaceTarget);
     const cache = this.surfaceSiteRiseCache;
-    const fresh = cache && cache.key === key && now >= cache.fromMs && (cache.riseMs === null
-      ? now - cache.fromMs < 3_600_000
-      : now < cache.riseMs);
+    // The search is the costly part (a month of hourly steps when nothing
+    // rises), so it holds while the clock runs on from it without a jump
+    // (a jump drops it): forward, until the rise it found, or for a day when
+    // it found none, so "not in the next month" stays true to within a day;
+    // backward, for good, because the target has been down all the way back
+    // (measureSiteTarget drops the cache the moment the target is up).
+    const fresh = cache && cache.key === key && (now < cache.fromMs || (cache.riseMs === null
+      ? now - cache.fromMs < 86_400_000
+      : now < cache.riseMs));
     if (!fresh) {
       const radiusKm = this.getLandedBodyRadiusAU() * KM_PER_AU;
       const dipDeg = horizonDipDeg(radiusKm, site.heightKm);

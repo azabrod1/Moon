@@ -280,7 +280,7 @@ const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search
 const retro = createRetro({
   renderer,
   canDraw: useBloom,
-  changed: () => { applyUpscalePasses(); forcedDrawRequest = true; },
+  changed: () => { refreshQualityPin(); applySceneResolution('look'); forcedDrawRequest = true; },
 });
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
@@ -609,14 +609,17 @@ function qualitySceneRatioRequest(): number | null {
 let sceneRatioWarm: number | null = null;
 
 /** Write the one request every path reads: the warm-up's rung while it holds
- *  one, else the measurement pin's ratio while one stands, else the level's
- *  own. */
+ *  one, else the measurement pin's ratio while one stands, else the Retro
+ *  look's while it is on, else the level's own. */
 function updateSceneRatioRequest(): void {
   if (sceneRatioWarm !== null) {
     upscaleRenderRatio = sceneRatioWarm;
     return;
   }
-  upscaleRenderRatio = upscalePinned ? upscalePinRatio : qualitySceneRatioRequest();
+  const viewport = viewportSize();
+  upscaleRenderRatio = upscalePinned
+    ? upscalePinRatio
+    : retro.sceneRatio(viewport.width, viewport.height, getTargetPixelRatio()) ?? qualitySceneRatioRequest();
 }
 
 /**
@@ -636,15 +639,16 @@ function recomputeQualityBounds(): void {
 /**
  * Every pin that holds Dynamic idle: a measurement that owns the ratio
  * (`?upscale=`, the DEV `?ratio=` / `__moon.pinRatio`), the perf sweep's run,
- * a fixed level, and a build with no composer to re-size. Idle means no
- * interval counts and no decision is made — not that the controller forgets
- * what it learned.
+ * a fixed level, the Retro look's own ratio, and a build with no composer to
+ * re-size. Idle means no interval counts and no decision is made — not that
+ * the controller forgets what it learned.
  */
 function refreshQualityPin(): void {
   const pinned = upscalePinned
     || pixelRatioPin !== null
     || qualitySweepHold
     || qualityLevel !== 'dynamic'
+    || retro.on
     || !useBloom;
   if (pinned === qualityIdle) return;
   qualityIdle = pinned;

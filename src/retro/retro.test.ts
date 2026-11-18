@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bracketBox } from './brackets';
-import { retroGrid, retroInterfacePixel } from './grid';
+import { retroGrid, retroInterfacePixel, retroSceneRatio } from './grid';
 import { RETRO_LOOKUP_STEPS, hexToRgb, retroLookup, retroPalette } from './palette';
 import { resolveBootLook } from './setting';
 import { retroTypographyCss } from './typography';
@@ -13,6 +13,9 @@ describe('the Retro look', () => {
     const odd = retroGrid(1366, 768, 1);
     expect(odd.virtual.width * odd.block).toBeGreaterThanOrEqual(1366);
     for (const ratio of [1, 1.25, 2, 3]) expect(Number.isInteger(retroInterfacePixel(ratio) * ratio)).toBe(true);
+    // The scene under it: three of its pixels per big pixel, never below half the canvas's.
+    expect(retroSceneRatio(390, 844, 2)).toBe(1.5);
+    expect(retroSceneRatio(1280, 800, 2)).toBe(1);
   });
 
   it('takes the URL, then the saved look, then Modern', () => {

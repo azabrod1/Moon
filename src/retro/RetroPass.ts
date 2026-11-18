@@ -9,7 +9,11 @@
  *  1. Reduce: one texel per big pixel (grid.ts), the average of the frame's
  *     pixels under it — except that against dark sky a bright star or a thin
  *     line mostly keeps its brightest pixel, so the coarse grid does not
- *     average them away; faint lone stars do average away.
+ *     average them away; faint lone stars do average away. The frame is
+ *     drawn coarser than the canvas (grid.ts retroSceneRatio), which spreads
+ *     a star's light over more of a pixel and dims its brightest one, so a
+ *     lone point is lifted back to the brightness it has at full resolution
+ *     (pointLift).
  *  2. Present: each canvas pixel shows its big pixel, counted from the top-left
  *     as the interface's grid is, cut to the 256-colour palette (palette.ts)
  *     with an 8 × 8 ordered dither fixed to the big pixel, faded out towards
@@ -57,7 +61,10 @@ uniform vec2 uInputSize;
 uniform vec2 uBuffer;
 uniform float uBlock;
 uniform ivec2 uVirtual;
+uniform float uPointLift;
 out vec4 fragColor;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
 void main() {
   ivec2 big = ivec2(gl_FragCoord.xy);
@@ -74,6 +81,7 @@ void main() {
   float count = 0.0;
   vec3 peak = vec3(0.0);
   float peakLuma = -1.0;
+  ivec2 peakAt = lo;
   float lit = 0.0;
   for (int j = 0; j < ${MAX_TAPS}; j++) {
     int y = lo.y + j * max(1, (hi.y - lo.y + ${MAX_TAPS - 1}) / ${MAX_TAPS});
@@ -84,13 +92,32 @@ void main() {
       vec3 colour = texelFetch(tInput, ivec2(x, y), 0).rgb;
       sum += colour;
       count += 1.0;
-      float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
-      if (luma > peakLuma) { peakLuma = luma; peak = colour; }
+      float luma = dot(colour, LUMA);
+      if (luma > peakLuma) { peakLuma = luma; peak = colour; peakAt = ivec2(x, y); }
       if (luma > 0.08) lit += 1.0;
     }
   }
   vec3 average = sum / max(count, 1.0);
-  float averageLuma = dot(average, vec3(0.2126, 0.7152, 0.0722));
+  float averageLuma = dot(average, LUMA);
+  // A point (a star, a moon dot) drawn coarser than the canvas is dimmer at
+  // its brightest pixel: lifted back where at most one pixel two out is half
+  // as bright (a neighbouring star). A line or a disc's edge crosses that ring
+  // at least twice, and is drawn no dimmer.
+  if (uPointLift > 1.0) {
+    ivec2 last = ivec2(uInputSize) - 1;
+    int crossings = 0;
+    for (int dy = -2; dy <= 2; dy++) {
+      for (int dx = -2; dx <= 2; dx++) {
+        if (abs(dx) < 2 && abs(dy) < 2) continue;
+        float luma = dot(texelFetch(tInput, clamp(peakAt + ivec2(dx, dy), ivec2(0), last), 0).rgb, LUMA);
+        if (luma > 0.5 * peakLuma) crossings++;
+      }
+    }
+    if (crossings <= 1) {
+      peak *= min(uPointLift, 1.0 / max(max(peak.r, peak.g), max(peak.b, 1e-4)));
+      peakLuma = dot(peak, LUMA);
+    }
+  }
   // Only against dark sky (on a lit planet the brightest pixel is a cloud
   // speck, and letting it win would speckle the disc), and only for a bright
   // point or a streak across the block (a line): a faint lone star averages
@@ -103,6 +130,21 @@ void main() {
   fragColor = vec4(average, 1.0);
 }
 `;
+
+/**
+ * How much brighter a lone point's brightest pixel is at full resolution than
+ * in a frame drawn at `scale` of the canvas's pixels across. The app's stars
+ * keep their light at any size, so drawn coarser they spread it and dim at
+ * the peak, and the tone curve's toe dims them further. Fitted on the app's
+ * own frames, about 1,200 stars matched big pixel by big pixel, so that as
+ * many clear the reduce's threshold as at full resolution: 2.45 at a half,
+ * 1.5 at 0.65. 1 at or above full resolution, where the look was tuned; not
+ * measured below a half, which grid.ts never draws.
+ */
+export function pointLift(scale: number): number {
+  if (!(scale < 1)) return 1;
+  return 1 + 1.45 * Math.pow(1 / Math.max(scale, 0.5) - 1, 1.7);
+}
 
 /** How far the dither moves a colour before the cut: three quarters of the
  *  palette's mean spacing, times the strength tuned on frames of the app. */
@@ -166,7 +208,9 @@ export class RetroPass extends Pass {
   private readonly gridUniforms = {
     uBuffer: { value: new THREE.Vector2() }, uBlock: { value: 1 }, uVirtual: { value: new THREE.Vector2() },
   };
-  private readonly inputUniforms = { tInput: { value: null as THREE.Texture | null }, uInputSize: { value: new THREE.Vector2() } };
+  private readonly inputUniforms = {
+    tInput: { value: null as THREE.Texture | null }, uInputSize: { value: new THREE.Vector2() }, uPointLift: { value: 1 },
+  };
   private readonly paletteUniform = { value: null as THREE.DataTexture | null };
   private readonly reduce = material(REDUCE_SHADER, { ...this.inputUniforms, ...this.gridUniforms });
   // setSize keeps the small target's texture object, so it is bound once.
@@ -195,6 +239,7 @@ export class RetroPass extends Pass {
     const drawn = drawnSize(input);
     this.inputUniforms.tInput.value = input.texture;
     this.inputUniforms.uInputSize.value.set(drawn.width, drawn.height);
+    this.inputUniforms.uPointLift.value = pointLift(drawn.width / buffer.x);
     renderer.setRenderTarget(this.small);
     this.reduceQuad.render(renderer);
     this.paletteUniform.value = retroPaletteTexture();

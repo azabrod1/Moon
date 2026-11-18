@@ -7,6 +7,12 @@
  * where the canvas is not a whole number of blocks, the last column and row
  * hang off the right and bottom edges and are cut there.
  *
+ * The scene under the picture is drawn coarser to match (retroSceneRatio):
+ * about SCENE_PIXELS_PER_BLOCK of its pixels across each big pixel, which is
+ * all the reduce needs, but never below half the canvas's resolution — a
+ * quarter of a 2× display's pixels. Any coarser and the faintest stars,
+ * smaller than a pixel, flicker as they move (RetroPass.ts pointLift).
+ *
  * The interface's: a whole number of DEVICE pixels, about one and a half
  * (three on a 2× display, one on a 1× monitor), finer than the picture's on
  * purpose — on a strict 200-line grid the app's own menu, at about eighteen
@@ -35,6 +41,16 @@ export function retroGrid(bufferWidth: number, bufferHeight: number, outputRatio
     virtual: { width: Math.ceil(width / block), height: Math.ceil(height / block) },
     cssPixel: block / (outputRatio > 0 ? outputRatio : 1),
   };
+}
+
+export const SCENE_PIXELS_PER_BLOCK = 3;
+
+/** The scene ratio the look asks for on a `cssWidth × cssHeight` canvas at
+ *  `outputRatio`: SCENE_PIXELS_PER_BLOCK scene pixels across each big pixel,
+ *  between half the canvas's own ratio and all of it. */
+export function retroSceneRatio(cssWidth: number, cssHeight: number, outputRatio: number): number {
+  const { block } = retroGrid(cssWidth * outputRatio, cssHeight * outputRatio, outputRatio);
+  return outputRatio * Math.min(1, Math.max(0.5, SCENE_PIXELS_PER_BLOCK / block));
 }
 
 /** The interface's pixel in CSS px: a whole number of device pixels. */

@@ -14,8 +14,10 @@
  *
  * What it asks of the app (main.ts): put `pass()` last in the planetarium's
  * composer, keep the resample passes off while `on` (the pass reads the
- * finishing pass's own target and draws the canvas itself), and hand `frame`
- * the most prominent body after each planetarium frame.
+ * finishing pass's own target and draws the canvas itself), draw the scene at
+ * `sceneRatio()` while it is on (coarser than the canvas, since a picture of
+ * about 200 lines needs no more: grid.ts), and hand `frame` the most
+ * prominent body after each planetarium frame.
  *
  * `?retro=1` or `?retro=0` overrides the saved look for one load
  * (setting.ts). Not offered where there is no composer (`canDraw` false).
@@ -26,7 +28,7 @@
  */
 import type * as THREE from 'three';
 import { RetroTargetBrackets, type ScreenBox } from './brackets';
-import { retroGrid, retroInterfacePixel } from './grid';
+import { retroGrid, retroInterfacePixel, retroSceneRatio } from './grid';
 import { installRetroIcons } from './icons';
 import { RetroPass, type FrameSource } from './RetroPass';
 import { LOOKS, LOOK_LABELS, LOOK_NOTES, lookSetting, resolveBootLook, type Look } from './setting';
@@ -44,6 +46,9 @@ export interface RetroHost {
 export interface Retro {
   /** Whether the look is on. */
   readonly on: boolean;
+  /** The scene ratio to draw the planetarium at for a `cssWidth × cssHeight`
+   *  canvas at `outputRatio`, or null while the look is off. */
+  sceneRatio(cssWidth: number, cssHeight: number, outputRatio: number): number | null;
   /** The pass for a newly built planetarium composer, enabled while the look is on. */
   pass(source: FrameSource): RetroPass;
   /** After each planetarium frame: the body to frame, or null for none. */
@@ -130,6 +135,9 @@ export function createRetro(host: RetroHost): Retro {
   return {
     get on() {
       return look === 'retro';
+    },
+    sceneRatio(cssWidth, cssHeight, outputRatio) {
+      return look === 'retro' ? retroSceneRatio(cssWidth, cssHeight, outputRatio) : null;
     },
     pass(source) {
       pass = new RetroPass(source);

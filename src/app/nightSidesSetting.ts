@@ -1,10 +1,10 @@
 /**
  * Where the Night sides setting is kept.
  *
- * On screen it is "Dark side of planets and moons" on the ☰ Display page, its
- * values reading "True to life" (real) and "Lit up" (brightened). The code, the
- * saved value and `?nightsides=` keep the setting's first names, so a choice
- * already saved and an old link still work.
+ * On screen it is "Dark side lighting" on the ☰ Display page, its values
+ * reading "True to life" (real) and "Lit up" (brightened). The code, the saved
+ * value and `?nightsides=` keep the setting's first names, so a choice already
+ * saved and an old link still work.
  *
  * Real, the default, is the physics: a night side is black where no sunlight
  * falls, and what light it does get is the light the scene models — a nearby

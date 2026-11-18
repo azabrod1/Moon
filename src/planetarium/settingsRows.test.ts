@@ -173,7 +173,7 @@ describe('the Display page', () => {
 
   it('describes the group by the note under it', () => {
     expect(displayPage).toContain('aria-describedby="settings-night-sides-note"');
-    expect(displayPage).toContain('role="radiogroup" aria-label="Dark side of planets and moons"');
+    expect(displayPage).toContain('role="radiogroup" aria-label="Dark side lighting"');
   });
 
   it('carries its value on the root row, the default in the markup', () => {

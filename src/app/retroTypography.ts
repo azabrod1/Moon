@@ -5,14 +5,32 @@
  *
  * A bitmap face is drawn for one size: set at its pixel size times the
  * interface pixel (`--ui-px`) every font pixel is a hard square, and at any
- * other size it is resampled and goes soft. So the family and the size must
- * always change together. index.html's retro block sets one face for every
- * element (Retro Sans 10, the size most of the interface is in); this module
- * adds, for each rule in the stylesheet that sets a font size, a rule giving
- * that element and its descendants the face for its size — inside the same
- * media query, so a phone's sizes follow the phone's rules. Read from the
- * live stylesheet when the look is first turned on, so a size added to
- * index.html later is mapped without anyone remembering to.
+ * other size it is resampled and goes soft. So a face's family and its size
+ * must always arrive together, and this module makes sure they do by leaning
+ * on ordinary inheritance:
+ *
+ *  - The root carries the default face (index.html's retro block: Retro
+ *    Sans 10, the size most of the interface is in).
+ *  - Every rule in the stylesheet that sets a font size in px gets a mirror
+ *    rule, `html.retro <its selector>`, that sets the face for that size,
+ *    family and size together. Everything inside the element without a size
+ *    of its own inherits both, so the nearest sized ancestor wins, as it does
+ *    in the modern look.
+ *  - A rule that sets only a family (`var(--font-mono)`, say) gets
+ *    `font-family: inherit`, so it can never pair one face's family with
+ *    another face's size. A relative size (`0.85em`) inherits its parent's
+ *    face whole rather than scaling it to a size it was not drawn for.
+ *
+ * The mirror rules keep their original selectors, so their specificity and
+ * order relative to one another are the stylesheet's own; `!important` puts
+ * them over the modern rules they mirror. They are inserted BEFORE the main
+ * stylesheet, so the retro block's own hand-set faces win a tie, and the few
+ * regions that set a face of their own (RETRO_FIXED_FACE_REGIONS: the title,
+ * the instrument readouts) are left out of the mapping altogether, so a more
+ * specific mapped rule inside them cannot win either.
+ *
+ * Read from the live stylesheet when the look is first turned on, so a size
+ * added to index.html later is mapped without anyone remembering to.
  */
 
 /** A bitmap face: its CSS family and its size in font pixels. */
@@ -35,56 +53,91 @@ export function retroFaceFor(modernPx: number): RetroFace {
   return FACES.find((entry) => modernPx <= entry.upTo)!.face;
 }
 
-/** One rule of the stylesheet that sets a font size. */
-export interface SizedRule {
+/**
+ * Regions the mapping never touches, because index.html's retro block gives
+ * them a face of its own: the title band's heading, the cockpit readouts (the
+ * clock and the speed) and the target brackets. A selector part that mentions
+ * one is skipped. Add a region here whenever the retro block hand-sets a face.
+ */
+export const RETRO_FIXED_FACE_REGIONS: readonly string[] = ['#top-bar h1', '.tr-clock', '.speed-center', '#retro-target'];
+
+/** Elements inside those regions that modern rules name directly (an id
+ *  outranks the region's own rule), skipped for the same reason. */
+export const RETRO_FIXED_FACE_INSIDE: readonly string[] = ['#planetarium-speed-value', '#planetarium-speed-label'];
+
+/** One rule of the stylesheet that sets a font size or a family. */
+export interface FontRule {
   selector: string;
-  fontSizePx: number;
+  /** The declared font-size as written ('11px', '0.85em', 'inherit'), or ''. */
+  fontSize: string;
+  /** Whether it declares a font-family. */
+  setsFamily: boolean;
   /** The media query it sits in, or null. */
   media: string | null;
 }
 
-/** The face's declarations; !important because the retro block's default is. */
-function declarations(face: RetroFace): string {
-  return `font-family: '${face.family}', monospace !important; font-size: calc(${face.pixels} * var(--ui-px)) !important;`;
+/** A selector list split on its top-level commas only, so `:is(.a, .b)` stays whole. */
+export function splitSelectorList(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < list.length; index++) {
+    const character = list[index];
+    if (character === '(' || character === '[') depth++;
+    else if (character === ')' || character === ']') depth = Math.max(0, depth - 1);
+    else if (character === ',' && depth === 0) {
+      parts.push(list.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(list.slice(start));
+  return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
-/** Prefix each selector of a list with `html.retro`, and add its descendants. */
-function retroSelectors(selectorList: string): string {
-  return selectorList
-    .split(',')
-    .map((selector) => selector.trim())
-    .filter((selector) => selector.length > 0)
-    // A pseudo-element has no descendants, and `::before *` would make the
-    // whole rule invalid, so it gets the face alone.
-    .flatMap((selector) => (selector.includes('::')
-      ? [`html.retro ${selector}`]
-      : [`html.retro ${selector}`, `html.retro ${selector} *`]))
-    .join(', ');
+/** The declarations a rule's mirror sets, or null for none. */
+function mirrorDeclarations(rule: FontRule): string | null {
+  const size = rule.fontSize.trim();
+  const px = /^([0-9.]+)px$/.exec(size);
+  if (px) {
+    const face = retroFaceFor(Number(px[1]));
+    return `font-family: '${face.family}', monospace !important; font-size: calc(${face.pixels} * var(--ui-px)) !important;`;
+  }
+  // Text sized to nothing is hidden on purpose: leave it hidden.
+  if (size !== '' && !/^0+(\.0+)?(px|em|rem|%)?$/.test(size)) {
+    return 'font-family: inherit !important; font-size: inherit !important;';
+  }
+  if (rule.setsFamily) return 'font-family: inherit !important;';
+  return null;
 }
 
-/** The CSS for every sized rule, in their order, media queries kept. Rules
- *  whose size maps to the default face are left out: the default covers them. */
-export function retroTypographyCss(rules: readonly SizedRule[]): string {
+/** The mirror rules, in the stylesheet's order, media queries kept. */
+export function retroTypographyCss(rules: readonly FontRule[]): string {
   const lines: string[] = [];
   for (const rule of rules) {
-    const face = retroFaceFor(rule.fontSizePx);
-    if (face.family === 'Retro Sans 10') continue;
-    const body = `${retroSelectors(rule.selector)} { ${declarations(face)} }`;
+    const declarations = mirrorDeclarations(rule);
+    if (!declarations) continue;
+    const parts = splitSelectorList(rule.selector)
+      .filter((part) => ![...RETRO_FIXED_FACE_REGIONS, ...RETRO_FIXED_FACE_INSIDE].some((region) => part.includes(region)))
+      // The retro block's own rules are already in retro terms.
+      .filter((part) => !part.includes('.retro'));
+    if (parts.length === 0) continue;
+    const body = `${parts.map((part) => `html.retro ${part}`).join(', ')} { ${declarations} }`;
     lines.push(rule.media ? `@media ${rule.media} { ${body} }` : body);
   }
   return lines.join('\n');
 }
 
-/** Every style rule in the sheets that sets a font size in px. */
-export function sizedRulesOf(sheets: Iterable<CSSStyleSheet>): SizedRule[] {
-  const found: SizedRule[] = [];
+/** Every style rule in the sheets that sets a font size or a family. */
+export function fontRulesOf(sheets: Iterable<CSSStyleSheet>): FontRule[] {
+  const found: FontRule[] = [];
   const visit = (rules: CSSRuleList, media: string | null) => {
     for (const rule of Array.from(rules)) {
       if (rule instanceof CSSMediaRule) {
         visit(rule.cssRules, media ? `${media} and ${rule.conditionText}` : rule.conditionText);
       } else if (rule instanceof CSSStyleRule) {
-        const size = /^([0-9.]+)px$/.exec(rule.style.fontSize.trim());
-        if (size) found.push({ selector: rule.selectorText, fontSizePx: Number(size[1]), media });
+        const fontSize = rule.style.fontSize;
+        const setsFamily = rule.style.fontFamily !== '';
+        if (fontSize !== '' || setsFamily) found.push({ selector: rule.selectorText, fontSize, setsFamily, media });
       }
     }
   };
@@ -100,11 +153,11 @@ export function sizedRulesOf(sheets: Iterable<CSSStyleSheet>): SizedRule[] {
   return found;
 }
 
-/** Add the mapped sizes to the page once. Safe to call on every switch. */
+/** Add the mirror rules to the page once, ahead of the main stylesheet. */
 export function installRetroTypography(doc: Document = document): void {
   if (doc.getElementById('retro-typography')) return;
   const style = doc.createElement('style');
   style.id = 'retro-typography';
-  style.textContent = retroTypographyCss(sizedRulesOf(Array.from(doc.styleSheets)));
-  doc.head.appendChild(style);
+  style.textContent = retroTypographyCss(fontRulesOf(Array.from(doc.styleSheets)));
+  doc.head.insertBefore(style, doc.head.querySelector('style'));
 }

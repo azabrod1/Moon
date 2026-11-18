@@ -83,5 +83,7 @@ describe('the boot script in index.html', () => {
         expect(run(search, saved), `${search} with ${saved}`).toBe(resolveBootLook(search, store));
       }
     }
+    // Where main cannot draw the look, the first paint does not start in it either.
+    expect(run('?nofloat=1&retro=1', 'retro')).toBe('modern');
   });
 });

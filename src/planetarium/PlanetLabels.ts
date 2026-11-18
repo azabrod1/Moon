@@ -110,6 +110,15 @@ export interface ForegroundSphere {
   /** A body flattened along its pole (astronomy/bodyShape), radiusAU its
    *  equatorial radius; absent is a sphere. */
   shape?: SpheroidShape;
+  /** The radius the body is DRAWN at where the occluder is padded beyond it
+   *  (the Sun's); absent is radiusAU. What the Retro look's brackets frame. */
+  drawnRadiusAU?: number;
+}
+
+/** A foreground sphere's name as a body name: moons are registered as
+ *  `moon:<name>` so they cannot collide with a planet's entry. */
+export function sphereBodyName(sphereName: string): string {
+  return sphereName.startsWith('moon:') ? sphereName.slice('moon:'.length) : sphereName;
 }
 
 /**
@@ -518,7 +527,9 @@ export class PlanetLabels {
    * disc's box in CSS px — the Retro look's target brackets
    * (ui/RetroTargetBrackets.ts). Only a disc between `minDiameterPx` and
    * `maxFraction` of the viewport's short side, whose centre is on screen; the
-   * ship never. Run after collectForegroundSpheres and the dynamic occluders.
+   * ship never. The name is the body's (sphereBodyName) and the disc the one
+   * drawn (drawnRadiusAU). Run after collectForegroundSpheres and the dynamic
+   * occluders.
    */
   prominentSphere(minDiameterPx: number, maxFraction: number): { name: string; left: number; top: number; right: number; bottom: number } | null {
     const width = this.occluderCanvasWidth;
@@ -531,14 +542,14 @@ export class PlanetLabels {
       if (sphere.name === 'ship') continue;
       const projection = projectSphereToScreen(
         { x: camera.x + sphere.x, y: camera.y + sphere.y, z: camera.z + sphere.z },
-        sphere.radiusAU, this.camera, width, height, this.prominentScratch,
+        sphere.drawnRadiusAU ?? sphere.radiusAU, this.camera, width, height, this.prominentScratch,
       );
       if (projection.ndcZ >= 1 || projection.footprintKind === 'none') continue;
       if (projection.x < 0 || projection.x > width || projection.y < 0 || projection.y > height) continue;
       if (projection.diameterPx > maxFraction * Math.min(width, height)) continue;
       if (projection.diameterPx <= bestDiameter) continue;
       bestDiameter = projection.diameterPx;
-      best = { name: sphere.name, left: projection.minX, top: projection.minY, right: projection.maxX, bottom: projection.maxY };
+      best = { name: sphereBodyName(sphere.name), left: projection.minX, top: projection.minY, right: projection.maxX, bottom: projection.maxY };
     }
     return best;
   }

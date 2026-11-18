@@ -52,7 +52,12 @@ export function retroIconUrl(rows: readonly string[]): string {
   return `url("data:image/svg+xml,${encodeURIComponent(retroIconSvg(rows))}")`;
 }
 
-/** Put every icon on <html> as `--rt-icon-<name>`. Idempotent. */
+const installed = new WeakSet<HTMLElement>();
+
+/** Put every icon on <html> as `--rt-icon-<name>`, once: they never change,
+ *  and rewriting the root's style would restyle the whole document. */
 export function installRetroIcons(root: HTMLElement = document.documentElement): void {
+  if (installed.has(root)) return;
+  installed.add(root);
   for (const [name, rows] of Object.entries(RETRO_ICONS)) root.style.setProperty(`--rt-icon-${name}`, retroIconUrl(rows));
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BRACKET_ARM_BIG_PIXELS, BRACKET_MARGIN_BIG_PIXELS, bracketBox } from './RetroTargetBrackets';
+import { sphereBodyName } from '../PlanetLabels';
 
 describe('the target brackets box', () => {
   it('grows the disc by the margin and snaps outwards to whole big pixels', () => {
@@ -20,5 +21,13 @@ describe('the target brackets box', () => {
     const small = BRACKET_ARM_BIG_PIXELS * 4;
     expect(bracketBox({ left: 100, top: 100, right: 100 + small / 2, bottom: 100 + small / 2 }, 4, 1280, 800)).toBeNull();
     expect(bracketBox({ left: 100, top: 100, right: 400, bottom: 400 }, 0, 1280, 800)).toBeNull();
+  });
+});
+
+describe('the name the brackets print', () => {
+  it('is the body\'s, not the occluder registry\'s key', () => {
+    expect(sphereBodyName('moon:Io')).toBe('Io');
+    expect(sphereBodyName('moon:Moon')).toBe('Moon');
+    expect(sphereBodyName('Saturn')).toBe('Saturn');
   });
 });

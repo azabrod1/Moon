@@ -5299,36 +5299,6 @@ export class PlanetariumMode {
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
-  /**
-   * The scene's pixel ratio moved and nothing else did — a graphics-quality
-   * level, a Dynamic rung, the `?upscale=` pin (main.ts applySceneResolution).
-   *
-   * Three things in the scene are authored in the scene target's own
-   * framebuffer pixels and have to be retuned when it is re-sized: the star
-   * point sizes, the moon dots' and the asteroid belt's sub-pixel energy.
-   * Every other consumer of the scene ratio reads `scenePixelRatio()` per
-   * frame already, and the lens pass has no size uniforms at all — so this is
-   * the whole of it, and it must stay that way: a resolution step happens
-   * while the user is looking at a moving frame, and the resize path's DOM
-   * measurement and map-sheet fold have no business on it.
-   *
-   * All three take BOTH ratios. Each of them is a CSS size scaled into the
-   * pixels it is drawn in, and the cap the two sprite layers apply (and the
-   * size three gives a stock point) is a property of the DISPLAY, not of the
-   * scene target — so neither ratio on its own can size any of them. The same
-   * pair is handed over at construction, because a session can boot straight
-   * into High or Low and never reach this hook.
-   *
-   * One thing on SCREEN is about the ratio rather than drawn in it: the ☰
-   * menu's "Now rendering" line, which is the whole point of the readout —
-   * the menu's auto-pause does not hold the resolution controller idle (only
-   * a measurement pin does), so the rung can legitimately move while the
-   * reader is watching it. It is admitted here behind a guard that costs two
-   * field reads: the panel has to be open AND standing on the Graphics page.
-   * The sync itself is the full one, because a rotation can change what this
-   * display offers (the bounds are recomputed before this hook runs on a
-   * resize) and the DEV bridge can set a level without touching the segments.
-   */
   /** The smallest diameter, in scene pixels, every star, moon dot and planet
    *  point is drawn at: 0 except in the Retro look, whose coarse grid would
    *  average a sub-pixel point away (main.ts, app/retroScreen.ts). */
@@ -5390,6 +5360,36 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * The scene's pixel ratio moved and nothing else did — a graphics-quality
+   * level, a Dynamic rung, the `?upscale=` pin (main.ts applySceneResolution).
+   *
+   * Three things in the scene are authored in the scene target's own
+   * framebuffer pixels and have to be retuned when it is re-sized: the star
+   * point sizes, the moon dots' and the asteroid belt's sub-pixel energy.
+   * Every other consumer of the scene ratio reads `scenePixelRatio()` per
+   * frame already, and the lens pass has no size uniforms at all — so this is
+   * the whole of it, and it must stay that way: a resolution step happens
+   * while the user is looking at a moving frame, and the resize path's DOM
+   * measurement and map-sheet fold have no business on it.
+   *
+   * All three take BOTH ratios. Each of them is a CSS size scaled into the
+   * pixels it is drawn in, and the cap the two sprite layers apply (and the
+   * size three gives a stock point) is a property of the DISPLAY, not of the
+   * scene target — so neither ratio on its own can size any of them. The same
+   * pair is handed over at construction, because a session can boot straight
+   * into High or Low and never reach this hook.
+   *
+   * One thing on SCREEN is about the ratio rather than drawn in it: the ☰
+   * menu's "Now rendering" line, which is the whole point of the readout —
+   * the menu's auto-pause does not hold the resolution controller idle (only
+   * a measurement pin does), so the rung can legitimately move while the
+   * reader is watching it. It is admitted here behind a guard that costs two
+   * field reads: the panel has to be open AND standing on the Graphics page.
+   * The sync itself is the full one, because a rotation can change what this
+   * display offers (the bounds are recomputed before this hook runs on a
+   * resize) and the DEV bridge can set a level without touching the segments.
+   */
   onScenePixelRatioChanged(): void {
     if (this.menuPanel.isOpen() && this.menuPanel.page() === 'graphics') this.syncGraphicsPage();
     const sceneRatio = this.scenePixelRatio();
@@ -8430,7 +8430,7 @@ export class PlanetariumMode {
       const distFromCamera = Math.sqrt(x * x + y * y + z * z);
       const radiusAU = SUN_DATA.radiusAU * 1.1;
       if (distFromCamera > radiusAU) {
-        this.planetLabels.addForegroundSphere({ x, y, z, radiusAU, distFromCamera, name: 'Sun' });
+        this.planetLabels.addForegroundSphere({ x, y, z, radiusAU, distFromCamera, name: 'Sun', drawnRadiusAU: SUN_DATA.radiusAU });
       }
     }
 

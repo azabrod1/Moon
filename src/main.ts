@@ -4727,8 +4727,13 @@ async function init() {
     // tick: the update presents its labels and markers for it, and a panel
     // the update moves is drawn where it lands.
     let glassMoved = false;
-    if (glassRegistry && (glassRouteLive() || retroOn())) {
-      glassMoved = glassRegistry.scan() || glassRegistry.moving;
+    const glassLiveNow = glassRouteLive();
+    if (glassRegistry && (glassLiveNow || retroOn())) {
+      const panelsMoved = glassRegistry.scan() || glassRegistry.moving;
+      // A moving panel needs a fresh frame only where the engine draws its
+      // glass: in Retro the canvas does not depend on the panels, and the
+      // scan is there for the label clip alone.
+      glassMoved = glassLiveNow && panelsMoved;
       glassScannedTick = tickSeq;
       // The engine blurs only the canvas: clip the DOM world labels out from
       // under its panels, or they read sharp through the glass

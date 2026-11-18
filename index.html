@@ -23,12 +23,17 @@
   <!-- The Retro look's class, before the first paint, so the loading screen
        never flashes the modern look. Same key and same precedence as
        app/retroSetting.ts (the URL's ?retro= first, the saved word second);
-       main takes it from there, sizing the grid (--px) once the canvas exists. -->
+       main takes it from there, sizing the grid (--px) once the canvas exists.
+       Not under ?nofloat=1, where main cannot draw the look. A GPU without
+       float targets is the one case this cannot see before main runs; such a
+       device never offers the Look row, so only an explicit ?retro=1 reaches
+       it, and main takes the class off again at its first size. -->
   <script>
     try {
-      const retroWord = (new URLSearchParams(location.search).get('retro') ?? 'unasked').trim().toLowerCase();
+      const bootParams = new URLSearchParams(location.search);
+      const retroWord = (bootParams.get('retro') ?? 'unasked').trim().toLowerCase();
       const retroAsked = /^(1|on|retro|)$/.test(retroWord) ? true : /^(0|off|modern)$/.test(retroWord) ? false : null;
-      if (retroAsked ?? localStorage.getItem('planetarium-look') === 'retro') {
+      if (!bootParams.has('nofloat') && (retroAsked ?? localStorage.getItem('planetarium-look') === 'retro')) {
         document.documentElement.classList.add('retro');
         // The interface pixel, as app/retroScreen.ts retroInterfacePixel works it out.
         const ratio = window.devicePixelRatio || 1;
@@ -4874,10 +4879,12 @@
        one interface pixel in CSS px (a whole number of device pixels, set by
        main and by the head script), and --px, one big pixel of the picture.
 
-       Type: one face for everything, Retro Sans 10, as the period's programs
-       used one system font; app/retroTypography.ts maps every other size the
-       stylesheet sets to the nearest bitmap face, family and size together,
-       so no glyph is ever drawn at a size it was not made for.
+       Type: one face for everything, Retro Sans 10 on the root, as the
+       period's programs used one system font; app/retroTypography.ts mirrors
+       every other size the stylesheet sets with the nearest bitmap face,
+       family and size together, so no glyph is ever drawn at a size it was
+       not made for. A rule here that sets a face of its own must name its
+       region in RETRO_FIXED_FACE_REGIONS there, or a mapped rule could win.
 
        The colours are the palette's interface slots (app/retroPalette.ts
        RETRO_INTERFACE_COLOURS): yellow, green, navy, the banded blues and
@@ -4929,9 +4936,15 @@
         calc(-1 * var(--ui-px)) calc(-1 * var(--ui-px)) #000, calc(2 * var(--ui-px)) calc(2 * var(--ui-px)) #000;
       scrollbar-color: #ffdd22 #001177;
     }
+    /* The default face, on the root, for everything to inherit; the mapped
+       sizes (app/retroTypography.ts) are inserted ahead of this stylesheet. */
+    html.retro {
+      font-family: 'Retro Sans 10', monospace;
+      font-size: calc(10 * var(--ui-px));
+    }
+    /* Form controls take the browser's own font unless told to inherit. */
+    html.retro :where(button, input, select, textarea) { font-family: inherit; font-size: inherit; }
     html.retro *, html.retro *::before, html.retro *::after {
-      font-family: 'Retro Sans 10', monospace !important;
-      font-size: calc(10 * var(--ui-px)) !important;
       font-weight: 700 !important;
       font-style: normal !important;
       letter-spacing: 0 !important;

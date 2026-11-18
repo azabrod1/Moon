@@ -411,7 +411,8 @@ export class InteriorScene {
   private fadeElapsedS = 0;
   private fadeOutgoing: THREE.Texture | null = null;
   private fadeResolvers: (() => void)[] = [];
-  /** The reveal's exterior ghost: the removed wedge of the skin, translucent, fading as the cut opens. */
+  /** The reveal's exterior ghost: the removed wedge of the skin, translucent, fading as the cut opens.
+   *  It wears the skin's pose and squash (setShape), so its map lies where the skin's did. */
   private readonly ghostMesh: THREE.Mesh;
   private ghostMaterial: THREE.MeshStandardMaterial | null = null;
   private readonly ghostCut: SkinCutUniforms;
@@ -1464,7 +1465,8 @@ export class InteriorScene {
    * flattening would need a density profile, which not every model has
    * (Jupiter's rivals leave theirs unknown).
    *
-   * At f = 0 every mesh is set to exactly what a sphere has always had.
+   * At f = 0 the squash is the identity and the air is left as a sphere's has
+   * always been; the ghost wears the skin's pose on every body.
    */
   private setShape(flattening: number): void {
     const shape = this.shape;
@@ -1479,11 +1481,14 @@ export class InteriorScene {
     this.skinMesh.scale.set(1, squash, 1);
     this.skinFx?.uBodyScale.value.set(1, squash, 1);
     this.sectionUniforms.uPoleStretch.value = flattening > 0 ? 1 / squash - 1 : 0;
+    // The ghost stands for the removed wedge of the skin, so on every body it
+    // wears the skin's pose and squash: its map then lies where the skin's did,
+    // meeting it across the cut edges, and a flattened giant has no translucent
+    // cap standing over each pole. Unposed, it showed the map turned by the
+    // whole pose — another patch of the body than the one the cut removed.
+    this.ghostMesh.quaternion.copy(this.poseQuaternion);
+    this.ghostMesh.scale.copy(this.skinMesh.scale);
     if (flattening > 0) {
-      // The ghost stands for the removed wedge of the skin, so it wears the
-      // skin's pose and squash, or a translucent cap would stand over each pole.
-      this.ghostMesh.quaternion.copy(this.poseQuaternion);
-      this.ghostMesh.scale.set(1, squash, 1);
       // The air is squashed with the globe it wraps, and its oblate variant
       // measures along the same pole (PlanetFactory's createAtmosphereGlow).
       this.atmosphereMesh.quaternion.copy(this.poseQuaternion);
@@ -1491,10 +1496,8 @@ export class InteriorScene {
       const poleUniform = this.atmosphereMaterial?.uniforms.uPoleWorld;
       if (poleUniform) (poleUniform.value as THREE.Vector3).copy(tmpPole);
     } else {
-      // A sphere's ghost has never worn the pose (its map is not turned with the
-      // skin's); it is left exactly as it was, and so is a sphere's air.
-      this.ghostMesh.quaternion.identity();
-      this.ghostMesh.scale.set(1, 1, 1);
+      // A sphere's air is the same shell however it is turned, and is left
+      // unposed at its own radius, as it always was.
       this.atmosphereMesh.quaternion.identity();
       this.atmosphereMesh.scale.setScalar(this.atmosphereScale);
     }

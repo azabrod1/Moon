@@ -208,10 +208,11 @@ export class ObservatoryHUD {
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
     const swapTeardown = bindReliableSurfacePress(this.swapEl, () => this.onSwap());
     if (swapTeardown) this.documentTeardowns.push(swapTeardown);
-    // Its eyebrow rewrites at the HUD's text rate, the case the reliable
-    // press exists for.
-    const placeTeardown = bindReliableSurfacePress(this.placeEl, () => this.onPlaceMenu());
-    if (placeTeardown) this.documentTeardowns.push(placeTeardown);
+    // A plain click, as the Look-at chip opens the same card: acting on
+    // pointerup (the reliable press) would raise the card's backdrop under a
+    // finger before the tap's own click arrives, and that click, landing on
+    // the backdrop, would close it again.
+    this.placeEl?.addEventListener('click', () => this.onPlaceMenu());
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());

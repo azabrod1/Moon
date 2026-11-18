@@ -74,3 +74,22 @@ export function retroGrid(
     cssPixel: block / (outputRatio > 0 ? outputRatio : 1),
   };
 }
+
+/**
+ * The interface's pixel, in CSS px: a whole number of DEVICE pixels, about one
+ * and a half on the device's own grid (the real devicePixelRatio, not the
+ * canvas's capped one, because the interface is HTML drawn by the browser at
+ * the device's density). Three device pixels on a 2× display, the size of the
+ * mock's interface; one on a 1× monitor, where the bitmap fonts draw at their
+ * own size like a 640 × 480 screen's. Finer than the picture's big pixel on
+ * purpose: on a strict 200-line grid the app's own menu, at about eighteen
+ * rows, would not fit on the screen.
+ *
+ * Every size in the retro interface is a whole number of these (index.html's
+ * retro block), and the bitmap fonts are set at their pixel size times it, so
+ * each font pixel is a hard square on the device's grid.
+ */
+export function retroInterfacePixel(devicePixelRatio: number): number {
+  const ratio = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  return Math.max(1, Math.floor(1.5 * ratio)) / ratio;
+}

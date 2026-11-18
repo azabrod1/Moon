@@ -596,6 +596,7 @@ import {
   NIGHT_SIDES, NIGHT_SIDES_NOTES, nightSidesSummary, type NightSides, type NightSidesControl,
 } from '../app/nightSidesSetting';
 import { LOOKS, LOOK_NOTES, type Look, type LookControl } from '../app/retroSetting';
+import { RetroTargetBrackets } from './ui/RetroTargetBrackets';
 import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
@@ -5123,6 +5124,8 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
+    // The Retro look's brackets belong to this mode's picture.
+    this.retroTarget?.hide();
     // An activation interrupted before its restore landed must not leave the
     // gate closed for the next one.
     this.restoring = false;
@@ -5336,11 +5339,45 @@ export class PlanetariumMode {
    *  grid's average would break it into dashes. */
   private orbitLineMinimumCssPx = 0;
 
+  /** One big pixel of the Retro look's picture, in CSS px; 0 outside it.
+   *  The target brackets are drawn on that grid. */
+  private retroBigPixel = 0;
+  private retroTarget: RetroTargetBrackets | null = null;
+
   /** Set by main whenever the look or the grid moves. */
-  setPointMinimumPx(minimumPx: number, orbitLineMinimumCssPx = 0): void {
+  setPointMinimumPx(minimumPx: number, orbitLineMinimumCssPx = 0, retroBigPixelCss = 0): void {
     this.pointMinimumPx = minimumPx;
     this.orbitLineMinimumCssPx = orbitLineMinimumCssPx;
+    this.retroBigPixel = retroBigPixelCss;
     this.applyPointMinimum();
+    if (retroBigPixelCss <= 0) this.retroTarget?.hide();
+  }
+
+  /** Where the brackets may show: where world labels may (no modal, no tour
+   *  stop, not the map), out of the surface view, and while this mode is up. */
+  private retroTargetAllowed(): boolean {
+    return this.active
+      && !this.worldLabelsModalHidden
+      && !this.worldLabelsTourHidden
+      && !this.isMapOpen()
+      && this.landedView !== 'surface';
+  }
+
+  /** The Retro look's brackets on the body most prominent on screen: after the
+   *  label pass, from its foreground spheres. Hidden outside the look and
+   *  wherever retroTargetAllowed says no; syncWorldLabelContainers and
+   *  deactivate hide them on the way into such a state. */
+  private updateRetroTarget(labelPassRan: boolean): void {
+    const labels = this.planetLabels;
+    if (this.retroBigPixel <= 0 || !labels || !labelPassRan || !this.retroTargetAllowed()) {
+      this.retroTarget?.hide();
+      return;
+    }
+    const target = labels.prominentSphere(12, 0.92);
+    this.retroTarget ??= new RetroTargetBrackets();
+    const width = this.renderer.domElement.clientWidth;
+    const height = this.renderer.domElement.clientHeight;
+    this.retroTarget.show(target ? bodyDisplayName(target.name) : '', target, this.retroBigPixel, width, height);
   }
 
   private applyPointMinimum(): void {
@@ -8019,7 +8056,9 @@ export class PlanetariumMode {
     // touch reveal still counting down. Everything else keeps the steady-state
     // cost at zero.
     const pickerWanted = !blocked && (this.hoverEligible || touchActive || gestureActive || this.hasPendingTap);
-    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted;
+    // The Retro look's target brackets read the same spheres, labels or not.
+    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted
+      || this.retroBigPixel > 0;
 
     if (runOccluders) {
       const scenePositions = this.ensurePickScenePositions();
@@ -8074,6 +8113,7 @@ export class PlanetariumMode {
     }
 
     this.syncWorldLabelContainers();
+    this.updateRetroTarget(runOccluders);
   }
 
   private ensurePickScenePositions(): Map<string, { x: number; y: number; z: number }> {
@@ -8295,6 +8335,7 @@ export class PlanetariumMode {
     if (this.moonLabelContainer && this.moonLabelContainer.style.display !== moonDisplay) {
       this.moonLabelContainer.style.display = moonDisplay;
     }
+    if (!this.retroTargetAllowed()) this.retroTarget?.hide();
   }
 
   /**

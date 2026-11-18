@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RETRO_LINES, RETRO_SCENE_SUPERSAMPLE, retroGrid } from './retroScreen';
+import { RETRO_LINES, RETRO_SCENE_SUPERSAMPLE, retroGrid, retroInterfacePixel } from './retroScreen';
 
 describe('the retro grid', () => {
   it('makes a 16:10 desktop window a 320 × 200 screen at 1× and 2×', () => {
@@ -52,5 +52,15 @@ describe('the retro grid', () => {
     expect(tiny.virtual).toEqual({ width: 1, height: 1 });
     expect(tiny.scene.width).toBeGreaterThanOrEqual(1);
     expect(tiny.cssPixel).toBe(1);
+  });
+});
+
+describe('the interface pixel', () => {
+  it('is a whole number of device pixels: three on a 2x display, one on a 1x monitor', () => {
+    for (const [ratio, devicePixels] of [[1, 1], [1.25, 1], [1.5, 2], [2, 3], [2.625, 3], [3, 4]] as const) {
+      const cssPixel = retroInterfacePixel(ratio);
+      expect(cssPixel * ratio, `ratio ${ratio}`).toBeCloseTo(devicePixels, 12);
+    }
+    expect(retroInterfacePixel(0)).toBe(1);
   });
 });

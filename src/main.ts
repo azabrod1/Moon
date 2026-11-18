@@ -12,7 +12,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
 import { RetroPresentPass } from './app/RetroPresentPass';
-import { RETRO_SCENE_SUPERSAMPLE, retroGrid, type RetroGrid } from './app/retroScreen';
+import { RETRO_SCENE_SUPERSAMPLE, retroGrid, retroInterfacePixel, type RetroGrid } from './app/retroScreen';
+import { installRetroTypography } from './app/retroTypography';
+import { installRetroIcons } from './app/retroIcons';
 import { lookSetting, resolveBootLook, type Look } from './app/retroSetting';
 import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
@@ -867,18 +869,29 @@ function applyRetroPointMinimum(): void {
   planetariumMode?.setPointMinimumPx(
     grid ? RETRO_POINT_MINIMUM_BIG_PIXELS * sceneForGrid : 0,
     grid ? RETRO_POINT_MINIMUM_BIG_PIXELS * grid.cssPixel : 0,
+    grid ? grid.cssPixel : 0,
   );
 }
 
-/** The interface's half: the class and the size of one big pixel in CSS px.
- *  Run after every renderer size, so `--px` follows the canvas. The inline
- *  script in index.html has already set the class from the same setting. */
+/** The interface's half: the class, the picture's big pixel (`--px`) and the
+ *  interface's own pixel (`--ui-px`, app/retroScreen.ts retroInterfacePixel),
+ *  both in CSS px, and — the first time — the mapped type sizes and the pixel
+ *  icons. Run after every renderer size, so both follow the canvas and the
+ *  display. The inline script in index.html has already set the class from
+ *  the same setting. */
 function applyLookToPage(): void {
   const retro = look === 'retro' && useBloom;
   const root = document.documentElement;
   root.classList.toggle('retro', retro);
-  if (retro) root.style.setProperty('--px', `${liveRetroGrid().cssPixel}px`);
-  else root.style.removeProperty('--px');
+  if (retro) {
+    installRetroTypography();
+    installRetroIcons(root);
+    root.style.setProperty('--px', `${liveRetroGrid().cssPixel}px`);
+    root.style.setProperty('--ui-px', `${retroInterfacePixel(window.devicePixelRatio || 1)}px`);
+  } else {
+    root.style.removeProperty('--px');
+    root.style.removeProperty('--ui-px');
+  }
 }
 
 /** The Look row, changed: saved on its own key and applied from the next
@@ -4714,12 +4727,14 @@ async function init() {
     // tick: the update presents its labels and markers for it, and a panel
     // the update moves is drawn where it lands.
     let glassMoved = false;
-    if (glassRegistry && glassRouteLive()) {
+    if (glassRegistry && (glassRouteLive() || retroOn())) {
       glassMoved = glassRegistry.scan() || glassRegistry.moving;
       glassScannedTick = tickSeq;
       // The engine blurs only the canvas: clip the DOM world labels out from
       // under its panels, or they read sharp through the glass
-      // (app/labelGlassClip.ts). Written only when the panels move.
+      // (app/labelGlassClip.ts). Written only when the panels move. The
+      // Retro look's panels are opaque cards, and the labels' layers sit above
+      // the interface's, so they are clipped the same way.
       clipWorldLabelsAroundGlass(glassRegistry.cssBoxes(), window.innerWidth, window.innerHeight);
     } else {
       // The browser's own backdrop blur covers the labels.

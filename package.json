@@ -12,6 +12,7 @@
     "gen:moon-corrections": "python3 -I tools/moon-corrections/run.py",
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
+    "gen:fonts": "node tools/gen-pixel-fonts.mjs",
     "gen:seawind": "node --max-old-space-size=6144 tools/gen-seawind.mjs",
     "gen:relief": "node tools/gen-relief.mjs",
     "gen:ktx2": "node tools/gen-ktx2.mjs",

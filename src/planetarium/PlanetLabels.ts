@@ -508,6 +508,41 @@ export class PlanetLabels {
     this.foregroundSpheres.push(sphere);
   }
 
+  private readonly prominentScratch = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0, footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0, footprintKind: 'none',
+  } as SphereScreenProjection;
+
+  /**
+   * The body this frame's foreground spheres show largest on screen, and its
+   * disc's box in CSS px — the Retro look's target brackets
+   * (ui/RetroTargetBrackets.ts). Only a disc between `minDiameterPx` and
+   * `maxFraction` of the viewport's short side, whose centre is on screen; the
+   * ship never. Run after collectForegroundSpheres and the dynamic occluders.
+   */
+  prominentSphere(minDiameterPx: number, maxFraction: number): { name: string; left: number; top: number; right: number; bottom: number } | null {
+    const width = this.occluderCanvasWidth;
+    const height = this.occluderCanvasHeight;
+    if (!(width > 0 && height > 0)) return null;
+    const camera = this.camera.position;
+    let best: { name: string; left: number; top: number; right: number; bottom: number } | null = null;
+    let bestDiameter = minDiameterPx;
+    for (const sphere of this.foregroundSpheres) {
+      if (sphere.name === 'ship') continue;
+      const projection = projectSphereToScreen(
+        { x: camera.x + sphere.x, y: camera.y + sphere.y, z: camera.z + sphere.z },
+        sphere.radiusAU, this.camera, width, height, this.prominentScratch,
+      );
+      if (projection.ndcZ >= 1 || projection.footprintKind === 'none') continue;
+      if (projection.x < 0 || projection.x > width || projection.y < 0 || projection.y > height) continue;
+      if (projection.diameterPx > maxFraction * Math.min(width, height)) continue;
+      if (projection.diameterPx <= bestDiameter) continue;
+      bestDiameter = projection.diameterPx;
+      best = { name: sphere.name, left: projection.minX, top: projection.minY, right: projection.maxX, bottom: projection.maxY };
+    }
+    return best;
+  }
+
   /**
    * Hide every marker sprite + HTML label at once. The surface view skips the
    * label pipeline entirely, so without this, sprites already visible when it

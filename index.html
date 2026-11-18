@@ -28,7 +28,12 @@
     try {
       const retroWord = (new URLSearchParams(location.search).get('retro') ?? 'unasked').trim().toLowerCase();
       const retroAsked = /^(1|on|retro|)$/.test(retroWord) ? true : /^(0|off|modern)$/.test(retroWord) ? false : null;
-      if (retroAsked ?? localStorage.getItem('planetarium-look') === 'retro') document.documentElement.classList.add('retro');
+      if (retroAsked ?? localStorage.getItem('planetarium-look') === 'retro') {
+        document.documentElement.classList.add('retro');
+        // The interface pixel, as app/retroScreen.ts retroInterfacePixel works it out.
+        const ratio = window.devicePixelRatio || 1;
+        document.documentElement.style.setProperty('--ui-px', `${Math.max(1, Math.floor(1.5 * ratio)) / ratio}px`);
+      }
     } catch { /* storage blocked: the modern look */ }
   </script>
   <style>
@@ -54,6 +59,22 @@
       font-style: normal;
       font-display: swap;
     }
+
+    /* The Retro look's bitmap fonts (tools/gen-pixel-fonts.mjs; licences in
+       public/fonts/RETRO-FONTS.txt). Each size is its own family, because a
+       bitmap font is drawn for one size: set it at its pixel size times
+       var(--ui-px) (`font-size: calc(10 * var(--ui-px))` for Retro Sans 10)
+       and every font pixel is one interface pixel, a hard square. A browser
+       only fetches a face something on the page uses, so the modern look never
+       downloads these. `block` so a retro panel never flashes a smooth
+       fallback first. */
+    @font-face { font-family: 'Retro Sans 8'; src: url('fonts/RetroSans-Bold8.woff') format('woff'); font-weight: 700; font-display: block; }
+    @font-face { font-family: 'Retro Sans 10'; src: url('fonts/RetroSans-Bold10.woff') format('woff'); font-weight: 700; font-display: block; }
+    @font-face { font-family: 'Retro Sans 10'; src: url('fonts/RetroSans-Regular10.woff') format('woff'); font-weight: 400; font-display: block; }
+    @font-face { font-family: 'Retro Sans 12'; src: url('fonts/RetroSans-Bold12.woff') format('woff'); font-weight: 700; font-display: block; }
+    @font-face { font-family: 'Retro Sans 14'; src: url('fonts/RetroSans-Bold14.woff') format('woff'); font-weight: 700; font-display: block; }
+    @font-face { font-family: 'Retro Sans 18'; src: url('fonts/RetroSans-Bold18.woff') format('woff'); font-weight: 700; font-display: block; }
+    @font-face { font-family: 'Retro Mono 7'; src: url('fonts/RetroMono-7.woff') format('woff'); font-weight: 400; font-display: block; }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; -webkit-user-select: none; user-select: none; }
@@ -4843,6 +4864,250 @@
       .obs-foot { min-height: 32px; }
       .shud-tb-btn { min-height: 32px; }
     }
+
+    /* ═══ Retro look (app/retroSetting.ts) ═══════════════════════════════
+       A 1990s screen: the picture is drawn on a grid of big pixels
+       (app/retroScreen.ts), and the interface is redrawn the way the period
+       drew one — bitmap type, banded gradients of a few flat colours, one-pixel
+       white-and-black frames, hard drop shadows, nothing soft, round or
+       see-through. Everything is sized in whole interface pixels: --ui-px,
+       one interface pixel in CSS px (a whole number of device pixels, set by
+       main and by the head script), and --px, one big pixel of the picture.
+
+       Type: one face for everything, Retro Sans 10, as the period's programs
+       used one system font; app/retroTypography.ts maps every other size the
+       stylesheet sets to the nearest bitmap face, family and size together,
+       so no glyph is ever drawn at a size it was not made for.
+
+       The colours are the palette's interface slots (app/retroPalette.ts
+       RETRO_INTERFACE_COLOURS): yellow, green, navy, the banded blues and
+       purples, white and black. Every glass surface is an opaque card, so
+       its blur is set to 1px (never a backdrop-filter rule: glassRects.test.ts):
+       nothing shows through to be blurred, and the panels still count as glass
+       for the glass registry, whose boxes keep the world labels clipped out
+       from under them (main.ts, app/labelGlassClip.ts).
+       ═════════════════════════════════════════════════════════════════════ */
+    html.retro {
+      --ui-px: 2px;
+      --px: 4px;
+      --accent: #ffdd22;
+      --accent-rgb: 255, 221, 34;
+      --ember: #ffdd22;
+      --ember-rgb: 255, 221, 34;
+      --t1: #ffffff;
+      --t2: #ccd4ff;
+      --t3: #8899dd;
+      --line: #ffffff;
+      --line-dim: #6688ee;
+      --glass-a: 1;
+      --r-l: 0px;
+      --r-m: 0px;
+      --r-s: 0px;
+      --font-ui: 'Retro Sans 10', monospace;
+      --font-mono: 'Retro Sans 10', monospace;
+      --panel-bg: #111188;
+      --obs-glass: #111188;
+      --rt-yellow: #ffdd22;
+      --rt-green: #44ff44;
+      --rt-navy: #001177;
+      /* A card: six bands of four pixels from light blue down, then flat. */
+      --rt-card: linear-gradient(to bottom,
+        #6688ee 0 calc(4 * var(--ui-px)), #4466dd 0 calc(8 * var(--ui-px)),
+        #2244cc 0 calc(12 * var(--ui-px)), #2233bb 0 calc(16 * var(--ui-px)),
+        #111199 0 calc(20 * var(--ui-px)), #111188 0);
+      --rt-band: linear-gradient(to bottom,
+        #221166 0 calc(4 * var(--ui-px)), #331177 0 calc(8 * var(--ui-px)),
+        #442288 0 calc(12 * var(--ui-px)), #553399 0 calc(16 * var(--ui-px)),
+        #6633aa 0 calc(20 * var(--ui-px)), #7744bb 0);
+      --rt-caption: linear-gradient(to bottom,
+        #2233bb 0 calc(3 * var(--ui-px)), #1122aa 0 calc(6 * var(--ui-px)),
+        #112299 0 calc(9 * var(--ui-px)), #111188 0);
+      /* A white one-pixel frame inside a black one, and a hard shadow. */
+      --rt-frame: 0 0 0 var(--ui-px) #000, calc(3 * var(--ui-px)) calc(3 * var(--ui-px)) 0 var(--ui-px) #000;
+      --rt-outline: calc(-1 * var(--ui-px)) 0 #000, var(--ui-px) 0 #000, 0 calc(-1 * var(--ui-px)) #000, 0 var(--ui-px) #000,
+        var(--ui-px) var(--ui-px) #000, calc(-1 * var(--ui-px)) var(--ui-px) #000, var(--ui-px) calc(-1 * var(--ui-px)) #000,
+        calc(-1 * var(--ui-px)) calc(-1 * var(--ui-px)) #000, calc(2 * var(--ui-px)) calc(2 * var(--ui-px)) #000;
+      scrollbar-color: #ffdd22 #001177;
+    }
+    html.retro *, html.retro *::before, html.retro *::after {
+      font-family: 'Retro Sans 10', monospace !important;
+      font-size: calc(10 * var(--ui-px)) !important;
+      font-weight: 700 !important;
+      font-style: normal !important;
+      letter-spacing: 0 !important;
+      font-variant-numeric: normal !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      --glass-blur: 1px !important;
+      --glass-sat: 100% !important;
+      -webkit-font-smoothing: none;
+      text-rendering: optimizeSpeed;
+    }
+    html.retro body { text-shadow: var(--ui-px) var(--ui-px) 0 #000; }
+    html.retro svg { shape-rendering: crispEdges; }
+    html.retro :focus-visible { outline: var(--ui-px) solid #ffdd22 !important; outline-offset: 0 !important; }
+
+    /* Every surface that was glass is a card. */
+    html.retro .pn, html.retro body.mat-glass .pn, html.retro body.mat-glass .pn-high,
+    html.retro .resume-dialog, html.retro .planetarium-help-card, html.retro #planetarium-notification,
+    html.retro #historic-panel, html.retro .map-card, html.retro .map-hover-meta {
+      background: var(--rt-card) !important;
+      border: var(--ui-px) solid #ffffff !important;
+      box-shadow: var(--rt-frame) !important;
+      color: #ffffff;
+    }
+
+    /* The band across the top: the badge and the title, the TV look's header. */
+    html.retro #top-bar {
+      background: var(--rt-band);
+      border-bottom: var(--ui-px) solid #ffffff;
+      box-shadow: 0 var(--ui-px) 0 #000 !important;
+      min-height: calc(28 * var(--ui-px) + env(safe-area-inset-top, 0px));
+      padding-top: calc(4 * var(--ui-px) + env(safe-area-inset-top, 0px));
+      padding-bottom: calc(4 * var(--ui-px));
+    }
+    html.retro #top-bar h1 {
+      display: flex; align-items: center; gap: calc(6 * var(--ui-px));
+      font-family: 'Retro Sans 18', monospace !important;
+      font-size: calc(18 * var(--ui-px)) !important;
+      color: #ffdd22; opacity: 1; text-transform: none;
+      text-shadow: var(--rt-outline);
+    }
+    /* The map is its own screen, with its close button where the title sits. */
+    html.retro body.system-map-active #top-bar h1 { visibility: hidden; }
+    html.retro #top-bar h1::before {
+      content: '';
+      flex: none;
+      width: calc(18 * var(--ui-px)); height: calc(18 * var(--ui-px));
+      background: #2244cc var(--rt-icon-crescent) center / calc(12 * var(--ui-px)) no-repeat;
+      image-rendering: pixelated;
+      border: var(--ui-px) solid #ffffff;
+      box-shadow: 0 0 0 var(--ui-px) #000 !important;
+    }
+
+    /* Buttons: navy in a white frame, yellow type; lit, yellow with black type. */
+    html.retro .act-btn, html.retro .planetarium-icon-btn, html.retro .tp-now, html.retro .menu-seg-btn,
+    html.retro .map-close, html.retro .shud-chip, html.retro .shud-trackpill, html.retro #historic-reopen {
+      background: #001177 !important;
+      border: var(--ui-px) solid #ffffff !important;
+      box-shadow: 0 0 0 var(--ui-px) #000 !important;
+      color: #ffdd22 !important;
+    }
+    html.retro .act-btn:hover, html.retro .planetarium-icon-btn:hover, html.retro .tp-now:hover,
+    html.retro .menu-seg-btn:hover, html.retro .map-close:hover { background: #2244cc !important; }
+    html.retro .act-btn.on, html.retro .act-btn.active, html.retro .menu-seg-btn.on {
+      background: #ffdd22 !important; color: #000000 !important; text-shadow: none;
+    }
+    html.retro .act-btn .act-glyph, html.retro .act-btn.on .act-glyph { color: inherit !important; opacity: 1; }
+    html.retro .act-tip, html.retro .tr-tip {
+      background: #000000 !important; color: #ffdd22 !important;
+      border: var(--ui-px) solid #ffffff !important; box-shadow: 0 0 0 var(--ui-px) #000 !important;
+    }
+
+    /* The menu: yellow heading, rows that light yellow, yellow values, pixel icons. */
+    html.retro .menu-head h3 { color: #ffdd22; }
+    html.retro .menu-back { color: #ffdd22; }
+    html.retro .menu-action, html.retro .pk-row, html.retro .menu-tier b, html.retro .settings-label { color: #ffffff; }
+    html.retro .menu-action:hover, html.retro .pk-row:hover {
+      background: #ffdd22 !important; color: #000000 !important; text-shadow: none;
+    }
+    html.retro .menu-action:hover *, html.retro .pk-row:hover * { color: #000000 !important; text-shadow: none; }
+    html.retro .menu-tier-value, html.retro .menu-tier-chevron, html.retro .settings-toggle,
+    html.retro .settings-toggle span { color: #ffdd22 !important; }
+    html.retro .settings-toggle { background: transparent !important; border: 0 !important; }
+    html.retro .settings-toggle.active { color: #44ff44 !important; }
+    html.retro .menu-divider {
+      background: #ffffff !important; height: var(--ui-px) !important; opacity: 1 !important;
+      box-shadow: 0 var(--ui-px) 0 #000 !important;
+    }
+    html.retro .menu-seg { border: 0 !important; background: transparent !important; gap: calc(2 * var(--ui-px)); }
+    html.retro .menu-seg-btn + .menu-seg-btn { border-left: var(--ui-px) solid #ffffff !important; }
+    html.retro .menu-note, html.retro .menu-field-label { color: #ccd4ff; }
+    html.retro .menu-action::before, html.retro .pk-row.menu-tier::before, html.retro .settings-label::before {
+      content: '';
+      display: inline-block; flex: none; vertical-align: middle;
+      width: calc(12 * var(--ui-px)); height: calc(12 * var(--ui-px));
+      margin-right: calc(5 * var(--ui-px));
+      background: transparent center / 100% 100% no-repeat;
+      image-rendering: pixelated;
+    }
+    html.retro #planetarium-btn-help::before { background-image: var(--rt-icon-help); }
+    html.retro #planetarium-btn-save::before { background-image: var(--rt-icon-save); }
+    html.retro #planetarium-btn-new::before { background-image: var(--rt-icon-journey); }
+    html.retro #planetarium-btn-tutorial::before { background-image: var(--rt-icon-tour); }
+    html.retro #planetarium-btn-map::before { background-image: var(--rt-icon-map); }
+    html.retro .menu-tier[data-open="credits"]::before { background-image: var(--rt-icon-credits); }
+    html.retro .menu-tier[data-open="graphics"]::before { background-image: var(--rt-icon-graphics); }
+    html.retro .menu-tier[data-open="display"]::before { background-image: var(--rt-icon-display); }
+    html.retro .settings-row:has(#settings-ship-toggle) .settings-label::before { background-image: var(--rt-icon-ship); }
+    html.retro .settings-row:has(#settings-constellations-toggle) .settings-label::before { background-image: var(--rt-icon-stars); }
+    html.retro .settings-row:has(#settings-labels-toggle) .settings-label::before { background-image: var(--rt-icon-labels); }
+    html.retro .settings-row:has(#settings-orbits-toggle) .settings-label::before { background-image: var(--rt-icon-orbit); }
+
+    /* The bottom bar becomes the caption bar across the foot of the screen, and
+       its clock and speed the cockpit's green readout. */
+    html.retro #planetarium-bottom-bar {
+      left: 0; right: 0; bottom: 0; transform: none; max-width: none; width: auto;
+    }
+    html.retro #planetarium-bottom-bar .bar-row {
+      justify-content: center;
+      background: var(--rt-caption) !important;
+      border: 0 !important;
+      border-top: var(--ui-px) solid #ffffff !important;
+      box-shadow: 0 calc(-1 * var(--ui-px)) 0 #000 !important;
+      padding: calc(3 * var(--ui-px)) calc(6 * var(--ui-px)) calc(3 * var(--ui-px) + env(safe-area-inset-bottom, 0px));
+    }
+    html.retro .tr-clock, html.retro .speed-center {
+      background: #000000 !important;
+      border: var(--ui-px) solid #ffffff !important;
+      box-shadow: 0 0 0 var(--ui-px) #000 !important;
+      padding: var(--ui-px) calc(4 * var(--ui-px)) !important;
+    }
+    html.retro .tr-clock *, html.retro .speed-center * {
+      font-family: 'Retro Mono 7', monospace !important;
+      font-size: calc(7 * var(--ui-px)) !important;
+      font-weight: 400 !important;
+      color: #44ff44 !important;
+      text-shadow: none !important;
+    }
+    html.retro #mini-chart {
+      border: var(--ui-px) solid #ffffff !important;
+      box-shadow: var(--rt-frame) !important;
+    }
+
+    /* Labels on the picture: the body's name in yellow, the rest in the blues. */
+    html.retro .planet-label-name { color: #ffdd22 !important; }
+    html.retro .planet-label-dist { color: #ffffff !important; }
+    html.retro .constellation-label { color: #6688ee !important; text-transform: uppercase; }
+    html.retro .moon-label { color: #ccd4ff !important; }
+
+    /* The target brackets (planetarium/ui/RetroTargetBrackets.ts): four green
+       corners, one big pixel thick and six long, with a black edge, and the
+       body's name in the instrument font. With the world labels, under the
+       panels. Present only in the Retro look. */
+    #retro-target { position: fixed; z-index: 13; pointer-events: none; }
+    #retro-target i { position: absolute; width: calc(6 * var(--px)); height: calc(6 * var(--px)); border: 0 solid #44ff44; }
+    #retro-target .retro-target-tl { left: 0; top: 0; border-left-width: var(--px); border-top-width: var(--px); }
+    #retro-target .retro-target-tr { right: 0; top: 0; border-right-width: var(--px); border-top-width: var(--px); }
+    #retro-target .retro-target-bl { left: 0; bottom: 0; border-left-width: var(--px); border-bottom-width: var(--px); }
+    #retro-target .retro-target-br { right: 0; bottom: 0; border-right-width: var(--px); border-bottom-width: var(--px); }
+    #retro-target .retro-target-name {
+      position: absolute; left: calc(2 * var(--px)); top: calc(2 * var(--px));
+      font-family: 'Retro Mono 7', monospace !important; font-size: calc(7 * var(--ui-px)) !important;
+      font-weight: 400 !important; color: #44ff44; text-shadow: var(--ui-px) var(--ui-px) 0 #000; white-space: nowrap;
+    }
+    html:not(.retro) #retro-target { display: none; }
+
+    /* Fields: green on black, as the instruments are. */
+    html.retro input, html.retro select, html.retro textarea {
+      background: #000000 !important; color: #44ff44 !important;
+      border: var(--ui-px) solid #ffffff !important; text-shadow: none;
+    }
+
+    /* The loading screen: black, the title in the band's yellow. */
+    html.retro #loading-screen { background: #000000; }
+    html.retro #loading-screen h1 { color: #ffdd22; text-shadow: var(--rt-outline); text-transform: none; }
+    html.retro #loading-screen p { color: #44ff44; }
   </style>
 </head>
 <body class="mat-glass">
@@ -5235,6 +5500,7 @@
               <dd>Basis Universal transcoder, Binomial (Apache 2.0).</dd>
               <dt>Fonts</dt>
               <dd>Geist and Geist Mono, Vercel with basement.studio (SIL Open Font License 1.1).</dd>
+              <dd>The Retro look's bitmap type comes from the 75 dpi bitmap fonts by Adobe Systems and Digital Equipment Corporation and the misc fixed 5×7 font, as released by X.Org, in Markus Kuhn's Unicode edition. The copyright and permission notices are in fonts/RETRO-FONTS.txt.</dd>
             </dl>
           </div>
         </div>

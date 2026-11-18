@@ -72,9 +72,9 @@ describe('the boot script in index.html', () => {
     expect(scriptText).toBeDefined();
     const run = (search: string, saved: string | null) => {
       const classes = new Set<string>();
-      const document = { documentElement: { classList: { add: (name: string) => classes.add(name) } } };
+      const document = { documentElement: { classList: { add: (name: string) => classes.add(name) }, style: { setProperty: () => {} } } };
       const localStorage = { getItem: (key: string) => (key === RETRO_STORAGE_KEY ? saved : null) };
-      new Function('location', 'document', 'localStorage', scriptText!)({ search }, document, localStorage);
+      new Function('location', 'document', 'localStorage', 'window', scriptText!)({ search }, document, localStorage, { devicePixelRatio: 2 });
       return classes.has('retro') ? 'retro' : 'modern';
     };
     for (const search of ['', '?retro=1', '?retro=on', '?retro=', '?retro=0', '?retro=modern', '?retro=vga', '?quality=low']) {

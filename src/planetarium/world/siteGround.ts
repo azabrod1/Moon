@@ -7,11 +7,17 @@
  * in the shader would sit at the edge of float32.
  *
  * Everything drawn before it below the horizon — stars, planet and moon
- * points, constellation lines, the globe's mesh beyond the near plane — is
- * painted over; sky pixels are discarded. It draws inside the scene, so the
- * lens pass warps its horizon exactly as it warps everything else (a horizon
- * through the frame's centre stays straight, one off it curves). DOM overlays
- * are not scene geometry: the controller hides those below the horizon itself.
+ * points, constellation lines, shadow guides, the globe's mesh beyond the
+ * near plane — is painted over; sky pixels are discarded. It draws inside the
+ * scene, so the lens pass warps its horizon exactly as it warps everything
+ * else (a horizon through the frame's centre stays straight, one off it
+ * curves). DOM overlays are not scene geometry: the controller hides those
+ * below the horizon itself.
+ *
+ * The Sun's glare and lens ghosts draw after it (PlanetFactory.ts): they are
+ * the eye's, not the scene's, so a Sun on the horizon veils the ground below
+ * it as it veils the sky above, rather than standing as a dome of light on an
+ * airless horizon. Their visible fraction already counts the landed body.
  *
  * The view ray comes from the projection's scale and offset terms, never
  * from its inverse: with the near plane at 1e-6 AU and the far at 200 AU,
@@ -26,6 +32,10 @@
  * composer's linear target.
  */
 import * as THREE from 'three';
+
+/** After every scene layer it covers below the horizon; the Sun's glare and
+ *  lens ghosts take the next two places. */
+export const SITE_GROUND_RENDER_ORDER = 10_000;
 
 export class SiteGround {
   readonly mesh: THREE.Mesh;
@@ -86,8 +96,7 @@ export class SiteGround {
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
     this.mesh.name = 'Site ground';
     this.mesh.frustumCulled = false;
-    // After every scene layer it has to cover below the horizon.
-    this.mesh.renderOrder = 10_000;
+    this.mesh.renderOrder = SITE_GROUND_RENDER_ORDER;
     this.mesh.visible = false;
     this.mesh.onBeforeRender = (_renderer, _scene, camera) => {
       const projection = (camera as THREE.PerspectiveCamera).projectionMatrix.elements;

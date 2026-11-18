@@ -39,6 +39,7 @@ import {
   sunProminenceVertexShader,
   SUN_ATMOSPHERE_TINT_RGB,
   SUN_GLARE_EXTENT_SOLAR_RADII,
+  SUN_VEIL_STRENGTH,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
@@ -1579,7 +1580,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
       // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) is driven
       // per frame, and the support the wash needs goes into uDrawnHalfPx.
-      uVeilStrength: { value: 1.4 },
+      uVeilStrength: { value: SUN_VEIL_STRENGTH },
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
       // Veil diffraction-arm decay lengths (CSS px) and coefficient, driven

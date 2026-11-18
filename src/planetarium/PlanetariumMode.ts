@@ -23,7 +23,7 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { PlayerShip, type ShipProfile } from './PlayerShip';
+import { PlayerShip, type ShipOverride, type ShipProfile } from './PlayerShip';
 import { hazeCacheGpuBytes, sessionHazeCacheWarmup, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, POSITION_MODEL, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode, type RideAnchor } from './PlanetariumStore';
@@ -293,7 +293,7 @@ import {
   type NdcRect,
 } from '../shared/math/lensProjection';
 import { isLensRampBand, LENS_PROXIMITY_DEFAULT_BAND, lensProximityFactor, type LensRampBand } from '../shared/math/lensProximity';
-import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
+import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H, SUN_VEIL_STRENGTH } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
   MOON_RENDER_ANCHOR_RATIO,
@@ -322,6 +322,7 @@ import {
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
+  SHIP_REFERENCE_RADIUS_AU,
   SHIP_OCCLUDER_RADIUS_AU,
   SHIP_ANY_HULL_EXTENT_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
@@ -1322,6 +1323,10 @@ export class PlanetariumMode {
   private sunPointLight: THREE.PointLight | null = null;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  /** The veiling glare's peak (`uVeilStrength`), and the share of it the app
+   *  asks for (setVeilScale); written to the material every frame. */
+  private veilStrength = SUN_VEIL_STRENGTH;
+  private veilScale = 1;
   /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
    *  function of the exposed fraction, which a warped clock can cross in one
    *  frame; this carries the blaze at human speed regardless of time rate. */
@@ -8238,6 +8243,24 @@ export class PlanetariumMode {
   private readonly prominentCentre = new THREE.Vector3();
 
   /**
+   * Draw the Sun's wide veiling glare at `scale` of its strength (1: as
+   * tuned). Its reach, and the mask that hides stars inside it, follow. For a
+   * look that wants less glare (the Retro look's, src/retro).
+   */
+  setVeilScale(scale: number): void {
+    this.veilScale = Number.isFinite(scale) ? Math.max(0, scale) : 1;
+  }
+
+  /**
+   * Fly the ship `build` makes, at the ship's reference radius, in place of
+   * the default one (PlayerShip.setOverride), or the default ship for null.
+   * For a look with its own ship (the Retro look's, src/retro).
+   */
+  setShipOverride(build: ((referenceRadiusAU: number) => ShipOverride) | null): void {
+    this.player.setOverride(build ? build(SHIP_REFERENCE_RADIUS_AU) : null);
+  }
+
+  /**
    * The body drawn largest on screen this frame and its disc's box in CSS px,
    * for an overlay that frames it (the Retro look's brackets, src/retro).
    * Null wherever the world labels are down (the map, the surface view, a
@@ -9123,6 +9146,8 @@ export class PlanetariumMode {
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
     }
+    // First, so the support, the drawn wash and the star mask all read it.
+    if (glareMat) glareMat.uniforms.uVeilStrength.value = this.veilStrength * this.veilScale;
     if (prominenceMat) prominenceMat.uniforms.time.value += dt;
 
     const toSun = this.tmpSunDirection
@@ -9372,7 +9397,7 @@ export class PlanetariumMode {
         solarRadiusPx, viewportHeight * 0.30, viewportHeight * 0.42,
       );
       const veilReachGeom = veilAmplitudeResponse * hugeFade;
-      const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+      const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : SUN_VEIL_STRENGTH;
       // The diffraction arms are a camera's signature, and the Sun here is an
       // eye's from a window: a searing point in a soft glare. The coefficient
       // is zero (it was 0.28, faded out as the disc resolved); the arm terms
@@ -9866,7 +9891,7 @@ export class PlanetariumMode {
     if (glareMat) {
       (glareMat.uniforms.uLightOutPx.value as THREE.Vector2).set(maskParams.sunXPx, maskParams.sunYPx);
     }
-    const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+    const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : SUN_VEIL_STRENGTH;
     maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
     maskParams.transmission = this.shipSunVisibility;
     maskParams.armCoeff = maskArmCoeff;
@@ -18393,7 +18418,10 @@ export class PlanetariumMode {
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     if (!glareMat) return false;
     if (typeof opts.warmth === 'number') glareMat.uniforms.uVeilWarmth.value = opts.warmth;
-    if (typeof opts.strength === 'number') glareMat.uniforms.uVeilStrength.value = opts.strength;
+    if (typeof opts.strength === 'number') {
+      this.veilStrength = opts.strength;
+      glareMat.uniforms.uVeilStrength.value = this.veilStrength * this.veilScale;
+    }
     return true;
   }
 

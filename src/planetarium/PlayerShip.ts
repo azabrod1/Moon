@@ -27,6 +27,15 @@ const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 
 export type ShipProfile = 'default' | 'voyager' | 'cassini' | 'newHorizons' | 'juno';
 
+/** A ship a look flies in place of the default one (the Retro look's,
+ *  src/retro/ship.ts): built in the default ship's frame and units, with its
+ *  own exhaust, told each frame whether it burns and at what throttle (0..1).
+ *  The mission profiles' probes are not replaced. */
+export interface ShipOverride {
+  model: THREE.Group;
+  exhaust(on: boolean, throttle: number): void;
+}
+
 export class PlayerShip {
   private static readonly gltfLoader = new GLTFLoader();
 
@@ -40,6 +49,7 @@ export class PlayerShip {
   private junoModel: THREE.Group | null = null;
   private spacecraftReferenceRadiusAU: number;
   private profile: ShipProfile = 'default';
+  private override: ShipOverride | null = null;
   /** update()'s per-frame forward direction — internal scratch so steady-state
    *  integration allocates nothing (getForwardDirection allocates by contract). */
   private forwardScratch = new THREE.Vector3();
@@ -224,10 +234,11 @@ export class PlayerShip {
     const exhaustOn = this.moving && effectiveMultiplier > 0.01;
 
     const showExhaust = this.profile === 'default' && exhaustOn;
-    this.exhaustCone.visible = showExhaust;
-    this.exhaustCore.visible = showExhaust;
+    if (this.override) this.override.exhaust(showExhaust, Math.min(Math.max(speedFrac, 0), 1));
+    this.exhaustCone.visible = showExhaust && !this.override;
+    this.exhaustCore.visible = showExhaust && !this.override;
 
-    if (showExhaust) {
+    if (showExhaust && !this.override) {
       // Steady torch, no flicker: the additive HDR plume sits near the
       // composer's bloom threshold, so even a small opacity pulse gates the
       // glow on and off and reads as throbbing. The top of the ramp is kept
@@ -335,6 +346,8 @@ export class PlayerShip {
   setProfile(profile: ShipProfile) {
     this.profile = profile;
     this.setProbeModelsVisible(false);
+    const defaultShip = this.override?.model ?? this.defaultModel;
+    if (this.override) this.defaultModel.visible = false;
     if (profile !== 'default') {
       // Cassini's model loads asynchronously (GLB), so `cassiniModel` is null
       // until it resolves. Resolve the probe model BEFORE hiding the default
@@ -344,13 +357,26 @@ export class PlayerShip {
         ? this.cassiniModel
         : this.getOrCreateProbeModel(profile);
       if (probeModel) {
-        this.defaultModel.visible = false;
+        defaultShip.visible = false;
         probeModel.visible = true;
         this.group.userData.shipModel = probeModel;
         return;
       }
     }
-    this.defaultModel.visible = true;
-    this.group.userData.shipModel = this.defaultModel;
+    defaultShip.visible = true;
+    this.group.userData.shipModel = defaultShip;
+  }
+
+  /** Fly `override` in place of the default ship, or the default ship again
+   *  for null. The profile stays as it is. */
+  setOverride(override: ShipOverride | null) {
+    if (override === this.override) return;
+    if (this.override) {
+      this.override.exhaust(false, 0);
+      this.group.remove(this.override.model);
+    }
+    this.override = override;
+    if (override) this.group.add(override.model);
+    this.setProfile(this.profile);
   }
 }

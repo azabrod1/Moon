@@ -1090,6 +1090,21 @@ async function sheetDragCase(context, viewport) {
   const wanted = Math.min(peek + 200, full);
   check(Math.abs(dragged - wanted) <= 12, `${tag}: a 200 px drag from ${peek} px left the sheet at ${dragged} px, expected ${wanted}`);
 
+  // A short summary must fit its contents even when opened from the full list.
+  await page.locator('#interior-legend [data-region="outerCore"]').click();
+  const summary = await settledHeight();
+  const bottomGap = await page.evaluate(() =>
+    document.getElementById('interior-panel').getBoundingClientRect().bottom
+    - document.getElementById('interior-inspector').getBoundingClientRect().bottom);
+  check(summary < full && bottomGap >= 0 && bottomGap <= 12,
+    `${tag}: summary from the full list is ${summary} px with ${bottomGap} px below its content`);
+  await page.getByRole('button', { name: 'Evidence & sources', exact: true }).click();
+  check(await settledHeight() > summary, `${tag}: the evidence page did not expand`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - summary) <= 2, `${tag}: returning from evidence did not refit the summary`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - full) <= 2, `${tag}: returning to the list did not restore its height`);
+
   // And back: a tap at the full height returns the sheet to its peek.
   await page.evaluate(() => document.getElementById('interior-grip').click());
   const backToPeek = await settledHeight();

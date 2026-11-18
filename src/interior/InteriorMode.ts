@@ -1678,9 +1678,11 @@ export class InteriorMode {
    *  never shows empty glass under its last row. */
   private fullHeightPx(): number {
     const scroll = document.getElementById('interior-scroll');
-    if (!scroll) return this.peekHeightPx();
+    const panel = scroll?.parentElement;
+    if (!scroll || !panel) return this.peekHeightPx();
     const grip = document.getElementById('interior-grip');
-    const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
+    const borderPx = panel.offsetHeight - panel.clientHeight;
+    const contentPx = borderPx + (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
     return Math.max(this.peekHeightPx(), Math.min(Math.round(viewportSize().height * SHEET_FULL_FRACTION), contentPx));
   }
 

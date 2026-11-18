@@ -10,8 +10,8 @@
  * The scene under the picture is drawn coarser to match (retroSceneRatio):
  * about SCENE_PIXELS_PER_BLOCK of its pixels across each big pixel, which is
  * all the reduce needs, but never below half the canvas's resolution — a
- * quarter of a 2× display's pixels. Any coarser and the faintest stars,
- * smaller than a pixel, flicker as they move (RetroPass.ts pointLift).
+ * quarter of a 2× display's pixels, and as coarse as the reduce's point curve
+ * was measured at (RetroPass.ts POINT_CURVE).
  *
  * The interface's: a whole number of DEVICE pixels, about one and a half
  * (three on a 2× display, one on a 1× monitor), finer than the picture's on

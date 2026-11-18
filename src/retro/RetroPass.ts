@@ -7,13 +7,15 @@
  * the upscaler uses), and this pass draws the canvas from it in two steps:
  *
  *  1. Reduce: one texel per big pixel (grid.ts), the average of the frame's
- *     pixels under it — except that against dark sky a bright star or a thin
- *     line mostly keeps its brightest pixel, so the coarse grid does not
- *     average them away; faint lone stars do average away. The frame is
- *     drawn coarser than the canvas (grid.ts retroSceneRatio), which spreads
- *     a star's light over more of a pixel and dims its brightest one, so a
- *     lone point is lifted back to the brightness it has at full resolution
- *     (pointLift).
+ *     pixels under it — except against dark sky. There a lone point (a star,
+ *     a moon dot) is drawn by its light, as bright as the full-resolution
+ *     frame drew it (POINT_CURVE), in the one big pixel that holds its
+ *     middle, and a line or a bigger bright pixel mostly keeps its brightest
+ *     pixel; faint ones fade out. Light rather than the brightest pixel, and
+ *     soft edges rather than thresholds, because a point's brightest pixel
+ *     swings by half as it slides across the frame's pixels (the lens's
+ *     resample, a scene drawn coarser than the canvas: grid.ts), and with
+ *     thresholds the stars blinked whenever the view moved.
  *  2. Present: each canvas pixel shows its big pixel, counted from the top-left
  *     as the interface's grid is, cut to the 256-colour palette (palette.ts)
  *     with an 8 × 8 ordered dither fixed to the big pixel, faded out towards
@@ -61,10 +63,32 @@ uniform vec2 uInputSize;
 uniform vec2 uBuffer;
 uniform float uBlock;
 uniform ivec2 uVirtual;
-uniform float uPointLift;
+uniform float uPixelArea;
+uniform vec2 uPointCurve;
 out vec4 fragColor;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+float lumaAt(ivec2 texel, ivec2 last) {
+  return dot(texelFetch(tInput, clamp(texel, ivec2(0), last), 0).rgb, LUMA);
+}
+
+// A display value back to the light before the tone curve, and forward again:
+// the sRGB transfer and three's ACES fit, on luminance. The exposure stays
+// folded into the light, so it cancels on the way back.
+float toLight(float display) {
+  float y = display <= 0.04045 ? display / 12.92 : pow((display + 0.055) / 1.055, 2.4);
+  y = min(y, 0.99);
+  float a = 1.0 - 0.983729 * y;
+  float b = 0.0245786 - 0.432951 * y;
+  float c = -(0.000090537 + 0.238081 * y);
+  return (-b + sqrt(b * b - 4.0 * a * c)) / (2.0 * a);
+}
+float toDisplay(float light) {
+  float y = (light * (light + 0.0245786) - 0.000090537) / (light * (0.983729 * light + 0.432951) + 0.238081);
+  y = clamp(y, 0.0, 1.0);
+  return y <= 0.0031308 ? y * 12.92 : 1.055 * pow(y, 1.0 / 2.4) - 0.055;
+}
 
 void main() {
   ivec2 big = ivec2(gl_FragCoord.xy);
@@ -77,6 +101,7 @@ void main() {
   ivec2 lo = ivec2(floor(vec2(canvasMin.x, uBuffer.y - canvasMax.y) * scale));
   ivec2 hi = max(lo + 1, ivec2(ceil(vec2(canvasMax.x, uBuffer.y - canvasMin.y) * scale)));
   hi = min(hi, ivec2(uInputSize));
+  ivec2 last = ivec2(uInputSize) - 1;
   vec3 sum = vec3(0.0);
   float count = 0.0;
   vec3 peak = vec3(0.0);
@@ -99,52 +124,91 @@ void main() {
   }
   vec3 average = sum / max(count, 1.0);
   float averageLuma = dot(average, LUMA);
-  // A point (a star, a moon dot) drawn coarser than the canvas is dimmer at
-  // its brightest pixel: lifted back where at most one pixel two out is half
-  // as bright (a neighbouring star). A line or a disc's edge crosses that ring
-  // at least twice, and is drawn no dimmer.
-  if (uPointLift > 1.0) {
-    ivec2 last = ivec2(uInputSize) - 1;
-    int crossings = 0;
-    for (int dy = -2; dy <= 2; dy++) {
-      for (int dx = -2; dx <= 2; dx++) {
-        if (abs(dx) < 2 && abs(dy) < 2) continue;
-        float luma = dot(texelFetch(tInput, clamp(peakAt + ivec2(dx, dy), ivec2(0), last), 0).rgb, LUMA);
-        if (luma > 0.5 * peakLuma) crossings++;
+
+  // Against dark sky a bright pixel or a streak across the block (a line)
+  // keeps most of its brightness, so the coarse grid does not average it
+  // away; on a lit planet the brightest pixel is a cloud speck, and letting it
+  // win would speckle the disc. Every edge is soft, so nothing flicks on or
+  // off as it moves.
+  float contrast = peakLuma / max(averageLuma, 0.01);
+  float bright = max(smoothstep(0.25, 0.35, peakLuma), lit >= 0.1 * count ? smoothstep(0.1, 0.14, peakLuma) : 0.0);
+  float keep = (1.0 - smoothstep(0.05, 0.07, averageLuma)) * smoothstep(2.0, 2.6, contrast) * bright
+    * min(0.85, max(contrast - 2.2, 0.0) * 0.25 + 0.45);
+  vec3 kept = peak;
+
+  // A lone point (a star, a moon dot) is drawn by its light rather than its
+  // brightest pixel: the lens's resample and a coarse scene spread a point
+  // over its pixels, which moves its brightest pixel by half as it slides
+  // across them but keeps the sum. First the point's own brightest pixel,
+  // which may be across the block's edge.
+  ivec2 centre = peakAt;
+  float centreLuma = peakLuma;
+  for (int climb = 0; climb < 2; climb++) {
+    ivec2 from = centre;
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        ivec2 texel = clamp(from + ivec2(dx, dy), ivec2(0), last);
+        float luma = lumaAt(texel, last);
+        if (luma > centreLuma) { centreLuma = luma; centre = texel; }
       }
     }
-    if (crossings <= 1) {
-      peak *= min(uPointLift, 1.0 / max(max(peak.r, peak.g), max(peak.b, 1e-4)));
-      peakLuma = dot(peak, LUMA);
+  }
+  // The ring two pixels out: the sky behind the point, and whether anything
+  // else is lit there. A line or a disc's edge crosses it at least twice.
+  float ringLow = 1.0;
+  float ringLit = 0.0;
+  for (int dy = -2; dy <= 2; dy++) {
+    for (int dx = -2; dx <= 2; dx++) {
+      if (abs(dx) < 2 && abs(dy) < 2) continue;
+      float luma = lumaAt(centre + ivec2(dx, dy), last);
+      ringLow = min(ringLow, luma);
+      ringLit += smoothstep(0.35, 0.65, luma / max(centreLuma, 1e-3));
     }
   }
-  // Only against dark sky (on a lit planet the brightest pixel is a cloud
-  // speck, and letting it win would speckle the disc), and only for a bright
-  // point or a streak across the block (a line): a faint lone star averages
-  // away, as it would on a screen this coarse.
-  bool streak = lit >= 0.1 * count;
-  if (averageLuma < 0.06 && peakLuma > averageLuma * 2.2 && (peakLuma > 0.3 || (streak && peakLuma > 0.12))) {
-    float weight = min(0.85, (peakLuma / max(averageLuma, 0.01) - 2.2) * 0.25 + 0.45);
-    average = mix(average, peak, weight);
+  float lone = (1.0 - smoothstep(0.8, 1.8, ringLit)) * (1.0 - smoothstep(0.03, 0.08, ringLow));
+  // Its light above the sky, and where its middle is: the one big pixel
+  // holding that draws it, so a point across two blocks is drawn once.
+  float sky = toLight(ringLow);
+  float light = 0.0;
+  vec2 moment = vec2(0.0);
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      float above = max(toLight(lumaAt(centre + ivec2(dx, dy), last)) - sky, 0.0);
+      light += above;
+      moment += above * vec2(dx, dy);
+    }
   }
-  fragColor = vec4(average, 1.0);
+  vec2 middle = vec2(centre) + 0.5 + moment / max(light, 1e-6);
+  bool here = all(greaterThanEqual(middle, vec2(lo))) && all(lessThan(middle, vec2(hi)));
+  // As the full-resolution frame drew it: its brightest pixel there, which
+  // grows more slowly than its light, a brighter point being bigger.
+  float fullLight = light * uPixelArea;
+  float pointLuma = toDisplay(sky + uPointCurve.x * pow(fullLight, uPointCurve.y));
+  // The point's rule alone draws a lone point, in whichever block holds it.
+  keep *= 1.0 - lone;
+  float pointKeep = here ? lone * smoothstep(0.22, 0.32, pointLuma) * 0.85 : 0.0;
+  if (pointKeep > keep) {
+    keep = pointKeep;
+    vec3 colour = texelFetch(tInput, centre, 0).rgb;
+    kept = colour * (pointLuma / max(dot(colour, LUMA), 1e-4));
+    kept /= max(1.0, max(kept.r, max(kept.g, kept.b)));
+  }
+  fragColor = vec4(mix(average, kept, keep), 1.0);
 }
 `;
 
 /**
- * How much brighter a lone point's brightest pixel is at full resolution than
- * in a frame drawn at `scale` of the canvas's pixels across. The app's stars
- * keep their light at any size, so drawn coarser they spread it and dim at
- * the peak, and the tone curve's toe dims them further. Fitted on the app's
- * own frames, about 1,200 stars matched big pixel by big pixel, so that as
- * many clear the reduce's threshold as at full resolution: 2.45 at a half,
- * 1.5 at 0.65. 1 at or above full resolution, where the look was tuned; not
- * measured below a half, which grid.ts never draws.
+ * A lone point's brightest pixel at full resolution, from its light there
+ * (both before the tone curve, the light counted in full-resolution pixels):
+ * `scale · light ^ power`. The app draws a brighter star bigger as well as
+ * brighter, so its peak grows more slowly than its light. The power and a
+ * scale of 0.22 fit about 4,400 of the app's stars, each matched with its
+ * full-resolution frame, to within a tenth across the whole range; the scale
+ * is raised to 0.27 so that as many stars show as that frame showed, the
+ * frame's own peaks scattering more stars over the edge than this steady
+ * measure does.
  */
-export function pointLift(scale: number): number {
-  if (!(scale < 1)) return 1;
-  return 1 + 1.45 * Math.pow(1 / Math.max(scale, 0.5) - 1, 1.7);
-}
+const POINT_CURVE = { scale: 0.27, power: 0.68 };
 
 /** How far the dither moves a colour before the cut: three quarters of the
  *  palette's mean spacing, times the strength tuned on frames of the app. */
@@ -209,7 +273,8 @@ export class RetroPass extends Pass {
     uBuffer: { value: new THREE.Vector2() }, uBlock: { value: 1 }, uVirtual: { value: new THREE.Vector2() },
   };
   private readonly inputUniforms = {
-    tInput: { value: null as THREE.Texture | null }, uInputSize: { value: new THREE.Vector2() }, uPointLift: { value: 1 },
+    tInput: { value: null as THREE.Texture | null }, uInputSize: { value: new THREE.Vector2() },
+    uPixelArea: { value: 1 }, uPointCurve: { value: new THREE.Vector2(POINT_CURVE.scale, POINT_CURVE.power) },
   };
   private readonly paletteUniform = { value: null as THREE.DataTexture | null };
   private readonly reduce = material(REDUCE_SHADER, { ...this.inputUniforms, ...this.gridUniforms });
@@ -239,7 +304,9 @@ export class RetroPass extends Pass {
     const drawn = drawnSize(input);
     this.inputUniforms.tInput.value = input.texture;
     this.inputUniforms.uInputSize.value.set(drawn.width, drawn.height);
-    this.inputUniforms.uPointLift.value = pointLift(drawn.width / buffer.x);
+    // A frame pixel is (canvas / frame)² full-resolution pixels.
+    const across = buffer.x / drawn.width;
+    this.inputUniforms.uPixelArea.value = across * across;
     renderer.setRenderTarget(this.small);
     this.reduceQuad.render(renderer);
     this.paletteUniform.value = retroPaletteTexture();

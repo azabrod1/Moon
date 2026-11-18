@@ -172,7 +172,6 @@ import {
   raySphereDistance,
   siteFrame,
   siteGazeAltitudeDeg,
-  formatSiteCoordinates,
   siteRiseText,
   type Site,
   type SiteFrame,
@@ -289,6 +288,7 @@ import {
   SURFACE_TARGET_ELEVATION_DEG,
   SURFACE_AIM_EASE_S,
   surfaceAimLiftPx,
+  withoutRepeatedSubject,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
@@ -2498,7 +2498,6 @@ export class PlanetariumMode {
   );
   private observatoryHud = new ObservatoryHUD(
     () => this.exitSurfaceView(),
-    () => this.swapLandedVantage(),
     () => {
       // Mid-exit the affordance is dead: re-tracking would fight the ease
       // and the exit completes anyway.
@@ -20325,14 +20324,21 @@ export class PlanetariumMode {
       }
     }
 
-    const companion = this.swapCompanionTarget();
+    // Where you stand, for the top row: the spot or the place's name; the
+    // invitation to choose one where the body has ground; the body alone
+    // where it has none.
+    const landedName = bodyDisplayName(this.landedOn.name);
+    const shortName = landedName.replace(/^the /, '');
+    const placesOffered = this.sitePickerOffered();
+    const place = site
+      ? `${shortName} · ${site.name ?? formatSpot(site.latitudeDeg, site.longitudeDeg)}`
+      : placesOffered ? `${shortName} · Pick a spot` : `From ${landedName}`;
     const state: SurfaceHudState = {
-      eyebrow: site
-        ? `${site.name ? `Standing at ${site.name}` : `Standing on ${bodyDisplayName(this.landedOn.name)}`} · ${formatSiteCoordinates(site)}`
-        : `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
+      eyebrow: place,
       headline,
       heroRepeats,
-      subText,
+      // The headline has already named the body: the line under it need not.
+      subText: event ? subText : withoutRepeatedSubject(headline, subText),
       subWarm,
       whenText: formatObservatoryClock(now),
       whenTag: this.observatoryNowTag(),
@@ -20344,8 +20350,7 @@ export class PlanetariumMode {
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, ''),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
-      swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
-      placesOffered: this.sitePickerOffered(),
+      placesOffered,
     };
     this.observatoryHud.render(state);
     this.surfaceAimLiftGoalPx = this.measureSurfaceAimLiftPx();

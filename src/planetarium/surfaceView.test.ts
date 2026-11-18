@@ -41,6 +41,7 @@ import {
   orderSurfaceTargetChoices,
   SURFACE_AIM_MIN_FREE_PX,
   surfaceAimLiftPx,
+  withoutRepeatedSubject,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
@@ -1130,6 +1131,16 @@ describe('surfaceLookRotation — the sky follows the finger at any roll', () =>
     const tilt0 = tiltFromLevel(q);
     for (let i = 0; i < 40; i++) q = drag(q, 0.03 * Math.cos(i), 0.02 * Math.sin(i * 1.7));
     expect(tiltFromLevel(q)).toBeCloseTo(tilt0, 9);
+  });
+});
+
+describe('withoutRepeatedSubject — the HUD says each thing once', () => {
+  it('drops the body the headline has named, and nothing else', () => {
+    expect(withoutRepeatedSubject('Waxing Crescent Earth', 'Earth · 37% lit')).toBe('37% lit');
+    expect(withoutRepeatedSubject('Full Moon', 'The Moon · 100% lit')).toBe('100% lit');
+    expect(withoutRepeatedSubject('Jupiter', 'Jupiter · mag −2.2 · 99% lit')).toBe('mag −2.2 · 99% lit');
+    expect(withoutRepeatedSubject('Waxing Crescent Earth', 'The Sun is below the horizon — rises in 9 days')).toBe('The Sun is below the horizon — rises in 9 days');
+    expect(withoutRepeatedSubject('Moon sky', 'Phobos · 40% lit')).toBe('Phobos · 40% lit');
   });
 });
 

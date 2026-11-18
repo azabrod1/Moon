@@ -7,9 +7,9 @@
  * the upscaler uses), and this pass draws the canvas from it in two steps:
  *
  *  1. Reduce: one texel per big pixel (grid.ts), the average of the frame's
- *     pixels under it — except that where its brightest pixel is far
- *     brighter than the average (a star, a thin line), that pixel mostly
- *     wins, so the coarse grid does not average the sky's points away.
+ *     pixels under it — except that against dark sky a bright star or a thin
+ *     line mostly keeps its brightest pixel, so the coarse grid does not
+ *     average them away; faint lone stars do average away.
  *  2. Present: each canvas pixel shows its big pixel, counted from the top-left
  *     as the interface's grid is, cut to the 256-colour palette (palette.ts)
  *     with an 8 × 8 ordered dither fixed to the big pixel, faded out towards
@@ -74,6 +74,7 @@ void main() {
   float count = 0.0;
   vec3 peak = vec3(0.0);
   float peakLuma = -1.0;
+  float lit = 0.0;
   for (int j = 0; j < ${MAX_TAPS}; j++) {
     int y = lo.y + j * max(1, (hi.y - lo.y + ${MAX_TAPS - 1}) / ${MAX_TAPS});
     if (y >= hi.y) break;
@@ -85,11 +86,17 @@ void main() {
       count += 1.0;
       float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
       if (luma > peakLuma) { peakLuma = luma; peak = colour; }
+      if (luma > 0.08) lit += 1.0;
     }
   }
   vec3 average = sum / max(count, 1.0);
   float averageLuma = dot(average, vec3(0.2126, 0.7152, 0.0722));
-  if (peakLuma > 0.18 && peakLuma > averageLuma * 2.2) {
+  // Only against dark sky (on a lit planet the brightest pixel is a cloud
+  // speck, and letting it win would speckle the disc), and only for a bright
+  // point or a streak across the block (a line): a faint lone star averages
+  // away, as it would on a screen this coarse.
+  bool streak = lit >= 0.1 * count;
+  if (averageLuma < 0.06 && peakLuma > averageLuma * 2.2 && (peakLuma > 0.3 || (streak && peakLuma > 0.12))) {
     float weight = min(0.85, (peakLuma / max(averageLuma, 0.01) - 2.2) * 0.25 + 0.45);
     average = mix(average, peak, weight);
   }

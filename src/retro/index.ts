@@ -19,14 +19,16 @@
  *
  * `?retro=1` or `?retro=0` overrides the saved look for one load
  * (setting.ts). Not offered where there is no composer (`canDraw` false).
+ *
+ * It imports nothing from the app, so a change to the app can never break
+ * the build here; the app's markup and classes it styles are matched by
+ * selectors, so a change there at worst leaves something less retro.
  */
 import type * as THREE from 'three';
-import type { OutputTargetPass } from '../app/UpscalePass';
-import { setSegmentValue, wireSegmented } from '../planetarium/ui/SegmentedControl';
 import { RetroTargetBrackets, type ScreenBox } from './brackets';
 import { retroGrid, retroInterfacePixel } from './grid';
 import { installRetroIcons } from './icons';
-import { RetroPass } from './RetroPass';
+import { RetroPass, type FrameSource } from './RetroPass';
 import { LOOKS, LOOK_LABELS, LOOK_NOTES, lookSetting, resolveBootLook, type Look } from './setting';
 import { installRetroTypography } from './typography';
 import retroCss from './retro.css?raw';
@@ -43,7 +45,7 @@ export interface Retro {
   /** Whether the look is on. */
   readonly on: boolean;
   /** The pass for a newly built planetarium composer, enabled while the look is on. */
-  pass(source: OutputTargetPass): RetroPass;
+  pass(source: FrameSource): RetroPass;
   /** After each planetarium frame: the body to frame, or null for none. */
   frame(target: (ScreenBox & { name: string }) | null): void;
 }
@@ -95,7 +97,11 @@ export function createRetro(host: RetroHost): Retro {
   let row: HTMLElement | null = null;
   const syncRow = () => {
     if (!row) return;
-    setSegmentValue(row.querySelector('.menu-seg'), look);
+    for (const button of row.querySelectorAll<HTMLElement>('[role="radio"]')) {
+      const checked = button.dataset.value === look;
+      button.classList.toggle('on', checked);
+      button.setAttribute('aria-checked', String(checked));
+    }
     const note = row.querySelector('.menu-note');
     if (note) note.textContent = LOOK_NOTES[look];
   };
@@ -108,7 +114,9 @@ export function createRetro(host: RetroHost): Retro {
         `<button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="${value}">${LOOK_LABELS[value]}</button>`).join('')}</div>
       <div class="menu-note"></div>`;
     page.appendChild(row);
-    wireSegmented(row.querySelector('.menu-seg'), (value) => {
+    row.addEventListener('click', (event) => {
+      const value = (event.target as HTMLElement | null)?.closest<HTMLElement>('[role="radio"]')?.dataset.value;
+      if (!value || value === look) return;
       look = value as Look;
       lookSetting.write(look);
       apply();

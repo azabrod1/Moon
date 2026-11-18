@@ -16,15 +16,35 @@
  *     black so empty space stays black.
  *
  * Nothing upstream changes, so the rest of the app never needs to know this
- * pass exists. Raw GLSL3 materials, like the resample passes, so drawing the
- * canvas never re-keys their programs.
+ * pass exists, and it imports nothing from the app: all it reads is the
+ * finishing pass's `target`. Raw GLSL3 materials, so drawing the canvas never
+ * re-keys their programs.
  */
 import * as THREE from 'three';
 import { FullScreenQuad, Pass } from 'three/addons/postprocessing/Pass.js';
-import { FSR1_VERTEX_SHADER } from '../app/fsr1';
-import { createLdrTarget, drawnSize, type OutputTargetPass } from '../app/UpscalePass';
 import { retroGrid } from './grid';
 import { RETRO_LOOKUP_STEPS, retroLookup } from './palette';
+
+/** What the pass reads: the finished frame, in the finishing pass's own
+ *  8-bit target, display-encoded (null until something needed it). */
+export interface FrameSource {
+  readonly target: THREE.WebGLRenderTarget | null;
+}
+
+const VERTEX_SHADER = /* glsl */ `
+precision highp float;
+in vec3 position;
+void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+
+/** The part of a target a frame was drawn into: its viewport, which a fixed
+ *  allocation narrows to a corner of the target. */
+function drawnSize(target: THREE.WebGLRenderTarget): { width: number; height: number } {
+  return {
+    width: Math.min(target.width, Math.max(1, Math.round(target.viewport.z))),
+    height: Math.min(target.height, Math.max(1, Math.round(target.viewport.w))),
+  };
+}
 
 /** The most frame pixels a big pixel's average reads along each axis. */
 const MAX_TAPS = 24;
@@ -112,7 +132,7 @@ void main() {
 
 function material(fragmentShader: string, uniforms: Record<string, THREE.IUniform>): THREE.RawShaderMaterial {
   return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3, uniforms, vertexShader: FSR1_VERTEX_SHADER, fragmentShader,
+    glslVersion: THREE.GLSL3, uniforms, vertexShader: VERTEX_SHADER, fragmentShader,
     depthTest: false, depthWrite: false, blending: THREE.NoBlending,
   });
 }
@@ -140,10 +160,14 @@ export class RetroPass extends Pass {
   });
   private readonly reduceQuad = new FullScreenQuad(this.reduce);
   private readonly presentQuad = new FullScreenQuad(this.present);
-  private readonly small = createLdrTarget();
+  /** One texel per big pixel: raw 8-bit storage, read by exact texel. */
+  private readonly small = new THREE.WebGLRenderTarget(1, 1, {
+    type: THREE.UnsignedByteType, colorSpace: THREE.NoColorSpace, depthBuffer: false,
+    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+  });
   private readonly buffer = new THREE.Vector2();
 
-  constructor(private readonly source: OutputTargetPass) {
+  constructor(private readonly source: FrameSource) {
     super();
     this.needsSwap = false;
   }

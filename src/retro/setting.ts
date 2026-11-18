@@ -1,10 +1,8 @@
 /**
  * Where the Look is kept: Modern, the app as it is, or Retro. One localStorage
- * key of its own (app/storedSetting.ts), never part of the journey save.
- * `?retro=1` or `?retro=0` overrides it for one load without saving.
+ * key of its own, never part of the journey save. `?retro=1` or `?retro=0`
+ * overrides it for one load without saving.
  */
-import { enumCodec, storedSetting } from '../app/storedSetting';
-import type { QualityStorage } from '../app/qualitySetting';
 
 export const LOOKS = ['modern', 'retro'] as const;
 export type Look = (typeof LOOKS)[number];
@@ -16,7 +14,40 @@ export const LOOK_NOTES: Record<Look, string> = {
   retro: 'A 1990s screen: big pixels, 256 colours and bitmap type.',
 };
 
-export const lookSetting = storedSetting<Look>('planetarium-look', enumCodec(LOOKS));
+/** The little of localStorage this needs; injectable for the test. */
+export interface LookStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+const KEY = 'planetarium-look';
+
+function browserStorage(): LookStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** The saved look and saving it; a storage that refuses (private mode) is no look. */
+export const lookSetting = {
+  read(storage: LookStorage | null = browserStorage()): Look | null {
+    try {
+      const value = storage?.getItem(KEY);
+      return value === 'modern' || value === 'retro' ? value : null;
+    } catch {
+      return null;
+    }
+  },
+  write(look: Look, storage: LookStorage | null = browserStorage()): void {
+    try {
+      storage?.setItem(KEY, look);
+    } catch {
+      /* ignore: private browsing */
+    }
+  },
+};
 
 /** `?retro=1|0` (also on/off, retro/modern). Anything else reads as unasked. */
 export function parseRetroParam(search: string): Look | null {
@@ -29,6 +60,6 @@ export function parseRetroParam(search: string): Look | null {
 }
 
 /** The look this load runs at: the URL's word, else the saved one, else Modern. */
-export function resolveBootLook(search: string, storage: QualityStorage | null = null): Look {
+export function resolveBootLook(search: string, storage: LookStorage | null = browserStorage()): Look {
   return parseRetroParam(search) ?? lookSetting.read(storage) ?? 'modern';
 }

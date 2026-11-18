@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bracketBox } from './brackets';
 import { retroGrid, retroInterfacePixel } from './grid';
 import { RETRO_LOOKUP_STEPS, hexToRgb, retroLookup, retroPalette } from './palette';
-import { lookSetting, resolveBootLook } from './setting';
+import { resolveBootLook } from './setting';
 import { retroTypographyCss } from './typography';
 
 describe('the Retro look', () => {
@@ -16,8 +16,7 @@ describe('the Retro look', () => {
   });
 
   it('takes the URL, then the saved look, then Modern', () => {
-    const saved = new Map([[lookSetting.key, 'retro']]);
-    const storage = { getItem: (key: string) => saved.get(key) ?? null, setItem: () => {}, removeItem: () => {} };
+    const storage = { getItem: () => 'retro', setItem: () => {} };
     expect(resolveBootLook('?retro=0', storage)).toBe('modern');
     expect(resolveBootLook('', storage)).toBe('retro');
     expect(resolveBootLook('?retro=1', null)).toBe('retro');

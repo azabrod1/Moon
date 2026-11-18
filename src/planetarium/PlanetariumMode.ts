@@ -42,7 +42,7 @@ import {
 import { applySunGlowTier, createAtmosphereMaterial, createMoonMeshes, lodMeasurementRelevant, markStreamedGround, prebuildGeometryStep, setWarmEligibleMoonParents, sphereWidthSegments, upgradeGeometryOnApproach, wantsGeometryPrebuild, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type PlanetMesh } from './PlanetFactory';
 import { PLANET_TEXTURE_FILES, appliedNormalHeldBytes, appliedTierHeldBytes, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, buildRestoreQueue, cancelTierRelease, canAttempt, cancelTextureUpgrade, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeNormalOnApproach, upgradeTextureOnApproach, UPGRADE_TRIGGER_FRACTION, type NormalUpgrade, type TextureUpgrade, type TierAdmission } from './world/textureLadder';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { AIR_LOOKUP_RADIUS, MAX_MOON_SHADOWS, NIGHT_FILL, advanceSurfaceAir, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { AIR_LOOKUP_RADIUS, MAX_MOON_SHADOWS, NIGHT_FILL, NIGHT_LIFT_STRENGTH, advanceSurfaceAir, applyNightLift, nightLiftUniform, beamShoulderInForce, bindSurfaceAir, clearSurfaceAir, cloudShadowShared, cloudShadowsOn, cloudShadowUniforms, holdSeaCloudCut, seaAxisOn, seaBeamOn, seaWindOn, seatSurfaceLook, setCloudShadowDrift, setSurfaceSynthesis, settleSurfaceAir, sunPathOn, surfaceReliefKind, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { setSurfaceLookOverride, surfaceLookOf, type SurfaceLook as BodySurfaceLook, type SurfaceLookOverride } from './world/surfaceLook';
 import { cloudFieldRequested, setCloudFieldOn, setCloudFieldPixelRatios } from './world/cloudFieldSlots';
 import type { CloudFieldAllocation } from './world/cloudFieldPool';
@@ -157,14 +157,19 @@ import {
 } from './planetPoints';
 import { STAR_POINT_MAPPING } from './world/starPointMapping';
 import { SITE_GROUND_ALBEDO_LINEAR, SiteGround } from './world/siteGround';
-import { SITE_EYE_HEIGHT_KM, SITE_PLACES, type SitePlace } from './sitePlaces';
+import { SITE_EYE_HEIGHT_KM, SITE_PLACES } from './sitePlaces';
 import { lunarOrientationQuaternion } from '../astronomy/lunarOrientation';
 import {
   altAz,
+  bodyDirectionFromLatLon,
   createSiteFrame,
   directionFromAltAz,
   findAltitudeCrossing,
+  formatSpot,
   horizonDipDeg,
+  latLonFromBodyDirection,
+  parseCoordinates,
+  raySphereDistance,
   SITE_GAZE_ABOVE_HORIZON_DEG,
   siteFrame,
   formatSiteCoordinates,
@@ -522,6 +527,7 @@ import {
 } from './ui/ObservatoryPanel';
 import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu, type SurfacePlaceRow } from './ui/SurfaceTargetMenu';
+import { SitePicker } from './ui/SitePicker';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { TutorialSpotlight } from './ui/TutorialSpotlight';
@@ -1079,9 +1085,12 @@ export class PlanetariumMode {
     if (this.gesturePointerId === e.pointerId) {
       const heldMs = e.timeStamp - this.gestureStartT;
       const isTap = !this.gestureMoved && !this.gestureMultiPointer && heldMs <= PlanetariumMode.TAP_MAX_MS;
+      // The open spot picker takes the tap, from a finger or a mouse: it is
+      // a choice of ground, not a body to name.
+      if (isTap && this.isSitePickerOpen()) this.sitePickerTap(e.clientX, e.clientY);
       // Mouse clicks rely on live hover, not the timed reveal, so only touch/pen
       // taps arm the 2.5 s window.
-      if (isTap && e.pointerType !== 'mouse') this.handleBodyTap(e.clientX, e.clientY);
+      else if (isTap && e.pointerType !== 'mouse') this.handleBodyTap(e.clientX, e.clientY);
       this.gesturePointerId = null;
     }
   };
@@ -1775,7 +1784,7 @@ export class PlanetariumMode {
   /** The surface view's site (stage 2): where on the landed body the eye
    *  stands, a few metres up. Session state, cleared with the landing like
    *  the picked target, not saved with the journey yet; null keeps the
-   *  sliding vantage. Set from the Places list (openSurfacePlaceMenu) or
+   *  sliding vantage. Set from the spot picker (openSitePicker) or
    *  devStandAt; Moon only for now. */
   private surfaceSite: Site | null = null;
   /** The ground under the site (world/siteGround.ts), built at activation so
@@ -2515,10 +2524,12 @@ export class PlanetariumMode {
       else this.timeJumpToNow();
       this.renderSurfaceHud();
     },
-    () => {
-      if (this.surfaceTargetMenu.openList() === 'places') this.closeSurfaceTargetMenu();
-      else this.openSurfacePlaceMenu();
-    },
+    () => this.openSitePicker(),
+  );
+  private sitePicker = new SitePicker(
+    () => this.cancelSitePicker(),
+    () => this.openSitePickerPlaces(),
+    () => this.standAtPickedSpot(),
   );
   private surfaceTargetMenu = new SurfaceTargetMenu(
     (target) => this.pickSurfaceTarget(target),
@@ -3455,6 +3466,7 @@ export class PlanetariumMode {
       this.observatoryPanel.bind();
       this.observatoryHud.bind();
       this.surfaceTargetMenu.bind();
+      this.sitePicker.bind();
       this.tutorialCard.bind();
       this.tutorialSpotlight.bind();
       this.speedValueEl = document.getElementById('planetarium-speed-value');
@@ -5284,6 +5296,7 @@ export class PlanetariumMode {
     this.closeObservatoryPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.closeToolsMenu();
 
     this.setObjectsVisible(false);
@@ -5503,6 +5516,9 @@ export class PlanetariumMode {
     // it alone — it is already dt-sized, and it runs on the tick with the
     // camera it damps.
     this.controls.dampingFactor = cameraFollowGain(dt, ORBIT_DAMPING_TAU_S);
+    // The landed view's entry buttons and the spot picker follow the state
+    // every frame, whichever path changed it (a few boolean reads).
+    this.syncLandedEntry();
 
     // Upload one budget's worth of freshly loaded textures while nothing is
     // being asked of the frame — otherwise the whole decode+upload bill lands
@@ -7357,7 +7373,7 @@ export class PlanetariumMode {
    *  lift was made beside, and back at Real the meter takes its targets
    *  outright. */
   private nightExposureStandsDown(): boolean {
-    return this.nightExposureOff || this.nightSides.mode() === 'brightened';
+    return this.nightExposureOff || this.nightSides.mode() === 'brightened' || this.isSitePickerOpen();
   }
 
   /** Every body's slot back to 1, the picture as it was. */
@@ -10643,6 +10659,7 @@ export class PlanetariumMode {
       }
       if (this.isMapOpen()) { this.closeMap(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
+      if (this.isSitePickerOpen()) { this.cancelSitePicker(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
@@ -11487,6 +11504,7 @@ export class PlanetariumMode {
     this.closeToolsMenu();
     this.closeMap({ restore: false });
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.bottomBar.closeStats();
     this.bottomBar.closeTime();
     this.renderTutorialCard();
@@ -12877,6 +12895,7 @@ export class PlanetariumMode {
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.insidePicker?.close();
     this.buildToolsMenu();
     // Both rows here are one tap from a mode switch that fetches a chunk.
@@ -13278,6 +13297,7 @@ export class PlanetariumMode {
         this.closeMap({ restore: false });
         this.closeDeck();
         this.closeSurfaceTargetMenu();
+        this.closeSitePicker();
         this.closeToolsMenu();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
@@ -13604,6 +13624,12 @@ export class PlanetariumMode {
       if (this.mapDiving) return;
       this.exitLandedMode();
     });
+    // The landed view's two ways into the sky: the Observatory's own Look
+    // up, and the spot picker.
+    document.getElementById('landed-entry-lookup')?.addEventListener('click', () => {
+      if (this.landedOn && this.landedView === 'orbit') this.toggleSurfaceView();
+    });
+    document.getElementById('landed-entry-pick')?.addEventListener('click', () => this.openSitePicker());
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.mapDiving) return;
       if (this.nearbyLandTarget) {
@@ -13664,6 +13690,7 @@ export class PlanetariumMode {
       this.closeMap({ restore: false });
       this.closeMenuPanel();
       this.closeSurfaceTargetMenu();
+      this.closeSitePicker();
       this.closeToolsMenu();
       this.setWorldLabelsVisible(false);
       if (search) search.value = '';
@@ -14397,6 +14424,7 @@ export class PlanetariumMode {
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.closeToolsMenu();
     this.bottomBar.closeStats();
     this.bottomBar.closeTime();
@@ -19659,6 +19687,7 @@ export class PlanetariumMode {
    *  it via its full-screen catcher, but the O key arrives here directly and
    *  would otherwise open the panel beneath the still-standing catcher. */
   private openObservatoryPanel() {
+    this.closeSitePicker();
     this.closeToolsMenu();
     this.bottomBar.closeStats();
     this.observatoryPanel.show();
@@ -20316,7 +20345,7 @@ export class PlanetariumMode {
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
       swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
-      placesOffered: this.surfacePlacesOffered(),
+      placesOffered: this.sitePickerOffered(),
     };
     this.observatoryHud.render(state);
     this.surfaceAimLiftGoalPx = this.measureSurfaceAimLiftPx();
@@ -21199,18 +21228,13 @@ export class PlanetariumMode {
     return site;
   }
 
-  /** The landed body's named places, when it has ground to stand on and
-   *  nothing else is framing the view. */
-  private surfacePlaces(): readonly SitePlace[] | null {
+  /** Whether the landed body has ground to stand on (siteGround's albedo
+   *  table) and nothing else is framing the view: the tour and the historic
+   *  missions pose their own. */
+  private sitePickerOffered(): boolean {
     const landed = this.landedOn;
-    if (!landed || this.landedView !== 'surface') return null;
-    if (this.tutorial || this.isMissionActive()) return null;
-    if (!SITE_GROUND_ALBEDO_LINEAR[landed.name]) return null;
-    return SITE_PLACES[landed.name] ?? null;
-  }
-
-  private surfacePlacesOffered(): boolean {
-    return (this.surfacePlaces()?.length ?? 0) > 0;
+    if (!landed || this.tutorial || this.isMissionActive()) return false;
+    return SITE_GROUND_ALBEDO_LINEAR[landed.name] !== undefined;
   }
 
   /** Stand at a site on the landed body, or back at the surface view's own
@@ -21222,68 +21246,360 @@ export class PlanetariumMode {
     this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
   }
 
-  /** The "Stand at" list: the surface view's own vantage first, then the
-   *  body's named places, each with Earth's altitude (or the parent's,
-   *  for a moon) and day or night there now. */
-  private openSurfacePlaceMenu(): void {
-    const places = this.surfacePlaces();
+  /** What the sky is doing at a site now, for the picker's card and the
+   *  places list: day or night there (the Sun's whole disc under the dipped
+   *  horizon is night), and where the parent planet stands. */
+  private siteConditions(site: Site, utcMs: number): { night: boolean | null; parent: string } {
     const landed = this.landedOn;
-    if (!places || !landed) return;
+    const radiusKm = this.getLandedBodyRadiusAU() * KM_PER_AU;
+    const sunAltitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'sun' }, utcMs);
+    // The Sun's radius at 1 AU: a moon's distance from the Sun barely changes it.
+    const sunDownDeg = Math.asin(SUN_RADIUS_AU) * RAD2DEG + horizonDipDeg(radiusKm, site.heightKm);
+    const night = Number.isFinite(sunAltitudeDeg) ? sunAltitudeDeg < -sunDownDeg : null;
+    let parent = '';
+    const parentName = landed?.type === 'moon' ? this.observatoryParentPlanetName() : null;
+    if (parentName) {
+      const altitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'parent' }, utcMs);
+      const name = bodyDisplayName(parentName).replace(/^the /, '');
+      if (Number.isFinite(altitudeDeg)) {
+        parent = altitudeDeg >= 1
+          ? `${name} ${Math.round(altitudeDeg)}° up`
+          : altitudeDeg > -1 ? `${name} on the horizon` : `${name} below the horizon`;
+      }
+    }
+    return { night, parent };
+  }
+
+  // ---- The spot picker: tap the landed globe to choose where to stand ----
+
+  /** The spot the picker's pin marks: a latitude and longitude on the landed
+   *  body, with a place's name when it came from the list. */
+  private sitePickerSpot: { latitudeDeg: number; longitudeDeg: number; name?: string } | null = null;
+  /** The picker was opened from the sky view: Cancel goes back there. */
+  private sitePickerFromSurface = false;
+  private sitePickerTextStampMs = 0;
+  private readonly tmpPickerRay = new THREE.Vector3();
+  private readonly tmpPickerPoint = new THREE.Vector3();
+  private readonly tmpPickerCentre = new THREE.Vector3();
+  private readonly tmpPickerQuaternion = new THREE.Quaternion();
+  private readonly tmpPickerLatLon = { latitudeDeg: 0, longitudeDeg: 0 };
+  private readonly tmpPickerScreen: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+
+  private isSitePickerOpen(): boolean {
+    return this.sitePicker.isOpen();
+  }
+
+  /** Open the picker over the landed globe. From the sky view it leaves the
+   *  surface first (the globe is the orbit view's), and Cancel returns. */
+  private openSitePicker(): void {
+    if (!this.sitePickerOffered() || this.isSitePickerOpen()) return;
+    const fromSurface = this.landedView === 'surface';
+    // One panel at a time.
     this.closeMenuPanel();
     this.closeDeck();
     this.closeToolsMenu();
+    this.closeSurfaceTargetMenu();
+    this.closeObservatoryPanel();
+    this.bottomBar.closeStats();
+    if (fromSurface) this.exitSurfaceView(true);
+    this.sitePickerFromSurface = fromSurface;
+    const site = this.activeSurfaceSite();
+    this.sitePickerSpot = site
+      ? { latitudeDeg: site.latitudeDeg, longitudeDeg: site.longitudeDeg, name: site.name }
+      : null;
+    this.sitePicker.show();
+    // A map light: the night side is ground to choose from too, so while the
+    // picker is open it is lifted as the Night sides setting's Brightened
+    // lifts it, whatever that setting says. Closing puts the setting back.
+    nightLiftUniform.value = NIGHT_LIFT_STRENGTH;
+    if (this.sitePickerSpot) this.turnLandedCameraToSpot(this.sitePickerSpot.latitudeDeg, this.sitePickerSpot.longitudeDeg);
+    this.renderSitePicker();
+    this.syncLandedEntry();
+  }
+
+  /** Close the picker and nothing else: every path that takes the landed
+   *  view away (a landing, takeoff, the map, the tour, another panel) calls
+   *  this. */
+  private closeSitePicker(): void {
+    if (!this.isSitePickerOpen()) return;
+    if (this.surfaceTargetMenu.openList() === 'places') this.closeSurfaceTargetMenu();
+    this.sitePicker.hide();
+    applyNightLift(this.nightSides.mode());
+    this.sitePickerSpot = null;
+    this.sitePickerFromSurface = false;
+    this.syncLandedEntry();
+  }
+
+  /** Cancel: back to the sky view it was opened from, at the spot (or the
+   *  surface view's own vantage) it had; otherwise just close. */
+  private cancelSitePicker(): void {
+    if (!this.isSitePickerOpen()) return;
+    const back = this.sitePickerFromSurface;
+    this.closeSitePicker();
+    if (back && this.landedOn) this.enterSurfaceView(this.surfacePickedTarget ?? undefined);
+  }
+
+  private standAtPickedSpot(): void {
+    const spot = this.sitePickerSpot;
+    const landed = this.landedOn;
+    if (!spot || !landed) return;
+    const site: Site = {
+      body: landed.name,
+      latitudeDeg: spot.latitudeDeg,
+      longitudeDeg: spot.longitudeDeg,
+      heightKm: SITE_EYE_HEIGHT_KM,
+      ...(spot.name ? { name: spot.name } : {}),
+    };
+    this.closeSitePicker();
+    this.standAtSite(site);
+  }
+
+  /** The landed body's centre in the scene, the radius it is drawn with in
+   *  the orbit view, and its drawn orientation: what a tap is tested
+   *  against, so the pick lands on the pixels on screen. */
+  private landedGlobeForPicking(): { centre: THREE.Vector3; radiusAU: number; orientation: THREE.Quaternion } | null {
+    const mesh = this.landedBodyMesh();
+    const orientation = this.landedBodyOrientation();
+    const radiusAU = this.getLandedBodyRenderedRadiusAU();
+    if (!mesh || !orientation || !(radiusAU > 0)) return null;
+    return { centre: mesh.getWorldPosition(this.tmpPickerCentre), radiusAU, orientation };
+  }
+
+  /** A tap on the canvas while the picker is open: where its ray, taken back
+   *  through the lens, first meets the globe becomes the spot, to a tenth
+   *  of a degree. A tap on the sky leaves the spot where it was. */
+  private sitePickerTap(clientX: number, clientY: number): void {
+    const globe = this.landedGlobeForPicking();
+    if (!globe || this.landedView !== 'orbit') return;
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const ray = screenPointToWorldRay(
+      clientX - rect.left,
+      clientY - rect.top,
+      this.camera,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      this.tmpPickerRay,
+    );
+    const distance = raySphereDistance(this.camera.position, ray, globe.centre, globe.radiusAU);
+    if (distance === null) return;
+    const inBody = this.tmpPickerPoint
+      .copy(this.camera.position)
+      .addScaledVector(ray, distance)
+      .sub(globe.centre)
+      .applyQuaternion(this.tmpPickerQuaternion.copy(globe.orientation).invert());
+    const picked = latLonFromBodyDirection(inBody, this.tmpPickerLatLon);
+    this.sitePickerSpot = {
+      latitudeDeg: Math.round(picked.latitudeDeg * 10) / 10,
+      longitudeDeg: Math.round(picked.longitudeDeg * 10) / 10,
+    };
+    this.renderSitePicker();
+  }
+
+  /** DEV: the latitude and longitude a displayed pixel of the canvas falls
+   *  on, through the picker's own hit test; null off the globe. */
+  devSitePickAt(xPx: number, yPx: number): { latitudeDeg: number; longitudeDeg: number } | null {
+    if (!this.isSitePickerOpen()) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const before = this.sitePickerSpot;
+    this.sitePickerSpot = null;
+    this.sitePickerTap(rect.left + xPx, rect.top + yPx);
+    const picked = this.sitePickerSpot as { latitudeDeg: number; longitudeDeg: number } | null;
+    if (!picked) this.sitePickerSpot = before;
+    this.renderSitePicker();
+    return picked ? { latitudeDeg: picked.latitudeDeg, longitudeDeg: picked.longitudeDeg } : null;
+  }
+
+  /** The pin, after the camera's final pose this frame: over the spot while
+   *  it faces the camera, hidden once it has turned round the limb. Also
+   *  keeps the card's readings current while the clock runs. */
+  private updateSitePicker(): void {
+    if (!this.isSitePickerOpen() || this.landedView !== 'orbit') return;
+    const spot = this.sitePickerSpot;
+    const globe = spot ? this.landedGlobeForPicking() : null;
+    if (!spot || !globe) {
+      this.sitePicker.setPin(null, 0);
+    } else {
+      const outward = bodyDirectionFromLatLon(spot.latitudeDeg, spot.longitudeDeg, this.tmpPickerPoint)
+        .applyQuaternion(globe.orientation);
+      const toCamera = this.tmpPickerRay.copy(this.camera.position).sub(globe.centre);
+      // In front of the limb: the surface there faces the camera.
+      if (outward.dot(toCamera) <= globe.radiusAU) {
+        this.sitePicker.setPin(null, 0);
+      } else {
+        const point = outward.multiplyScalar(globe.radiusAU).add(globe.centre);
+        const canvas = this.renderer.domElement;
+        const screen = projectToScreen(point, this.camera, canvas.clientWidth, canvas.clientHeight, this.tmpPickerScreen);
+        this.sitePicker.setPin(screen.x, screen.y);
+      }
+    }
+    const wallMs = performance.now();
+    if (wallMs - this.sitePickerTextStampMs > 250) this.renderSitePicker();
+  }
+
+  private renderSitePicker(): void {
+    const landed = this.landedOn;
+    if (!landed || !this.isSitePickerOpen()) return;
+    this.sitePickerTextStampMs = performance.now();
+    const bodyName = bodyDisplayName(landed.name);
+    const spot = this.sitePickerSpot;
+    const touch = this.isTouchDevice;
+    const hint = `${touch ? 'Tap' : 'Click'} ${bodyName}. Drag to turn it.`;
+    if (!spot) {
+      this.sitePicker.render({ hint, eyebrow: 'Your spot', coords: `${touch ? 'Tap' : 'Click'} ${bodyName}`, sub: 'or choose from Places', canStand: false });
+      return;
+    }
+    const conditions = this.siteConditions(
+      { body: landed.name, latitudeDeg: spot.latitudeDeg, longitudeDeg: spot.longitudeDeg, heightKm: SITE_EYE_HEIGHT_KM },
+      this.timeState.currentUtcMs,
+    );
+    const parts: string[] = [];
+    if (conditions.night !== null) parts.push(conditions.night ? 'Night' : 'Daytime');
+    if (conditions.parent) parts.push(conditions.parent);
+    this.sitePicker.render({
+      hint,
+      eyebrow: spot.name ?? 'Your spot',
+      coords: formatSpot(spot.latitudeDeg, spot.longitudeDeg),
+      sub: parts.join(' · '),
+      canStand: true,
+    });
+  }
+
+  /** Turn the landed orbit camera so a spot faces it, keeping its distance
+   *  and staying off the orbit rig's poles (a polar place is seen from as
+   *  near overhead as the rig allows). */
+  private turnLandedCameraToSpot(latitudeDeg: number, longitudeDeg: number): void {
+    const globe = this.landedGlobeForPicking();
+    if (!globe || this.landedView !== 'orbit') return;
+    const outward = bodyDirectionFromLatLon(latitudeDeg, longitudeDeg, this.tmpPickerPoint).applyQuaternion(globe.orientation);
+    // The rig's polar angle is measured from scene north.
+    const polar = THREE.MathUtils.clamp(
+      Math.acos(THREE.MathUtils.clamp(outward.y, -1, 1)),
+      ORBIT_POLAR_MARGIN_RAD * 2,
+      Math.PI - ORBIT_POLAR_MARGIN_RAD * 2,
+    );
+    const azimuth = Math.atan2(outward.x, outward.z);
+    const distance = this.camera.position.distanceTo(globe.centre);
+    flushOrbitDamping(this.controls);
+    this.camera.position
+      .setFromSphericalCoords(distance, polar, azimuth)
+      .add(globe.centre);
+    this.camera.lookAt(globe.centre);
+    this.controls.update();
+  }
+
+  /** The places list, from the picker: the body's named places, each with
+   *  what the sky is doing there now, filtered by the search field, which
+   *  also takes typed coordinates. Picking one moves the pin there and turns
+   *  the globe to show it. */
+  private openSitePickerPlaces(): void {
+    const landed = this.landedOn;
+    if (!landed || !this.isSitePickerOpen()) return;
+    if (this.surfaceTargetMenu.openList() === 'places') {
+      this.closeSurfaceTargetMenu();
+      return;
+    }
     this.setWorldLabelsVisible(false);
+    const places = SITE_PLACES[landed.name] ?? [];
     const now = this.timeState.currentUtcMs;
-    const radiusKm = this.getLandedBodyRadiusAU() * KM_PER_AU;
-    const current = this.activeSurfaceSite();
-    const parentName = landed.type === 'moon' ? this.observatoryParentPlanetName() : null;
-    // Night once all of the Sun's disc is under the dipped horizon (its
-    // radius at 1 AU: a moon's distance from the Sun barely changes it).
-    const sunDownDeg = Math.asin(SUN_RADIUS_AU) * RAD2DEG + horizonDipDeg(radiusKm, SITE_EYE_HEIGHT_KM);
-    const rows: SurfacePlaceRow[] = [{
+    const standing = this.activeSurfaceSite();
+    const pick = (latitudeDeg: number, longitudeDeg: number, name?: string) => {
+      this.closeSurfaceTargetMenu();
+      this.sitePickerSpot = { latitudeDeg, longitudeDeg, ...(name ? { name } : {}) };
+      this.turnLandedCameraToSpot(latitudeDeg, longitudeDeg);
+      this.renderSitePicker();
+    };
+    const placeRows: SurfacePlaceRow[] = places.map((place) => {
+      const conditions = this.siteConditions(
+        { body: landed.name, latitudeDeg: place.latitudeDeg, longitudeDeg: place.longitudeDeg, heightKm: SITE_EYE_HEIGHT_KM },
+        now,
+      );
+      return {
+        name: place.name,
+        note: [place.note, conditions.night ? 'night' : ''].filter(Boolean).join(' · '),
+        meta: conditions.parent,
+        current: standing !== null && standing.name === place.name,
+        onPick: () => pick(place.latitudeDeg, place.longitudeDeg, place.name),
+      };
+    });
+    // The surface view's own vantage, while a spot is stood on: the way back.
+    const rows: SurfacePlaceRow[] = standing === null ? placeRows : [{
       name: 'Surface view',
       note: 'follows your target',
       meta: '',
-      current: current === null,
-      onPick: () => this.pickSurfacePlace(null),
-    }];
-    for (const place of places) {
-      const site: Site = {
-        body: landed.name,
-        latitudeDeg: place.latitudeDeg,
-        longitudeDeg: place.longitudeDeg,
-        heightKm: SITE_EYE_HEIGHT_KM,
-        name: place.name,
-      };
-      const sunAltitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'sun' }, now);
-      const night = Number.isFinite(sunAltitudeDeg) && sunAltitudeDeg < -sunDownDeg;
-      let meta = '';
-      if (parentName) {
-        const parentAltitudeDeg = this.siteTargetAltitudeAt(site, radiusKm, { kind: 'parent' }, now);
-        const parent = bodyDisplayName(parentName).replace(/^the /, '');
-        if (Number.isFinite(parentAltitudeDeg)) {
-          meta = parentAltitudeDeg >= 1
-            ? `${parent} ${Math.round(parentAltitudeDeg)}° up`
-            : parentAltitudeDeg > -1 ? `${parent} on the horizon` : `${parent} down`;
-        }
+      current: false,
+      onPick: () => {
+        this.closeSitePicker();
+        this.standAtSite(null);
+      },
+    }, ...placeRows];
+    const search = (text: string): SurfacePlaceRow[] => {
+      const query = text.trim().toLowerCase();
+      if (!query) return rows;
+      const typed = parseCoordinates(text);
+      if (typed) {
+        const conditions = this.siteConditions(
+          { body: landed.name, latitudeDeg: typed.latitudeDeg, longitudeDeg: typed.longitudeDeg, heightKm: SITE_EYE_HEIGHT_KM },
+          this.timeState.currentUtcMs,
+        );
+        return [{
+          name: formatSpot(typed.latitudeDeg, typed.longitudeDeg),
+          note: conditions.night ? 'night' : '',
+          meta: conditions.parent,
+          current: false,
+          onPick: () => pick(typed.latitudeDeg, typed.longitudeDeg),
+        }];
       }
-      rows.push({
-        name: place.name,
-        note: [place.note, night ? 'night' : ''].filter(Boolean).join(' · '),
-        meta,
-        current: current !== null && current.name === place.name,
-        onPick: () => this.pickSurfacePlace(site),
-      });
-    }
+      return placeRows.filter((row) => `${row.name} ${row.note}`.toLowerCase().includes(query));
+    };
     this.surfaceTargetMenu.openPlaces(
       rows,
-      `Stand at a place on ${bodyDisplayName(landed.name)}: the sky turns and sets around you.`,
+      `Places on ${bodyDisplayName(landed.name)}. You can also type coordinates.`,
+      search,
     );
   }
 
-  private pickSurfacePlace(site: Site | null): void {
-    this.closeSurfaceTargetMenu();
-    this.standAtSite(site);
+  // ---- The landed view's two ways into the sky ----
+
+  private landedEntryShown = false;
+  private landedEntryPickShown = false;
+  private landedEntrySub = '';
+
+  /** Show the entry buttons while the landed orbit view is the whole
+   *  screen: not in the sky view, the map, the tour, a mission or the
+   *  picker, not behind the arrival veil, and not under the open phone
+   *  sheet, whose own Look up window says the same. */
+  private syncLandedEntry(): void {
+    const landed = this.landedOn;
+    // The picker belongs to the landed orbit view of a body with ground:
+    // anything that took that away closes it, whichever path it took.
+    if (this.isSitePickerOpen() && (!landed || this.landedView !== 'orbit' || !this.sitePickerOffered() || this.isMapOpen())) {
+      this.closeSitePicker();
+    }
+    const show = !!landed
+      && this.landedView === 'orbit'
+      && !this.tutorial
+      && !this.isMissionActive()
+      && !this.isMapOpen()
+      && !this.isSitePickerOpen()
+      && !this.arrivalVeilUp()
+      && !this.arrivalInFlight
+      && !(this.observatoryPanel.isOpen() && this.observatoryPanel.sheetFormActive());
+    const pick = show && this.sitePickerOffered();
+    const site = show ? this.activeSurfaceSite() : null;
+    const sub = !show || !landed
+      ? ''
+      : site
+        ? `From ${site.name ?? formatSpot(site.latitudeDeg, site.longitudeDeg)}`
+        : `Sky from ${bodyDisplayName(landed.name)}`;
+    if (show === this.landedEntryShown && pick === this.landedEntryPickShown && sub === this.landedEntrySub) return;
+    this.landedEntryShown = show;
+    this.landedEntryPickShown = pick;
+    this.landedEntrySub = sub;
+    document.getElementById('landed-entry')?.classList.toggle('visible', show);
+    const pickEl = document.getElementById('landed-entry-pick');
+    if (pickEl) pickEl.style.display = pick ? '' : 'none';
+    setText('landed-entry-lookup-sub', sub);
   }
 
   /** The landed body's drawn mesh (the one the Sun's occlusion scan sees). */
@@ -22195,6 +22511,7 @@ export class PlanetariumMode {
     // New ground, new sky: the picker's rows and the remembered Look-at
     // target both describe the vantage being left behind.
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.surfacePickedTarget = null;
     this.surfaceSite = null;
     this.landedOn = target;
@@ -22731,6 +23048,7 @@ export class PlanetariumMode {
     // (HERE pill, reveal target) closes with it.
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeSitePicker();
     this.closeToolsMenu();
     // Takeoff supersedes the map (a commit re-enters here); no restore.
     this.closeMap({ restore: false });
@@ -22926,6 +23244,8 @@ export class PlanetariumMode {
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
       this.runBodyLabelPipeline(landedPlanetName);
     }
+    // The spot picker's pin, after the orbit camera's final pose.
+    this.updateSitePicker();
 
     // Update constellation labels while landed
     if (this.constellations && this.showConstellations && !mapOpen && willDraw) {

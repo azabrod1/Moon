@@ -173,6 +173,84 @@ export function siteRiseText(nowMs: number, riseMs: number | null): string {
   return `rises in ${totalDays} ${totalDays === 1 ? 'day' : 'days'}`;
 }
 
+export interface LatLon {
+  latitudeDeg: number;
+  /** East-positive, (−180, 180]. */
+  longitudeDeg: number;
+}
+
+/** The body-frame unit direction of a latitude and longitude: siteFrame's up
+ *  before the body is turned. */
+export function bodyDirectionFromLatLon(latitudeDeg: number, longitudeDeg: number, out: THREE.Vector3): THREE.Vector3 {
+  const latitude = latitudeDeg * DEG;
+  const longitude = longitudeDeg * DEG;
+  const cosLatitude = Math.cos(latitude);
+  return out.set(cosLatitude * Math.cos(longitude), Math.sin(latitude), -cosLatitude * Math.sin(longitude));
+}
+
+/** The latitude and longitude a body-frame direction (any length) points
+ *  at: bodyDirectionFromLatLon, inverted. Planetocentric, so on Earth it is
+ *  not the geodetic latitude a map prints (up to 0.19° apart). */
+export function latLonFromBodyDirection(direction: THREE.Vector3, out: LatLon = { latitudeDeg: 0, longitudeDeg: 0 }): LatLon {
+  const length = direction.length() || 1;
+  out.latitudeDeg = Math.asin(Math.max(-1, Math.min(1, direction.y / length))) / DEG;
+  out.longitudeDeg = Math.atan2(-direction.z, direction.x) / DEG;
+  return out;
+}
+
+/**
+ * Where a ray first meets a sphere, as the distance along the ray; null when
+ * it misses or the sphere is behind the origin. `direction` is unit length.
+ */
+export function raySphereDistance(
+  origin: THREE.Vector3,
+  direction: THREE.Vector3,
+  centre: THREE.Vector3,
+  radius: number,
+): number | null {
+  const toCentreX = centre.x - origin.x;
+  const toCentreY = centre.y - origin.y;
+  const toCentreZ = centre.z - origin.z;
+  const along = toCentreX * direction.x + toCentreY * direction.y + toCentreZ * direction.z;
+  const offAxisSq = toCentreX * toCentreX + toCentreY * toCentreY + toCentreZ * toCentreZ - along * along;
+  const halfChordSq = radius * radius - offAxisSq;
+  if (halfChordSq < 0) return null;
+  const distance = along - Math.sqrt(halfChordSq);
+  return distance > 0 ? distance : null;
+}
+
+/**
+ * Coordinates as a person types them: "2 S 80 W", "2.0° S, 80.0° W",
+ * "-2, -80", "0.67N 23.47E", "12.7 N 86.52 E". Latitude first, then
+ * longitude; a hemisphere letter sets the sign, and without letters the
+ * numbers are signed with east positive. Longitudes beyond ±180 wrap (a
+ * 0–360 east longitude is what planetary maps often print). Null when the
+ * text is not two numbers in range.
+ */
+export function parseCoordinates(text: string): LatLon | null {
+  const match = /^\s*([+-]?\d+(?:\.\d+)?)\s*°?\s*([NSns])?\s*[,;\s]\s*([+-]?\d+(?:\.\d+)?)\s*°?\s*([EWew])?\s*$/.exec(text);
+  if (!match) return null;
+  let latitudeDeg = Number(match[1]);
+  let longitudeDeg = Number(match[3]);
+  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) return null;
+  if (match[2]) latitudeDeg = Math.abs(latitudeDeg) * (match[2].toUpperCase() === 'S' ? -1 : 1);
+  if (match[4]) longitudeDeg = Math.abs(longitudeDeg) * (match[4].toUpperCase() === 'W' ? -1 : 1);
+  if (Math.abs(latitudeDeg) > 90 || Math.abs(longitudeDeg) > 360) return null;
+  // One turn at most is out of range, and a value already in range must come
+  // back exactly as typed.
+  if (longitudeDeg > 180) longitudeDeg -= 360;
+  else if (longitudeDeg <= -180) longitudeDeg += 360;
+  return { latitudeDeg, longitudeDeg };
+}
+
+/** "2.0° S, 80.0° W": a spot to a tenth of a degree, the grain a tap on the
+ *  globe can honestly claim. */
+export function formatSpot(latitudeDeg: number, longitudeDeg: number): string {
+  const latitude = `${Math.abs(latitudeDeg).toFixed(1)}° ${latitudeDeg >= 0 ? 'N' : 'S'}`;
+  const longitude = `${Math.abs(longitudeDeg).toFixed(1)}° ${longitudeDeg >= 0 ? 'E' : 'W'}`;
+  return `${latitude}, ${longitude}`;
+}
+
 /** "0.67° N 23.47° E": a site's place as the HUD prints it. */
 export function formatSiteCoordinates(site: Site): string {
   const latitude = `${Math.abs(site.latitudeDeg).toFixed(2)}° ${site.latitudeDeg >= 0 ? 'N' : 'S'}`;

@@ -9,7 +9,10 @@
  *
  * The same card also lists where to stand ("Stand at", `openPlaces`), so the
  * two lists share one open state and every path that closes one closes the
- * other. Each open writes its own title and sub-line.
+ * other. Each open writes its own title and sub-line. The places list can
+ * carry a search field: the owner answers each keystroke with the rows to
+ * show (names that match, or the coordinates typed), and Enter takes the
+ * first.
  */
 import {
   formatDiscDeg,
@@ -37,7 +40,12 @@ export class SurfaceTargetMenu {
   private listEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
   private titleEl: HTMLElement | null = null;
+  private searchRowEl: HTMLElement | null = null;
+  private searchEl: HTMLInputElement | null = null;
   private shownList: 'targets' | 'places' | null = null;
+  /** The open places list's answer to a search; null without a field. */
+  private placeSearch: ((text: string) => SurfacePlaceRow[]) | null = null;
+  private shownPlaceRows: SurfacePlaceRow[] = [];
   private wired = false;
 
   /** `onClose` fires on every open→closed transition, whatever triggered it
@@ -53,8 +61,18 @@ export class SurfaceTargetMenu {
     this.listEl = document.getElementById('surface-target-list');
     this.subEl = document.getElementById('surface-target-sub');
     this.titleEl = document.getElementById('surface-target-title');
+    this.searchRowEl = document.getElementById('surface-target-search-row');
+    this.searchEl = document.getElementById('surface-target-search') as HTMLInputElement | null;
     if (this.wired) return;
     this.wired = true;
+    this.searchEl?.addEventListener('input', () => {
+      if (this.placeSearch) this.renderPlaceRows(this.placeSearch(this.searchEl?.value ?? ''));
+    });
+    this.searchEl?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      this.shownPlaceRows[0]?.onPick();
+    });
     document
       .getElementById('surface-target-menu-close')
       ?.addEventListener('click', () => this.close());
@@ -69,6 +87,7 @@ export class SurfaceTargetMenu {
     if (!this.rootEl || !this.listEl) return;
     if (this.titleEl) this.titleEl.textContent = 'Look at';
     if (this.subEl) this.subEl.textContent = subText;
+    this.setSearch(null);
     this.listEl.textContent = '';
     for (const choice of choices) {
       const row = document.createElement('button');
@@ -107,12 +126,34 @@ export class SurfaceTargetMenu {
   }
 
   /** The "Stand at" list: places on the landed body, each picked through
-   *  its own row callback. */
-  openPlaces(rows: SurfacePlaceRow[], subText: string): void {
+   *  its own row callback. With `search`, a field above the rows asks the
+   *  owner for the rows to show as the text changes. */
+  openPlaces(rows: SurfacePlaceRow[], subText: string, search?: (text: string) => SurfacePlaceRow[]): void {
     if (!this.rootEl || !this.listEl) return;
     if (this.titleEl) this.titleEl.textContent = 'Stand at';
     if (this.subEl) this.subEl.textContent = subText;
+    this.setSearch(search ?? null);
+    this.renderPlaceRows(rows);
+    this.show('places');
+  }
+
+  private setSearch(search: ((text: string) => SurfacePlaceRow[]) | null): void {
+    this.placeSearch = search;
+    if (this.searchRowEl) this.searchRowEl.style.display = search ? '' : 'none';
+    if (this.searchEl) this.searchEl.value = '';
+  }
+
+  private renderPlaceRows(rows: SurfacePlaceRow[]): void {
+    if (!this.listEl) return;
+    this.shownPlaceRows = rows;
     this.listEl.textContent = '';
+    if (rows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'stm-empty';
+      empty.textContent = 'No place by that name. Coordinates look like 2 S 80 W.';
+      this.listEl.appendChild(empty);
+      return;
+    }
     for (const place of rows) {
       const row = document.createElement('button');
       row.className = 'pk-row stm-row' + (place.current ? ' stm-current' : '');
@@ -137,7 +178,6 @@ export class SurfaceTargetMenu {
       row.addEventListener('click', () => place.onPick());
       this.listEl.appendChild(row);
     }
-    this.show('places');
   }
 
   private show(list: 'targets' | 'places'): void {
@@ -150,6 +190,9 @@ export class SurfaceTargetMenu {
     if (!this.isOpen()) return;
     this.rootEl?.classList.remove('visible');
     this.shownList = null;
+    this.placeSearch = null;
+    this.shownPlaceRows = [];
+    this.searchEl?.blur();
     this.onClose();
   }
 

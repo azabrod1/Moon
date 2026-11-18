@@ -13,7 +13,12 @@ import {
   altAz,
   directionFromAltAz,
   findAltitudeCrossing,
+  bodyDirectionFromLatLon,
   formatSiteCoordinates,
+  formatSpot,
+  latLonFromBodyDirection,
+  parseCoordinates,
+  raySphereDistance,
   horizonDipDeg,
   siteFrame,
   siteRiseText,
@@ -75,6 +80,40 @@ describe('sites', () => {
     const altitudeAt = (utcMs: number) => -5 + utcMs / 3_600_000;
     expect(findAltitudeCrossing(altitudeAt, 0, -0.833, 'rise', 3_600_000, 48)! / 1000).toBeCloseTo(4.167 * 3600, -0.5);
     expect(findAltitudeCrossing(altitudeAt, 0, -0.833, 'set', 3_600_000, 48)).toBeNull();
+  });
+
+  it('turn a point on the globe into a latitude and longitude, and typed coordinates into a point', () => {
+    // The body frame's own axes pin the signs: +X is longitude 0, +Y the
+    // north pole, +Z longitude 90° W, so 90° E is −Z. A round trip alone
+    // would pass with east and west swapped.
+    const direction = new THREE.Vector3();
+    expect(bodyDirectionFromLatLon(0, 90, direction).z).toBeCloseTo(-1, 12);
+    expect(latLonFromBodyDirection(new THREE.Vector3(0, 0, 1)).longitudeDeg).toBeCloseTo(-90, 12);
+    expect(latLonFromBodyDirection(new THREE.Vector3(0, 2, 0)).latitudeDeg).toBeCloseTo(90, 12);
+    const back = latLonFromBodyDirection(bodyDirectionFromLatLon(-5.2, -68.6, direction).multiplyScalar(1737.4));
+    expect(back.latitudeDeg).toBeCloseTo(-5.2, 10);
+    expect(back.longitudeDeg).toBeCloseTo(-68.6, 10);
+    // It is siteFrame's up, before the body is turned.
+    const frame = siteFrame({ body: 'Moon', latitudeDeg: 26.13, longitudeDeg: 3.63, heightKm: 0 }, MOON_RADIUS_KM, new THREE.Quaternion());
+    expect(bodyDirectionFromLatLon(26.13, 3.63, direction).distanceTo(frame.zenith)).toBeLessThan(1e-12);
+
+    // A ray from six radii out, straight at the centre and then past the limb.
+    const eye = new THREE.Vector3(6, 0, 0);
+    expect(raySphereDistance(eye, new THREE.Vector3(-1, 0, 0), new THREE.Vector3(), 1)).toBeCloseTo(5, 12);
+    expect(raySphereDistance(eye, new THREE.Vector3(-1, 0.2, 0).normalize(), new THREE.Vector3(), 1)).toBeNull();
+    expect(raySphereDistance(eye, new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 1)).toBeNull();
+
+    expect(parseCoordinates('2 S 80 W')).toEqual({ latitudeDeg: -2, longitudeDeg: -80 });
+    expect(parseCoordinates('2.0° S, 80.0° W')).toEqual({ latitudeDeg: -2, longitudeDeg: -80 });
+    expect(parseCoordinates(' 0.67N 23.47E ')).toEqual({ latitudeDeg: 0.67, longitudeDeg: 23.47 });
+    expect(parseCoordinates('-45.44, 177.6')).toEqual({ latitudeDeg: -45.44, longitudeDeg: 177.6 });
+    // Planetary maps often print east longitude 0–360.
+    expect(parseCoordinates('-19.4, 267.2')!.longitudeDeg).toBeCloseTo(-92.8, 10);
+    expect(parseCoordinates('91 N 10 E')).toBeNull();
+    expect(parseCoordinates('Tranquility')).toBeNull();
+    expect(parseCoordinates('12.7')).toBeNull();
+    expect(formatSpot(-2, -80)).toBe('2.0° S, 80.0° W');
+    expect(formatSpot(12.7, 86.52)).toBe('12.7° N, 86.5° E');
   });
 
   it('word a rise and a place the way the HUD prints them', () => {

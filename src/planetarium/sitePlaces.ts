@@ -1,6 +1,7 @@
 /**
- * Named places to stand, per body: a short list at published coordinates in
- * the frame the body is drawn in. The ground is flat, so a place is its
+ * Named places to stand, per body: shortcuts in the spot picker's list, which
+ * takes any point on the globe besides. A short list at published
+ * coordinates in the frame the body is drawn in. The ground is flat, so a place is its
  * latitude and longitude, never its terrain; a place whose sky depends on
  * its terrain (a crater floor in permanent shadow) is not offered under a
  * name that promises it.

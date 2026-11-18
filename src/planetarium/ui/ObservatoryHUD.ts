@@ -37,8 +37,8 @@ export interface SurfaceHudState {
   discNote: string | null;
   /** Swap chip label ("Switch to the Moon"), or null to hide. */
   swapLabel: string | null;
-  /** The Places pill beside the eyebrow: offered where the landed body has
-   *  named places to stand. */
+  /** The Places pill beside the eyebrow, which opens the spot picker:
+   *  offered where the landed body has ground to stand on. */
   placesOffered: boolean;
   /** Clock paused — the transport strip's pause button flips to "Resume". */
   paused: boolean;

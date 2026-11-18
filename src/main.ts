@@ -4187,6 +4187,9 @@ function installDevHooks() {
     setMapLayers: (partial: Record<string, boolean> | null) =>
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    // The latitude and longitude a displayed canvas pixel falls on while the
+    // spot picker is open, through its own hit test; null off the globe.
+    sitePickAt: (xPx: number, yPx: number) => planetariumMode?.devSitePickAt(xPx, yPx) ?? null,
     setBeltVisible: (visible: boolean) => planetariumMode?.devSetBeltVisible(visible),
     /** The "Orbit lines" setting on its own — setChrome(false) turns it off with the rest. */
     setOrbitLines: (on: boolean) => planetariumMode?.devSetOrbitLines(on),

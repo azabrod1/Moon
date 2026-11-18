@@ -1678,9 +1678,11 @@ export class InteriorMode {
    *  never shows empty glass under its last row. */
   private fullHeightPx(): number {
     const scroll = document.getElementById('interior-scroll');
-    if (!scroll) return this.peekHeightPx();
+    const panel = scroll?.parentElement;
+    if (!scroll || !panel) return this.peekHeightPx();
     const grip = document.getElementById('interior-grip');
-    const contentPx = (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
+    const borderPx = panel.offsetHeight - panel.clientHeight;
+    const contentPx = borderPx + (grip?.offsetHeight ?? 0) + scroll.scrollHeight;
     return Math.max(this.peekHeightPx(), Math.min(Math.round(viewportSize().height * SHEET_FULL_FRACTION), contentPx));
   }
 
@@ -1721,13 +1723,21 @@ export class InteriorMode {
     this.setSheetHeight(this.peekHeightPx(), { snap: false, frameAtOnce: true });
   }
 
-  /** The panel's content is what sets the sheet's resting height — a body with
-   *  rings has a taller footer — so a sheet still at rest follows the content
-   *  when it turns over. One the reader has drawn taller stays where they put it. */
+  /** The panel's content sets both of the sheet's ends — a body with rings has a
+   *  taller footer, a body with few layers a shorter list — so a sheet still at
+   *  rest follows the content when it turns over, and one left taller than the
+   *  new content comes down to it: it would show empty glass under the last
+   *  row, and the next grab of the grip would clamp it there in one jump.
+   *  Anywhere between the two ends stays where the reader put it. */
   private syncSheetToContent(): void {
     if (!isPhoneViewport() || this.sheetDrag !== null) return;
     const peekPx = this.peekHeightPx();
-    if (this.sheetHeightPx <= peekPx) this.setSheetHeight(peekPx, { snap: true });
+    if (this.sheetHeightPx <= peekPx) {
+      this.setSheetHeight(peekPx, { snap: true });
+      return;
+    }
+    const fullPx = this.fullHeightPx();
+    if (this.sheetHeightPx > fullPx) this.setSheetHeight(fullPx, { snap: true });
   }
 
   /** Leaving the inspector: the sheet goes back to the height the reader had. */

@@ -12,6 +12,9 @@
  * frustumCulled is off — the vertices carry absolute floating-origin scene
  * positions the controller rewrites every frame, so a cached bounding sphere
  * would cull wrongly (the count is tiny; culling buys nothing).
+ *
+ * The surface view's planet points are a second layer of this class
+ * (planetPoints.ts), built with the Sun's glare mask the stars carry.
  */
 import * as THREE from 'three';
 import {
@@ -23,6 +26,12 @@ import {
   type LensShaderUniforms,
 } from '../../shared/three/lensShader';
 import { pointSpritePixelRatio } from './starPointMapping';
+import {
+  SUN_GLARE_MASK_MAX_KILL,
+  createSunGlareMaskUniforms,
+  sunGlareMaskGLSL,
+  type SunGlareMaskUniforms,
+} from './sunGlareMask';
 
 export class MoonDots {
   readonly points: THREE.Points;
@@ -33,10 +42,21 @@ export class MoonDots {
   private sizes: Float32Array;
   private alphas: Float32Array;
 
+  /** The Sun's glare mask uniforms, when the layer was built with the mask
+   *  (the planet points: stars' rule, a point behind the glare fades). */
+  readonly sunGlareMaskUniforms: SunGlareMaskUniforms | null;
+
   /** `sceneRatio` is the ratio the dots are rasterised at, `outputRatio` the
    *  one the canvas is presented at — see starPointMapping's
-   *  `pointSpritePixelRatio`, which the starfield sizes through too. */
-  constructor(count: number, sceneRatio: number, outputRatio: number) {
+   *  `pointSpritePixelRatio`, which the starfield sizes through too.
+   *  `options.sunGlareMask` fades points inside the Sun's glare as the stars
+   *  fade (world/sunGlareMask.ts); the controller pushes its params. */
+  constructor(
+    count: number,
+    sceneRatio: number,
+    outputRatio: number,
+    options: { name?: string; sunGlareMask?: boolean } = {},
+  ) {
     this.positions = new Float32Array(count * 3);
     this.colors = new Float32Array(count * 3);
     this.sizes = new Float32Array(count);
@@ -48,10 +68,12 @@ export class MoonDots {
     this.geo.setAttribute('size', new THREE.BufferAttribute(this.sizes, 1));
     this.geo.setAttribute('alpha', new THREE.BufferAttribute(this.alphas, 1));
 
+    const masked = options.sunGlareMask === true;
+    this.sunGlareMaskUniforms = masked ? createSunGlareMaskUniforms() : null;
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
         pixelRatio: { value: pointSpritePixelRatio(sceneRatio, outputRatio) },
-        ...createLensShaderUniforms(),
+        ...(this.sunGlareMaskUniforms ?? createLensShaderUniforms()),
       },
       // The lens-aware point-sprite kernels are shared with the starfield
       // (lensShader.ts) — only the alpha law here is this material's own.
@@ -65,13 +87,14 @@ export class MoonDots {
         varying vec4 vLensSourceToOutputPx;
         varying float vLensSamplesPerAxis;
         uniform float pixelRatio;
-        ${lensShaderGLSL}
+        ${masked ? sunGlareMaskGLSL() : lensShaderGLSL}
         void main() {
           vColor = color;
           vAlpha = alpha;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           ${lensPointSpriteVertexGLSL}
+          ${masked ? `vAlpha *= 1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position);` : ''}
         }
       `,
       fragmentShader: `
@@ -95,7 +118,7 @@ export class MoonDots {
     });
 
     this.points = new THREE.Points(this.geo, this.mat);
-    this.points.name = 'Moon dots';
+    this.points.name = options.name ?? 'Moon dots';
     this.points.frustumCulled = false;
     this.points.renderOrder = 0;
   }

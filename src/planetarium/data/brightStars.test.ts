@@ -42,9 +42,14 @@ describe('bright-star binary sidecar', () => {
 
   it('keeps Sol first and the sky magnitude-sorted', () => {
     expect(records[0].name).toBe('Sol');
-    for (let i = 2; i < records.length; i++) {
-      expect(records[i].magnitude).toBeGreaterThanOrEqual(records[i - 1].magnitude);
+    // The first star out of order, held to none once rather than an expect per
+    // star (26,000 calls).
+    let firstOutOfOrder = -1;
+    for (let i = 2; i < records.length && firstOutOfOrder < 0; i++) {
+      if (!(records[i].magnitude >= records[i - 1].magnitude)) firstOutOfOrder = i;
     }
+    expect(firstOutOfOrder < 0 ? 'sorted'
+      : `star ${firstOutOfOrder} at mag ${records[firstOutOfOrder].magnitude} after ${records[firstOutOfOrder - 1].magnitude}`).toBe('sorted');
   });
 });
 

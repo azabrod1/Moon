@@ -462,12 +462,16 @@ async function bandCase(context, viewport) {
   const image = decodePng(await withoutRuler(page, () => page.screenshot({ type: 'png' })));
   const scale = image.width / viewport.width;
   // True scale: display radius = physical radius, and the Section disc faces the camera, so a
-  // radius lands where it says. In the band (30,000–40,000 km, centred on the boundary at 35,000)
-  // versus the envelope at 49,500 km (a known temperature, outside both of Saturn's bands — the
-  // envelope's own runs 40,000–45,000). Read across the hinge: the hinge itself is where the two
-  // faces meet, and a seam through the block would be variance this check reads as a hatch.
-  const inBandR = ((35_000 / reference) * radiusPx) * scale;
-  const outBandR = ((49_500 / reference) * radiusPx) * scale;
+  // radius lands where it says — along a line from the centre, that fraction of the body's own
+  // extent that way: Saturn is drawn flattened, and screen-right (the frame's side) is short of
+  // its equatorial radius by as much of the flattening as the pole leans into it. In the band
+  // (30,000–40,000 km, centred on the boundary at 35,000) versus the envelope at 49,500 km (a
+  // known temperature, outside both of Saturn's bands — the envelope's own runs 40,000–45,000).
+  // Read across the hinge: the hinge itself is where the two faces meet, and a seam through the
+  // block would be variance this check reads as a hatch.
+  const extent = extentToward(current.bodyShape, current.cutFrame.side);
+  const inBandR = ((35_000 / reference) * extent * radiusPx) * scale;
+  const outBandR = ((49_500 / reference) * extent * radiusPx) * scale;
   const size = 14;
   // The temperature ramp runs radially, so a block out of the band still carries a
   // gradient, and the core's 8,000 km physical blend is a radial one too; the ramp is
@@ -479,6 +483,16 @@ async function bandCase(context, viewport) {
   await page.screenshot({ path: path.join(outDir, `${viewport.name}-Saturn-band-true-temperature.png`) });
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();
+}
+
+/** How far the body reaches from its centre along a unit world direction, in equatorial radii
+ *  (astronomy/spheroid spheroidRadiusToward): 1 on a sphere, less toward a flattened giant's pole. */
+function extentToward(shape, direction) {
+  if (!(shape?.flattening > 0)) return 1;
+  const polar = 1 - shape.flattening;
+  const cosPole = direction[0] * shape.pole[0] + direction[1] * shape.pole[1] + direction[2] * shape.pole[2];
+  const sinSquared = Math.max(0, 1 - cosPole * cosPole);
+  return polar / Math.sqrt(polar * polar * sinSquared + cosPole * cosPole);
 }
 
 /** Each render path draws the disc in both modes and reports itself. */
@@ -1076,11 +1090,49 @@ async function sheetDragCase(context, viewport) {
   const wanted = Math.min(peek + 200, full);
   check(Math.abs(dragged - wanted) <= 12, `${tag}: a 200 px drag from ${peek} px left the sheet at ${dragged} px, expected ${wanted}`);
 
+  // A short summary must fit its contents even when opened from the full list.
+  await page.locator('#interior-legend [data-region="outerCore"]').click();
+  const summary = await settledHeight();
+  const bottomGap = await page.evaluate(() =>
+    document.getElementById('interior-panel').getBoundingClientRect().bottom
+    - document.getElementById('interior-inspector').getBoundingClientRect().bottom);
+  check(summary < full && bottomGap >= 0 && bottomGap <= 12,
+    `${tag}: summary from the full list is ${summary} px with ${bottomGap} px below its content`);
+  await page.getByRole('button', { name: 'Evidence & sources', exact: true }).click();
+  check(await settledHeight() > summary, `${tag}: the evidence page did not expand`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - summary) <= 2, `${tag}: returning from evidence did not refit the summary`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - full) <= 2, `${tag}: returning to the list did not restore its height`);
+
   // And back: a tap at the full height returns the sheet to its peek.
   await page.evaluate(() => document.getElementById('interior-grip').click());
   const backToPeek = await settledHeight();
   check(Math.abs(backToPeek - peek) <= 2, `${tag}: a tap at the full height left the sheet at ${backToPeek} px, expected the peek ${peek}`);
   check(await expanded() === 'false', `${tag}: the grip still reports expanded back at the peek`);
+
+  // A body with a shorter list, picked while the sheet is at full: the sheet
+  // comes down to the new list rather than keep empty glass under it, and a
+  // grab of the grip then holds it where it is instead of jumping it there.
+  await page.evaluate(() => document.getElementById('interior-grip').click());
+  await settledHeight();
+  await page.evaluate(() => window.__moon.interiorPick('Phobos'));
+  await page.waitForFunction(() => {
+    const current = window.__moon.interiorState();
+    return current.bodyId === 'Phobos' && !current.loading && window.__moon.interiorReady();
+  }, undefined, { timeout: 120000 });
+  const shortFull = await settledHeight();
+  const listGap = await page.evaluate(() =>
+    document.getElementById('interior-panel').getBoundingClientRect().bottom
+    - document.getElementById('interior-page-layers').getBoundingClientRect().bottom);
+  check(shortFull < full && listGap >= 0 && listGap <= 12,
+    `${tag}: after picking Phobos at full the sheet is ${shortFull} px with ${listGap} px below its list`);
+  const grabFrom = await gripCentre();
+  await page.mouse.move(grabFrom.x, grabFrom.y);
+  await page.mouse.down();
+  const grabbed = await panelHeight();
+  await page.mouse.up();
+  check(Math.abs(grabbed - shortFull) <= 2, `${tag}: a grab of the grip moved the sheet from ${shortFull} px to ${grabbed} px before the finger did`);
   notes.push(`${tag}: peek ${peek} full ${full}, a 200 px drag reached ${dragged}; viewOffset.y ${peekShift} to ${draggedShift}`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();

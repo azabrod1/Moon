@@ -9,7 +9,9 @@
  * The headline number is an honest VOLUME ratio from volumetric mean radii,
  * not the catalog's equatorial radiusKm — equatorial Jupiter would overcount
  * (1,408 Earths), while the mean-radius answer is 1,321. Studio scale for the
- * cap math is the container's inner radius = 1 unit.
+ * cap math is the container's inner radius = 1 unit. The drawing uses the
+ * same mean-radius spheres, the flattened giants included (CompareScene says
+ * why).
  */
 
 import { KM_CONSTANTS } from '../shared/constants/physicalData';

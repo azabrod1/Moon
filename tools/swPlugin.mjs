@@ -7,8 +7,8 @@
  *
  * Manifest invariant (what makes the worker's one-deploy-old skew harmless):
  * DATA_DIRS may hold only format-stable opaque assets (images, fonts, GLB)
- * or pathname-versioned structured data (bright-stars.v1.bin — a format
- * break ships as .v2.bin). Never add a directory whose files new app code
+ * or pathname-versioned structured data (bright-stars.v1.bin, ephemeris.v1.bin
+ * — a format break ships as .v2.bin). Never add a directory whose files new app code
  * parses format-incompatibly under an unchanged name.
  *
  * The precache list is read out of the BUILT index.html's boot-texture-warm
@@ -40,7 +40,7 @@ import { readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DATA_DIRS = ['textures', 'stardata', 'fonts', 'models', 'historic'];
+const DATA_DIRS = ['textures', 'stardata', 'ephemeris', 'fonts', 'models', 'historic'];
 // A floor, not the live count: the guard exists to catch a regex refactor
 // that emits an empty or collapsed list, and pinning it to today's total
 // would fail the build the day a body legitimately leaves the boot set.
@@ -154,9 +154,13 @@ export default function swPlugin() {
       const script = html.match(/<script id="boot-texture-warm">([\s\S]*?)<\/script>/)?.[1];
       if (!script) throw new Error('sw: boot-texture-warm script not found in built index.html');
       const texPrefix = script.match(/'([^']*textures\/)' \+ files\[i\]/)?.[1];
-      const starPath = script.match(/'([^']+\.bin)'/)?.[1];
-      if (!texPrefix || !starPath) {
-        throw new Error('sw: could not read the warm script\'s texture prefix or star bin path');
+      // Each sidecar by its own directory: a bare first-'.bin' match would
+      // take whichever the script happens to warm first.
+      const starPath = script.match(/'([^']*stardata\/[^']+\.bin)'/)?.[1];
+      // Every ephemeris bin: the fitted ephemeris and the moon corrections.
+      const ephemerisPaths = [...script.matchAll(/'([^']*ephemeris\/[^']+\.bin)'/g)].map((m) => m[1]);
+      if (!texPrefix || !starPath || ephemerisPaths.length === 0) {
+        throw new Error('sw: could not read the warm script\'s texture prefix, star bin or ephemeris bin paths');
       }
       const textures = [...script.matchAll(/'([^']+\.webp)'/g)].map((m) => texPrefix + m[1]);
       if (textures.length < MIN_WARM_TEXTURES) {
@@ -171,7 +175,7 @@ export default function swPlugin() {
       const fonts = Object.keys(manifest).filter(
         (p) => p.startsWith(base + 'fonts/') && p.endsWith('.woff2'),
       );
-      const precache = [starPath, ...textures, ...fonts];
+      const precache = [starPath, ...ephemerisPaths, ...textures, ...fonts];
       for (const p of precache) {
         if (!(p in manifest)) {
           throw new Error(`sw: warm-script file is not in dist: ${p}`);
@@ -181,11 +185,12 @@ export default function swPlugin() {
       // harness, and they run on every build including CI's pre-deploy one.
       // A refactor that quietly emits an empty or gutted list must not ship.
       if (!precache.includes(starPath)) throw new Error('sw: star bin missing from precache');
+      if (!ephemerisPaths.every((p) => precache.includes(p))) throw new Error('sw: an ephemeris bin is missing from precache');
       if (fonts.length < 2) throw new Error(`sw: expected the two boot fonts, found ${fonts.length}`);
-      if (precache.length < MIN_WARM_TEXTURES + 3) {
+      if (precache.length < MIN_WARM_TEXTURES + 4) {
         throw new Error(
-          `sw: precache collapsed to ${precache.length} entries (floor ${MIN_WARM_TEXTURES + 3}: `
-          + 'the texture floor plus the star bin and the two boot fonts)',
+          `sw: precache collapsed to ${precache.length} entries (floor ${MIN_WARM_TEXTURES + 4}: `
+          + 'the texture floor plus the star bin, the ephemeris bin and the two boot fonts)',
         );
       }
 

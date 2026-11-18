@@ -513,6 +513,9 @@ describe('the close-range detail term', () => {
     let worstStretch = 1;
     let mostCharts = 0;
     let leastCharts = 3;
+    // Points whose shares miss one, gathered and held to none once: an expect
+    // per point was 20,000 calls.
+    const shortSums: string[] = [];
     for (let i = 0; i < 20000; i++) {
       // A deterministic spiral over the sphere, so every corner and every
       // diagonal between two charts is visited.
@@ -525,7 +528,9 @@ describe('the close-range detail term', () => {
       // the charts carry independent noise, so it is their variance that has to
       // add up. An uncovered point would be a hole in the ground, and a short
       // sum would be a patch of it drawn fainter than the ground around it.
-      expect(Math.hypot(...w)).toBeCloseTo(1, 12);
+      // toBeCloseTo's 12 digits: closer than half of 1e-12.
+      const sum = Math.hypot(...w);
+      if (!(Math.abs(1 - sum) < 0.5e-12) && shortSums.length < 10) shortSums.push(`point ${i}: ${sum}`);
       const drawn = w.filter((x) => x > 0).length;
       mostCharts = Math.max(mostCharts, drawn);
       leastCharts = Math.min(leastCharts, drawn);
@@ -535,6 +540,7 @@ describe('the close-range detail term', () => {
       for (let a = 0; a < 3; a++) if (w[a] > 0) stretch += w[a] * w[a] * (1 / Math.abs(dir[a]));
       worstStretch = Math.max(worstStretch, stretch);
     }
+    expect(shortSums).toEqual([]);
     // Three charts meet on a diagonal, one covers a face on its own, and the
     // stretch is worst on that diagonal — the 54.7° a cube's corner sits at.
     expect(leastCharts).toBe(1);
@@ -594,12 +600,17 @@ describe('the field\'s tiling lattice', () => {
     const phi = (vx: number, vy: number) => surfaceHexVertex(vx, vy, 0).shift[0] - 0.5;
     let worstJump = 0;
     let steps = 0;
+    // Points whose weights miss one, gathered and held to none once: an expect
+    // per point was 80,000 calls.
+    const shortSums: string[] = [];
     for (const [du, dv, u0, v0] of [[1, 0.37, 0.11, 0.42], [0.2, 1, 0.9, 0.3], [1, -1, 0.5, 0.5], [0.57735027, 1, 0, 0]]) {
       let prev: number | null = null;
       for (let i = 0; i <= 20000; i++) {
         const t = i * 0.002;
         const { vertices, weights } = surfaceHexWeights(u0 + du * t, v0 + dv * t);
-        expect(Math.hypot(...weights)).toBeCloseTo(1, 9);
+        // toBeCloseTo's 9 digits: closer than half of 1e-9.
+        const sum = Math.hypot(...weights);
+        if (!(Math.abs(1 - sum) < 0.5e-9) && shortSums.length < 10) shortSums.push(`line (${du}, ${dv}) from (${u0}, ${v0}), step ${i}: ${sum}`);
         let blended = 0;
         for (let k = 0; k < 3; k++) blended += weights[k] * phi(vertices[k][0], vertices[k][1]);
         if (prev !== null) {
@@ -609,6 +620,7 @@ describe('the field\'s tiling lattice', () => {
         prev = blended;
       }
     }
+    expect(shortSums).toEqual([]);
     // A step of 0.002 tiles moves a continuous blend by a few hundredths at
     // most; a seam would move it by the weight of a whole copy.
     expect(steps).toBeGreaterThan(70000);

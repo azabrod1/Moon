@@ -159,6 +159,8 @@ export interface RawShaderCutOptions {
   /** The shell's radius in body radii: when set, only fragments that project inside the body's
    *  disc are cut, and the shell's glow beyond the disc keeps shining through the wedge. */
   discGateScale?: number;
+  /** GLSL statements run inside the cut before `direction` is read: the locals it needs. */
+  prelude?: string;
 }
 
 /**
@@ -188,7 +190,7 @@ export function applyRawShaderCut(material: THREE.ShaderMaterial, uniforms: Skin
   const test = `
   float interiorCutCoverage = 1.0;
   if (uCutHalfAngle > 0.0) {
-    vec3 cutOffset = ${options.direction};
+${options.prelude ?? ''}    vec3 cutOffset = ${options.direction};
 ${reflect}    float cutSigned = -min(dot(cutOffset, uCutNormalA), dot(cutOffset, uCutNormalB));
     float cutWidth = max(fwidth(cutSigned), 1e-5);
     interiorCutCoverage = clamp(cutSigned / cutWidth + 0.5, 0.0, 1.0);
@@ -225,8 +227,38 @@ ${gate}    if (interiorCutCoverage <= 0.0) discard;
  * gate: an additive shell cannot occlude, so cutting its glow beyond the
  * disc would only punch a hood-shaped hole in the halo; inside the disc the
  * faces occlude it with depth, and at the limb the two agree.
+ *
+ * The shell over a giant flattened along its pole (the analytic shell's
+ * oblate variant, which carries `uPoleStretch`) takes the exact near side
+ * instead. A reflection through the plane facing the camera is the near side
+ * only for a body symmetric about that plane, and a spheroid seen at an angle
+ * to its pole is not: the chords' midpoints lie on a tilted plane, and the
+ * reflection lands off the near side along the line of sight by up to twice
+ * the flattening of the radius — 0.195 radii for Saturn seen 45° from its
+ * pole, near the limb, which is where the fringe is.
+ * In the frame stretched along the pole the shell is a sphere and the line
+ * from the camera keeps its parameter, so it meets the shell at t = 1 (this
+ * fragment) and at the other root of the quadratic, c/a: the point this
+ * fragment is seen through, which at the limb is the fragment itself.
  */
 export function applyAtmosphereCut(material: THREE.ShaderMaterial, uniforms: SkinCutUniforms, discGateScale?: number): void {
+  if (material.uniforms.uPoleStretch !== undefined) {
+    if (!material.fragmentShader.includes('vec3 stretchAlongPole(vec3 v)')) throw new Error('applyAtmosphereCut: the oblate shell changed shape');
+    applyRawShaderCut(material, uniforms, {
+      vertexVarying: false,
+      prelude: '    vec3 cutCameraOffset = cameraPosition - vCenter;\n'
+        + '    vec3 cutCameraStretched = stretchAlongPole(cutCameraOffset);\n'
+        + '    vec3 cutFragmentStretched = stretchAlongPole(vWorldPos - vCenter);\n'
+        + '    vec3 cutRayStretched = cutFragmentStretched - cutCameraStretched;\n'
+        + '    float cutNearT = (dot(cutCameraStretched, cutCameraStretched) - dot(cutFragmentStretched, cutFragmentStretched))\n'
+        + '      / max(dot(cutRayStretched, cutRayStretched), 1e-12);\n',
+      direction: 'cutCameraOffset + cutNearT * (vWorldPos - cameraPosition)',
+      output: { find: 'gl_FragColor = vec4(radiance, 1.0);', replace: 'gl_FragColor = vec4(radiance * interiorCutCoverage, 1.0);' },
+      reflectFarSide: false,
+      discGateScale,
+    });
+    return;
+  }
   applyRawShaderCut(material, uniforms, {
     vertexVarying: false,
     direction: 'vWorldPos - vCenter',

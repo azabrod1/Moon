@@ -1,6 +1,11 @@
 /**
  * Where the Night sides setting is kept.
  *
+ * On screen it is "Dark side lighting" on the ☰ Display page, its values
+ * reading "True to life" (real) and "Lit up" (brightened). The code, the saved
+ * value and `?nightsides=` keep the setting's first names, so a choice already
+ * saved and an old link still work.
+ *
  * Real, the default, is the physics: a night side is black where no sunlight
  * falls, and what light it does get is the light the scene models — a nearby
  * planet's (planetshine), the sky's own twilight on a body with air. Under the
@@ -35,22 +40,23 @@ export type NightSides = (typeof NIGHT_SIDES)[number];
 /** The physics. */
 export const DEFAULT_NIGHT_SIDES: NightSides = 'real';
 
-/** What each segment reads. */
+/** What each segment reads, as index.html's segment buttons do. */
 export const NIGHT_SIDES_LABELS: Record<NightSides, string> = {
-  real: 'Real',
-  brightened: 'Brightened',
+  real: 'True to life',
+  brightened: 'Lit up',
 };
 
-/** The line under the control, for the value that is checked. */
+/** The line under the control, for the value that is checked. Each says what
+ *  the dark side looks like, so it reads without the control's name. */
 export const NIGHT_SIDES_NOTES: Record<NightSides, string> = {
-  real: 'Black where no sunlight falls. Light from a nearby planet and twilight still show.',
-  brightened: 'Lifted so the ground on the dark side still shows. Brighter than it really is.',
+  real: 'The dark side is black, as a camera would see it. Only light that is really there shows.',
+  brightened: 'The dark side is lit up so its ground can be seen. Brighter than it really is.',
 };
 
-/** What the ☰ root's Display row carries beside it. A bare "Real" says
- *  nothing on a row named Display, so the value names what it is about. */
+/** What the ☰ root's Display row carries beside it. A bare "True to life"
+ *  says nothing on a row named Display, so the value names what it is about. */
 export function nightSidesSummary(mode: NightSides): string {
-  return mode === 'brightened' ? 'Brightened nights' : 'Real nights';
+  return mode === 'brightened' ? 'Dark sides lit up' : 'Dark sides true to life';
 }
 
 /** What the control does to the app, so the control itself owns no policy. */

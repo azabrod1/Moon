@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { computeCutFrame, createCutFaceBasis, createCutFrame, cutFaceBasis } from './cutFrame';
-import { IDENTITY_REMAP, readableRemap } from './interiorGeometry';
+import { computeCutFrame, createCutFaceBasis, createCutFrame, cutFaceBasis, yawCutFrame } from './cutFrame';
+import { IDENTITY_REMAP, readableRemap, toDisplayFraction } from './interiorGeometry';
+import { spheroidLevelRadius, spheroidRadiusToward, SPHERE_SHAPE, type SpheroidShape } from '../astronomy/spheroid';
 import { niceStepKm, rulerFacing, rulerLayout, rulerPoint, rulerSide, type RulerInput } from './ruler';
 
 /** A camera on +Z with +Y up: view (0,0,1), hinge (0,1,0), side (1,0,0). */
@@ -175,5 +176,53 @@ describe('rulerLayout', () => {
     const camera = new THREE.Vector3(0.5, 0, 0.87).normalize();
     const picked = cutFaceBasis(frame, rulerSide(frame, camera), createCutFaceBasis());
     expect(rulerFacing(frame, camera)).toBeCloseTo(picked.normal.dot(camera), 12);
+  });
+});
+
+describe('the ruler on a flattened giant', () => {
+  const FLATTENING = 1 - 54_364 / 60_268; // Saturn's
+  const tilted = new THREE.Vector3(0.3, 0.85, 0.25).normalize();
+  const SATURN: SpheroidShape = { flattening: FLATTENING, poleX: tilted.x, poleY: tilted.y, poleZ: tilted.z };
+  const saturnInput = (shape: SpheroidShape | undefined, side: 'a' | 'b') => input({
+    frame: yawCutFrame(computeCutFrame(new THREE.Vector3(3, 1, 8), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), Math.PI / 2, createCutFrame()), 0.4),
+    side,
+    referenceRadiusKm: 58_232,
+    remap: readableRemap([0.6, 0.72, 0.9875, 1], 0.05),
+    outerDisplay: [0.62, 0.75, 0.989, 1],
+    regionsInsideOut: [
+      { key: 'diffuseCore', name: 'Diffuse core', outerRadiusKm: 35_000, innerRadiusKm: 0 },
+      { key: 'metallicHydrogen', name: 'Metallic hydrogen', outerRadiusKm: 42_000, innerRadiusKm: 35_000 },
+      { key: 'molecularEnvelope', name: 'Molecular hydrogen envelope', outerRadiusKm: 57_500, innerRadiusKm: 42_000 },
+      { key: 'atmosphere', name: 'Outer atmosphere', outerRadiusKm: 58_232, innerRadiusKm: 57_500 },
+    ],
+    annotations: [{ name: 'Helium rain region', innerRadiusKm: 32_000, outerRadiusKm: 42_000 }],
+    shape,
+  });
+
+  it('puts every mark on the level the faces draw for it, along the one radial line', () => {
+    for (const side of ['a', 'b'] as const) {
+      const ruler = saturnInput(SATURN, side);
+      const radial = cutFaceBasis(ruler.frame, side, createCutFaceBasis()).radial;
+      const layout = rulerLayout(ruler);
+      for (const tick of layout.ticks) {
+        const physical = 1 - tick.depthKm / ruler.referenceRadiusKm;
+        const display = toDisplayFraction(ruler.remap, physical);
+        expect(spheroidLevelRadius(tick.point.x, tick.point.y, tick.point.z, SATURN)).toBeCloseTo(display, 12);
+        expect(tick.point.clone().normalize().dot(radial)).toBeGreaterThan(display > 1e-9 ? 1 - 1e-12 : -2);
+      }
+      layout.segments.forEach((segment, index) => {
+        expect(spheroidLevelRadius(segment.from.x, segment.from.y, segment.from.z, SATURN)).toBeCloseTo(ruler.outerDisplay[index], 12);
+      });
+      // The rim mark is on the surface itself.
+      const rim = layout.ticks[0].point;
+      expect(rim.length()).toBeCloseTo(spheroidRadiusToward(radial.x, radial.y, radial.z, 1, SATURN), 12);
+    }
+  });
+
+  it('is the sphere ruler, bit for bit, at no flattening', () => {
+    const sphere = rulerLayout(saturnInput(undefined, 'a'));
+    const shaped = rulerLayout(saturnInput(SPHERE_SHAPE, 'a'));
+    expect(shaped.ticks.map((tick) => tick.point.toArray())).toEqual(sphere.ticks.map((tick) => tick.point.toArray()));
+    expect(shaped.segments.map((segment) => segment.from.toArray())).toEqual(sphere.segments.map((segment) => segment.from.toArray()));
   });
 });

@@ -26,7 +26,7 @@ import {
   sampleTrajectoryLinePoints,
 } from '../astronomy/planetary';
 import { KM_PER_AU } from '../astronomy/constants';
-import type { KeplerElements } from '../astronomy/standish';
+import { getStandishElements, type KeplerElements } from '../astronomy/standish';
 import { augmentPointsMaterialWithSunGlareMask } from './world/sunGlareMask';
 import { ORBIT_LINE_STENCIL_REF, applyOrbitLineStencilGate } from './world/orbitLineStencil';
 import {
@@ -122,16 +122,24 @@ export const ORBIT_LINE_RESAMPLE_MAX_AGE_MS = 60 * 86_400_000;
 /**
  * Realistic-mode segment count, sized so the polyline's chord sagitta stays
  * under ~a quarter of the body's own radius — the planet has to sit ON its
- * line even at landed zoom: N ≈ 2π·√(a / (8·R/4)), rounded up to a multiple
- * of 256. The old global 256 left every planet 1–13 body radii off its line
- * mid-chord (Pluto: ~200 — tiny body, enormous orbit; it clamps at 8192 for
- * ~0.37 R there).
+ * line even at landed zoom — where the orbit bends hardest, at perihelion.
+ * A circle of radius a needs N ≈ 2π·√(a / (8·R/4)); at perihelion, with the
+ * sweep's time step fixed by the period, the bend is (a/q)² sharper and N
+ * grows by a/q = 1/(1 − e). Rounded up to a multiple of 256. The old global
+ * 256 left every planet 1–13 body radii off its line mid-chord; sized at a
+ * alone, Pluto sat 0.6 R off near its 1989 perihelion.
  */
 export function orbitLineSegmentCount(planet: PlanetData): number {
   const aKm = planet.semiMajorAxisAU * KM_PER_AU;
-  const ideal = Math.ceil(2 * Math.PI * Math.sqrt(aKm / (2 * planet.radiusKm)));
-  return Math.min(8192, Math.max(1024, Math.ceil(ideal / 256) * 256));
+  const eccentricity = getStandishElements(planet.name, J2000_JULIAN_DATE, segmentElementsScratch).eccentricity;
+  const ideal = Math.ceil(
+    (2 * Math.PI * Math.sqrt(aKm / (2 * planet.radiusKm))) / (1 - eccentricity),
+  );
+  return Math.min(16384, Math.max(1024, Math.ceil(ideal / 256) * 256));
 }
+
+const J2000_JULIAN_DATE = 2451545.0;
+const segmentElementsScratch = {} as KeplerElements;
 
 /**
  * One body's orbit-line vertices at a sim epoch. Realistic mode samples the

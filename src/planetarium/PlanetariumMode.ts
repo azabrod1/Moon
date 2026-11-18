@@ -23,14 +23,16 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { PlayerShip, type ShipProfile } from './PlayerShip';
+import { PlayerShip, type ShipOverride, type ShipProfile } from './PlayerShip';
 import { hazeCacheGpuBytes, sessionHazeCacheWarmup, type HazeCacheSubject } from '../app/hazeCache';
 import { PlanetLabels, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
-import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
+import { PlanetariumStore, POSITION_MODEL, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode, type RideAnchor } from './PlanetariumStore';
+import { anchoredShipPositionAU, migrateLegacyJourney, rideAnchorFor } from './saveAnchor';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
 import {
   PLANETARIUM_BODIES,
+  PLANETS,
   SUN_DATA,
   SUN_POLE_DEC_DEG,
   SUN_POLE_RA_DEG,
@@ -57,6 +59,7 @@ import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { parseGroundCullParam } from './world/groundCull';
 import { onPerfSwitch } from '../app/perfSwitches';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
+import { loadFittedEphemeris } from './world/ephemerisLoader';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -112,8 +115,11 @@ import {
 } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
-import { findEvent, type EventType } from '../astronomy/ephemeris';
+import type { EventType } from '../astronomy/ephemeris';
+import { findLunarPhaseEvent } from '../astronomy/lunarPhase';
 import { KM_PER_AU, SUN_RADIUS_AU } from '../astronomy/constants';
+import { bodyShape } from '../astronomy/bodyShape';
+import { projectedOutlineRadius, type SpheroidShape } from '../astronomy/spheroid';
 import { horizonDip, mirrorPointOnSphere } from './horizonPose';
 import { SUN_LIGHT_BASELINE } from './sunLight';
 import { HighlightMeter, type HighlightContext, type HighlightTelemetry } from './highlightMeter';
@@ -121,6 +127,7 @@ import { EarthSurfaceMaps } from './world/surfaceMaps';
 import { writeShadedAlbedo } from './world/albedoGrade';
 import {
   createPlanetariumStarfield,
+  getStarColor,
   setStarfieldGain,
   setStarfieldPixelRatio,
   starfieldFaintLimitMag,
@@ -133,10 +140,22 @@ import {
   discDiameterPx,
   moonDotVisual,
   parentDominanceFade,
+  phaseIllumination,
   systemEdgeFade,
   type MoonDotParams,
   type MoonDotVisual,
 } from './moonDots';
+import {
+  PLANET_LABEL_MIN_LIGHT,
+  PLANET_POINT_PARAMS,
+  planetColorIndex,
+  planetPointVisual,
+  rec709Luminance,
+  type PlanetPointVisual,
+} from './planetPoints';
+import { STAR_POINT_MAPPING } from './world/starPointMapping';
+import { planetMagnitudeFromPositions } from '../astronomy/planetMagnitude';
+import { BLOOM_THRESHOLD } from '../app/bloomConfig';
 import {
   LABEL_DOT_MIN_ALPHA,
   LABEL_READABLE_RADIUS_PX,
@@ -149,8 +168,10 @@ import {
   type MoonLabelPlacementParams,
 } from './moonLabelPlacement';
 import {
+  SUN_GLARE_MASK_MAX_KILL,
   applySunGlareMaskParams,
   sunGlareMaskActivation,
+  sunGlareMaskAt,
   sunGlareMaskCoreOuterPx,
   type SunGlareMaskParams,
   type SunGlareMaskActivationInput,
@@ -244,6 +265,8 @@ import {
   SURFACE_FOV_MIN_DEG,
   SURFACE_SPOT_SUN_DOWN,
   SURFACE_TARGET_ELEVATION_DEG,
+  SURFACE_AIM_EASE_S,
+  surfaceAimLiftPx,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
@@ -265,12 +288,13 @@ import {
   lensMaxFrameScale,
   lensSourceBoundOfOutputRect,
   makeLensWarpContext,
+  viewAngleAtOutputNdcY,
   type LensLocalScale,
   type LensWarpContext,
   type NdcRect,
 } from '../shared/math/lensProjection';
 import { isLensRampBand, LENS_PROXIMITY_DEFAULT_BAND, lensProximityFactor, type LensRampBand } from '../shared/math/lensProximity';
-import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
+import { SUN_ATMOSPHERE_TINT_RGB, SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H, SUN_VEIL_STRENGTH } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
   MOON_RENDER_ANCHOR_RATIO,
@@ -299,6 +323,7 @@ import {
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
+  SHIP_REFERENCE_RADIUS_AU,
   SHIP_OCCLUDER_RADIUS_AU,
   SHIP_ANY_HULL_EXTENT_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
@@ -384,6 +409,7 @@ import {
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   sweepSegmentSphere,
+  moonLandRangeAU,
   type BodyCapState,
   type SweepContact,
   type ArrivalInputs,
@@ -396,6 +422,7 @@ import {
   startArrivalLook,
   stepCruiseAim,
 } from './cruiseAim';
+import type { FrameKeepView } from './frameKeep';
 import {
   canStartTutorial,
   isStepSettled,
@@ -473,6 +500,8 @@ import {
   ObservatoryPanel,
   observatoryEventsStatus,
   observatoryPhaseText,
+  trackedBodyPhaseText,
+  trackedPlanetText,
   type ObservatoryEventRow,
   type ObservatoryRenderExtras,
   type ObservatorySubjectInfo,
@@ -884,6 +913,14 @@ export class PlanetariumMode {
    *  float32 vertices translated by −ship — the A/B for any question about
    *  an orbit line moving when the ship does, and the kill switch. */
   private readonly orbitAnchorEnabled = new URLSearchParams(location.search).get('orbitanchor') !== '0';
+  /** `?framekeep=0`: no frame-keep floor under the arrival look
+   *  (frameKeep.ts), so a teleport arrives in the bare settled chase pose
+   *  even where that leaves the destination off the edge of a narrow
+   *  screen — the A/B for the floor, and its kill switch. */
+  private readonly frameKeepEnabled = new URLSearchParams(location.search).get('framekeep') !== '0';
+  /** The visible frame handed to the aim stage each cruise frame, refilled in
+   *  place from the camera (no per-frame allocation). */
+  private readonly aimFrameView: FrameKeepView = { designFovDeg: 60, aspect: 1, lensStrength: 0 };
 
   /** Fade the stereographic lens out as one body fills the view
    *  (shared/math/lensProximity.ts). Always on in the app; the dev console's
@@ -1287,6 +1324,10 @@ export class PlanetariumMode {
   private sunPointLight: THREE.PointLight | null = null;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  /** The veiling glare's peak (`uVeilStrength`), and the share of it the app
+   *  asks for (setVeilScale); written to the material every frame. */
+  private veilStrength = SUN_VEIL_STRENGTH;
+  private veilScale = 1;
   /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
    *  function of the exposed fraction, which a warped clock can cross in one
    *  frame; this carries the blaze at human speed regardless of time rate. */
@@ -1721,6 +1762,20 @@ export class PlanetariumMode {
   /** Photometric sub-pixel moon dots (world/MoonDots) + their live knobs. The
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
+  /** The surface view's planets as points (planetPoints.ts), one vertex per
+   *  catalog planet in solarSystem.planets order; filled only in the surface
+   *  view, blank everywhere else. */
+  private planetPoints: MoonDots | null = null;
+  private planetPointsFilled = false;
+  /** The planets plainly visible as points this frame (PLANET_LABEL_MIN_LIGHT),
+   *  less the tracked one (the HUD names it): the surface view's labels name
+   *  these and no others. */
+  private surfacePlanetLabelNames = new Set<string>();
+  private tmpPlanetPointPos = new THREE.Vector3();
+  private tmpPlanetPointVisual: PlanetPointVisual = { alpha: 0, sizePx: 0, brightness: 0 };
+  private tmpPlanetPointProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  /** Each planet's point colour (a star's at its B−V) and its luminance. */
+  private planetPointColors = new Map<string, { r: number; g: number; b: number; luminance: number }>();
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
   private moonLabelPlacementParams: MoonLabelPlacementParams = { ...MOON_LABEL_PLACEMENT_PARAMS };
   /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
@@ -2005,6 +2060,13 @@ export class PlanetariumMode {
   private coachSuppressesNextSurfaceHint = false;
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
+  /** How far above the screen's centre tracking aims the target, in px: the
+   *  centre of the sky the phone sheet leaves (surfaceAimLiftPx), zero
+   *  otherwise. The goal is re-measured at 8 Hz with the HUD's band and the
+   *  applied value eases toward it every frame, so a sheet that opens, parks
+   *  or is dragged slides the subject instead of jumping it. */
+  private surfaceAimLiftGoalPx = 0;
+  private surfaceAimLiftAppliedPx = 0;
   private surfaceLook: SurfaceLook;
   /** `?lookdrag=eyepiece`: the look-up view drags in the camera's own frame
    *  (applySurfaceEyepieceDrag) — no twist, and no level horizon — instead of
@@ -2027,6 +2089,11 @@ export class PlanetariumMode {
   private tmpSurfaceTargetPos = new THREE.Vector3();
   private tmpSurfaceVantage = new THREE.Vector3();
   private tmpSurfaceAxis = new THREE.Vector3();
+  private tmpPhaseTarget = new THREE.Vector3();
+  private tmpSunOccluderToward = new THREE.Vector3();
+  private tmpSunAtmosphereMiss = new THREE.Vector3();
+  private tmpPhaseToSun = new THREE.Vector3();
+  private tmpPhaseToEye = new THREE.Vector3();
   private tmpSurfaceZenith = new THREE.Vector3();
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
@@ -2949,6 +3016,7 @@ export class PlanetariumMode {
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
       this.moonDots?.clear();
+      this.planetPoints?.clear();
       // The cloud field's layers went with the context: its table is cleared,
       // so the deck draws its base sheet until pages are back, and nothing is
       // admitted or uploaded until the pool is allocated again.
@@ -3381,12 +3449,25 @@ export class PlanetariumMode {
           // it HERE (not later, next to the starfield build) keeps the star data
           // in place before anything draws with it. main.ts kicked the load at
           // init; this await usually finds it already settled.
+          //
+          // Every body's position comes from the fitted ephemeris (also
+          // kicked at init; its loader never rejects, falling back to the
+          // analytic models), so the gate waits for it too. The build runs
+          // beside it rather than after it, which keeps its texture decodes
+          // and mesh work off a slow link's critical path; the one thing the
+          // build bakes from positions, the orbit lines, is sampled again
+          // below once the file is in. A star catalog that fails still fails
+          // the gate at once.
           const [solarSystem] = await Promise.all([
             createSolarSystem((progress) => {
               reportActivationProgress(progress.completedUnits);
             }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
             loadBrightStarCatalog(),
+            loadFittedEphemeris(),
           ]);
+          // The build may have sampled the lines before the ephemeris was
+          // installed; draw them from the positions the scene will use.
+          resampleOrbitLines(solarSystem, this.layoutMode, initialWorldUtcMs);
           this.solarSystem = solarSystem;
         } catch (error) {
           this.resumePrompt.cancel();
@@ -3494,6 +3575,16 @@ export class PlanetariumMode {
         this.moonDots = new MoonDots(dotCount, this.scenePixelRatio(), this.renderer.getPixelRatio());
         this.scene.add(this.moonDots.points);
       }
+      if (!this.planetPoints) {
+        this.planetPoints = new MoonDots(
+          this.solarSystem.planets.length,
+          this.scenePixelRatio(),
+          this.renderer.getPixelRatio(),
+          { name: 'Planet points', sunGlareMask: true },
+        );
+        this.planetPointsFilled = false;
+        this.scene.add(this.planetPoints.points);
+      }
 
       // The ☰ preferences come from their own keys, with a save from before
       // the keys existed read once more as the fallback and copied onto them.
@@ -3517,10 +3608,13 @@ export class PlanetariumMode {
           this.openMap();
         }
       } else if (savedState && shouldPromptForResume) {
-        this.restoreState(savedState);
-        this.deferredResumePromptState = savedState;
+        // A save from before the fitted ephemeris moves with the body it was
+        // beside (saveAnchor.ts); the store's own copy is left as it is.
+        const journey = migrateLegacyJourney(savedState);
+        this.restoreState(journey);
+        this.deferredResumePromptState = journey;
       } else if (savedState) {
-        this.restoreState(savedState);
+        this.restoreState(migrateLegacyJourney(savedState));
       } else {
         this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
         // New users start already gliding, nose on Mercury — motion without a
@@ -5171,6 +5265,11 @@ export class PlanetariumMode {
       this.moonDots.dispose();
       this.moonDots = null;
     }
+    if (this.planetPoints) {
+      this.scene.remove(this.planetPoints.points);
+      this.planetPoints.dispose();
+      this.planetPoints = null;
+    }
 
     if (this.moonLabelContainer) {
       this.moonLabelContainer.style.display = 'none';
@@ -5188,6 +5287,7 @@ export class PlanetariumMode {
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
     if (this.moonDots) this.moonDots.setVisible(visible);
+    if (this.planetPoints) this.planetPoints.setVisible(visible);
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -5227,6 +5327,7 @@ export class PlanetariumMode {
     const outputRatio = this.renderer.getPixelRatio();
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
+    if (this.planetPoints) this.planetPoints.setPixelRatio(sceneRatio, outputRatio);
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
     // The cloud field's guard is measured in the scene target's own pixels and
     // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
@@ -6233,6 +6334,20 @@ export class PlanetariumMode {
       }
     }
 
+    // The frame the floor fits the destination into: the DISPLAYED field
+    // (displayFovDeg, never camera.fov, which holds the lens overscan), the
+    // canvas aspect, and the lens's effective strength — the same numbers
+    // the lens pass draws with.
+    let frame: FrameKeepView | null = null;
+    if (this.frameKeepEnabled && look) {
+      const lens = this.camera.userData.lens as
+        | { strength: number; designFovDeg: number; effectiveStrength?: number }
+        | undefined;
+      this.aimFrameView.designFovDeg = displayFovDeg(this.camera);
+      this.aimFrameView.aspect = this.camera.aspect;
+      this.aimFrameView.lensStrength = lens ? lens.effectiveStrength ?? lens.strength : 0;
+      frame = this.aimFrameView;
+    }
     stepCruiseAim(
       this.cruiseAim,
       this.camera.position,
@@ -6240,6 +6355,7 @@ export class PlanetariumMode {
       this.renderOriginAU,
       dt,
       this.tmpAimDir,
+      frame,
     );
     this.camera.lookAt(
       this.tmpAimTarget.copy(this.camera.position).add(this.tmpAimDir),
@@ -6450,6 +6566,153 @@ export class PlanetariumMode {
       }
     }
     this.moonDots.flush();
+  }
+
+  /** A planet's apparent magnitude from the camera, the planet at the scene
+   *  position given (NaN for a body without an equation). */
+  private planetMagnitudeFromCamera(planetName: string, planetPosition: THREE.Vector3): number {
+    if (!this.solarSystem) return Number.NaN;
+    const year = 1970 + this.timeState.currentUtcMs / (365.25 * 86_400_000);
+    return planetMagnitudeFromPositions(planetName, planetPosition, this.solarSystem.sun.position, this.camera.position, year);
+  }
+
+  /** A planet's point colour: a star's at the planet's B−V (planetPoints.ts). */
+  private planetPointColor(name: string): { r: number; g: number; b: number; luminance: number } {
+    let color = this.planetPointColors.get(name);
+    if (!color) {
+      const colorIndex = planetColorIndex(name);
+      const star = getStarColor(Number.isFinite(colorIndex) ? colorIndex : 0.65);
+      color = { r: star.r, g: star.g, b: star.b, luminance: rec709Luminance(star.r, star.g, star.b) };
+      this.planetPointColors.set(name, color);
+    }
+    return color;
+  }
+
+  /**
+   * Fill the planet points for this frame's final surface camera: every planet
+   * but the one underfoot, at its apparent magnitude from the camera
+   * (planetMagnitude.ts), through planetPoints.ts. Outside the surface view
+   * the layer is blank. Shares the stars' telescope gain and glare mask.
+   */
+  private updatePlanetPointsForCamera(): void {
+    const points = this.planetPoints;
+    if (!points || !this.solarSystem) return;
+    if (this.landedView !== 'surface') {
+      if (this.planetPointsFilled) {
+        points.clear();
+        this.planetPointsFilled = false;
+      }
+      return;
+    }
+    const canvasHeight = this.renderer.domElement.clientHeight;
+    points.setLens(this.camera, this.renderer.domElement.clientWidth, canvasHeight, this.scenePixelRatio());
+    const sun = this.solarSystem.sun.position;
+    const cameraPosition = this.camera.position;
+    const fovDeg = displayFovDeg(this.camera);
+    const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : null;
+    const trackedPlanetName = this.surfaceTarget.kind === 'planet' ? this.surfaceTarget.planetName : null;
+    const kneeActive = this.starGain > 1.001;
+    const planets = this.solarSystem.planets;
+    this.surfacePlanetLabelNames.clear();
+    for (let index = 0; index < planets.length; index++) {
+      const planet = planets[index];
+      const name = planet.data.name;
+      if (name === landedPlanetName || !planet.group.visible) {
+        points.hide(index);
+        continue;
+      }
+      const position = planet.group.getWorldPosition(this.tmpPlanetPointPos);
+      const magnitude = this.planetMagnitudeFromCamera(name, position);
+      const distanceAU = position.distanceTo(cameraPosition);
+      const radiusAU = planet.data.radiusAU * this.planetScale;
+      const toSunX = sun.x - position.x;
+      const toSunY = sun.y - position.y;
+      const toSunZ = sun.z - position.z;
+      const sunDistanceAU = Math.hypot(toSunX, toSunY, toSunZ) || 1e-9;
+      const phaseCos = distanceAU > 0
+        ? (toSunX * (cameraPosition.x - position.x) + toSunY * (cameraPosition.y - position.y)
+          + toSunZ * (cameraPosition.z - position.z)) / (sunDistanceAU * distanceAU)
+        : 1;
+      const color = this.planetPointColor(name);
+      const visual = planetPointVisual(
+        magnitude,
+        discDiameterPx(radiusAU, distanceAU, fovDeg, canvasHeight),
+        phaseIllumination(phaseCos),
+        color.luminance,
+        BLOOM_THRESHOLD,
+        this.starFaintLimitMag,
+        PLANET_POINT_PARAMS,
+        STAR_POINT_MAPPING,
+        this.tmpPlanetPointVisual,
+      );
+      const alpha = kneeActive ? 1 - Math.pow(1 - visual.alpha, this.starGain) : visual.alpha;
+      if (!(alpha > 0)) {
+        points.hide(index);
+        continue;
+      }
+      // Named only while the point is plainly there: the glare the shader
+      // fades it by (last frame's mask, a sub-pixel lag) included.
+      if (name !== trackedPlanetName) {
+        let glare = 0;
+        if (this.sunGlareMaskParams.active) {
+          const screen = projectToScreen(
+            position, this.camera, this.renderer.domElement.clientWidth, canvasHeight, this.tmpPlanetPointProjection,
+          );
+          glare = sunGlareMaskAt(this.sunGlareMaskParams, screen.x, screen.y);
+        }
+        const light = alpha * (1 - SUN_GLARE_MASK_MAX_KILL * glare) * visual.brightness;
+        if (light >= PLANET_LABEL_MIN_LIGHT) this.surfacePlanetLabelNames.add(name);
+      }
+      // In front of the globe and its rings, so neither depth-kills the point
+      // while it hands over; nearer bodies still cover it.
+      const ring = RING_CONFIGS[name];
+      const lift = (radiusAU * (ring ? ring.outerFactor : 1) * 1.05) / Math.max(distanceAU, 1e-12);
+      points.setDot(
+        index,
+        position.x + (cameraPosition.x - position.x) * lift,
+        position.y + (cameraPosition.y - position.y) * lift,
+        position.z + (cameraPosition.z - position.z) * lift,
+        color.r * visual.brightness,
+        color.g * visual.brightness,
+        color.b * visual.brightness,
+        visual.sizePx,
+        alpha,
+      );
+    }
+    points.flush();
+    this.planetPointsFilled = true;
+  }
+
+  /**
+   * The surface view's labels: the "Planet labels" setting names the planets
+   * drawn as points (updatePlanetPointsForCamera), through the planet label
+   * layer's own occlusion, glare fade and de-overlap — no markers, no Sun or
+   * moon labels, no reveal. Everything else in the layer stays hidden, as it
+   * has been since the surface view hid it: a name printed on a disc there
+   * covers the very thing the view is for.
+   */
+  private renderSurfacePlanetLabels(): void {
+    const labels = this.planetLabels;
+    // The container's display is syncWorldLabelContainers' alone; this pass
+    // only places names, and none while the layer is down.
+    if (!labels || !this.solarSystem || this.planetLabelsContainerEl?.style.display === 'none') return;
+    const scenePositions = this.ensurePickScenePositions();
+    for (const planet of this.solarSystem.planets) {
+      const slot = scenePositions.get(planet.data.name)!;
+      slot.x = planet.group.position.x;
+      slot.y = planet.group.position.y;
+      slot.z = planet.group.position.z;
+    }
+    labels.collectForegroundSpheres(scenePositions, this.renderer, this.scenePixelRatio());
+    this.collectDynamicOccluders();
+    labels.renderLabels(scenePositions, this.labelPlayerOrigin, this.renderer, {
+      showMarkers: false,
+      showLabels: true,
+      excludeName: this.landedOn?.type === 'planet' ? this.landedOn.name : undefined,
+      sunMask: this.sunGlareMaskParams,
+      sunPos: this.solarSystem.sun.position,
+      onlyBodies: this.surfacePlanetLabelNames,
+    });
   }
 
   /**
@@ -7977,23 +8240,80 @@ export class PlanetariumMode {
     this.revealedBody = null;
   }
 
+  private readonly prominentCentre = new THREE.Vector3();
+
+  /**
+   * Draw the Sun's wide veiling glare at `scale` of its strength (1: as
+   * tuned). Its reach, and the mask that hides stars inside it, follow. For a
+   * look that wants less glare (the Retro look's, src/retro).
+   */
+  setVeilScale(scale: number): void {
+    this.veilScale = Number.isFinite(scale) ? Math.max(0, scale) : 1;
+  }
+
+  /**
+   * Fly the ship `build` makes, at the ship's reference radius, in place of
+   * the default one (PlayerShip.setOverride), or the default ship for null.
+   * For a look with its own ship (the Retro look's, src/retro).
+   */
+  setShipOverride(build: ((referenceRadiusAU: number) => ShipOverride) | null): void {
+    this.player.setOverride(build ? build(SHIP_REFERENCE_RADIUS_AU) : null);
+  }
+
+  /**
+   * The body drawn largest on screen this frame and its disc's box in CSS px,
+   * for an overlay that frames it (the Retro look's brackets, src/retro).
+   * Null wherever the world labels are down (the map, the surface view, a
+   * modal or a tour stop, labels and markers both off), or where no disc is
+   * between `minDiameterPx` and `maxFraction` of the viewport's short side
+   * with its centre on screen. From the spheres the label pass gathered.
+   */
+  prominentBodyOnScreen(minDiameterPx = 12, maxFraction = 0.92): { name: string; left: number; top: number; right: number; bottom: number } | null {
+    const labels = this.planetLabels;
+    if (!this.active || !labels || this.isMapOpen() || this.landedView === 'surface'
+      || this.worldLabelsModalHidden || this.worldLabelsTourHidden || !(this.showBodyLabels || this.showBodyMarkers)) return null;
+    const width = this.renderer.domElement.clientWidth;
+    const height = this.renderer.domElement.clientHeight;
+    const camera = this.camera.position;
+    let best: { name: string; left: number; top: number; right: number; bottom: number } | null = null;
+    let bestDiameter = minDiameterPx;
+    for (const sphere of labels.foregroundSpheres) {
+      if (sphere.name === 'ship') continue;
+      // Moons are registered as `moon:<name>`; the Sun's sphere is padded past its disc.
+      const name = sphere.name.startsWith('moon:') ? sphere.name.slice('moon:'.length) : sphere.name;
+      const radius = name === 'Sun' ? SUN_DATA.radiusAU : sphere.radiusAU;
+      const centre = this.prominentCentre.set(camera.x + sphere.x, camera.y + sphere.y, camera.z + sphere.z);
+      const disc = projectSphereToScreen(centre, radius, this.camera, width, height, this.sphereScreenProjection);
+      if (disc.ndcZ >= 1 || disc.footprintKind === 'none') continue;
+      if (disc.x < 0 || disc.x > width || disc.y < 0 || disc.y > height) continue;
+      if (disc.diameterPx > maxFraction * Math.min(width, height) || disc.diameterPx <= bestDiameter) continue;
+      bestDiameter = disc.diameterPx;
+      best = { name: bodyDisplayName(name), left: disc.minX, top: disc.minY, right: disc.maxX, bottom: disc.maxY };
+    }
+    return best;
+  }
+
   /** Container-level visibility for the HTML label layers. They stay renderable
    *  whenever labels are on OR a body is being revealed (per-child hiding does
    *  the rest), fold away in surface view, and honour the modal hide. */
   private syncWorldLabelContainers(): void {
-    const show = !this.worldLabelsModalHidden
+    const allowed = !this.worldLabelsModalHidden
       && !this.worldLabelsTourHidden
-      && this.landedView !== 'surface'
       // Nothing may re-show world labels over the map: the system-map-active
       // class force-hides the DOM anyway, but a modal closing under the map
       // would otherwise clear the hide flag and leave them nominally shown.
-      && !this.isMapOpen()
-      && (this.showBodyLabels || this.revealedBody !== null);
-    const disp = show ? '' : 'none';
+      && !this.isMapOpen();
+    // The surface view names its planet points (renderSurfacePlanetLabels)
+    // by the setting alone — it has no reveal — and shows no moon labels.
+    const surface = this.landedView === 'surface';
+    const planetShow = allowed && (surface ? this.showBodyLabels : this.showBodyLabels || this.revealedBody !== null);
+    const moonShow = allowed && !surface && (this.showBodyLabels || this.revealedBody !== null);
+    const planetDisplay = planetShow ? '' : 'none';
+    const moonDisplay = moonShow ? '' : 'none';
     const planetEl = this.planetLabelsContainerEl;
-    if (planetEl && planetEl.style.display !== disp) planetEl.style.display = disp;
-    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== disp) {
-      this.moonLabelContainer.style.display = disp;
+    if (planetEl && planetEl.style.display !== planetDisplay) planetEl.style.display = planetDisplay;
+    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== moonDisplay) {
+      this.moonLabelContainer.style.display = moonDisplay;
     }
   }
 
@@ -8615,6 +8935,14 @@ export class PlanetariumMode {
         this.scenePixelRatio(),
       );
     }
+    const planetPointUniforms = this.planetPoints?.sunGlareMaskUniforms;
+    if (planetPointUniforms) applySunGlareMaskParams(
+      planetPointUniforms,
+      params,
+      viewportWidth,
+      this.camera,
+      this.scenePixelRatio(),
+    );
     const beltUniforms = this.solarSystem?.asteroidBelt.userData.sunGlareMaskUniforms as
       | SunGlareMaskUniforms
       | undefined;
@@ -8818,6 +9146,8 @@ export class PlanetariumMode {
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
     }
+    // First, so the support, the drawn wash and the star mask all read it.
+    if (glareMat) glareMat.uniforms.uVeilStrength.value = this.veilStrength * this.veilScale;
     if (prominenceMat) prominenceMat.uniforms.time.value += dt;
 
     const toSun = this.tmpSunDirection
@@ -9067,7 +9397,7 @@ export class PlanetariumMode {
         solarRadiusPx, viewportHeight * 0.30, viewportHeight * 0.42,
       );
       const veilReachGeom = veilAmplitudeResponse * hugeFade;
-      const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+      const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : SUN_VEIL_STRENGTH;
       // The diffraction arms are a camera's signature, and the Sun here is an
       // eye's from a window: a searing point in a soft glare. The coefficient
       // is zero (it was 0.28, faded out as the disc resolved); the arm terms
@@ -9561,7 +9891,7 @@ export class PlanetariumMode {
     if (glareMat) {
       (glareMat.uniforms.uLightOutPx.value as THREE.Vector2).set(maskParams.sunXPx, maskParams.sunYPx);
     }
-    const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+    const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : SUN_VEIL_STRENGTH;
     maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
     maskParams.transmission = this.shipSunVisibility;
     maskParams.armCoeff = maskArmCoeff;
@@ -9629,11 +9959,21 @@ export class PlanetariumMode {
 
       const closestDistance = Math.sqrt(Math.max(0, offset.lengthSq() - planeDistance * planeDistance));
       planet.mesh.getWorldScale(this.tmpSunOccluderScale);
-      const solidRadius = planet.data.radiusAU * Math.max(
+      let solidRadius = planet.data.radiusAU * Math.max(
         Math.abs(this.tmpSunOccluderScale.x),
         Math.abs(this.tmpSunOccluderScale.y),
         Math.abs(this.tmpSunOccluderScale.z),
       );
+      // A flattened planet: its outline along the line to the Sun, toward
+      // where the line passes closest (astronomy/spheroid.ts).
+      const shape = bodyShape(planet.data.name);
+      if (shape.flattening > 0 && closestDistance > 0) {
+        const miss = this.tmpSunAtmosphereMiss.copy(offset).addScaledVector(sunDirection, -planeDistance).negate();
+        miss.divideScalar(closestDistance);
+        solidRadius = projectedOutlineRadius(
+          sunDirection.x, sunDirection.y, sunDirection.z, miss.x, miss.y, miss.z, solidRadius, shape,
+        );
+      }
       const shellRadius = solidRadius * config.scale;
       const solarBand = projectedSourceRadiusAtPlane(
         SUN_DATA.radiusAU,
@@ -9698,7 +10038,9 @@ export class PlanetariumMode {
     this.sunOccIncumbentFx = null;
 
     for (const planet of this.solarSystem?.planets ?? []) {
-      visible *= 1 - this.considerSunOccluder(planet.mesh, planet.fx ?? null, sunDirection, sunDistance, sunAngularRadius);
+      visible *= 1 - this.considerSunOccluder(
+        planet.mesh, planet.fx ?? null, sunDirection, sunDistance, sunAngularRadius, bodyShape(planet.data.name),
+      );
       if (visible < 1e-4) {
         this.commitDominantSunOccluder();
         return 0;
@@ -9727,8 +10069,9 @@ export class PlanetariumMode {
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
+    shape?: SpheroidShape,
   ): number {
-    const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius);
+    const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius, shape);
     if (occlusion <= 0) return occlusion;
     if (occlusion > this.sunOccBestOcclusion) {
       this.sunOccSecondOcclusion = this.sunOccBestOcclusion;
@@ -9820,6 +10163,7 @@ export class PlanetariumMode {
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
+    shape?: SpheroidShape,
   ): number {
     if (!mesh.visible) return 0;
 
@@ -9842,9 +10186,24 @@ export class PlanetariumMode {
     if (!(renderedRadius > 0)) return 0;
 
     bodyDirection.multiplyScalar(1 / bodyDistance);
-    const separation = Math.acos(THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1));
+    const cosSeparation = THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1);
+    const separation = Math.acos(cosSeparation);
     const angularRadius = Math.asin(THREE.MathUtils.clamp(renderedRadius / bodyDistance, 0, 0.999999));
+    // The likeness and size gates read the body's round size; the cover is
+    // a flattened body's outline toward the Sun (astronomy/spheroid.ts).
     this.lastSunOccluderAngularRadius = angularRadius;
+    if (shape && shape.flattening > 0) {
+      const toward = this.tmpSunOccluderToward.copy(sunDirection).addScaledVector(bodyDirection, -cosSeparation);
+      const towardLength = toward.length();
+      if (towardLength > 1e-12) {
+        toward.divideScalar(towardLength);
+        const outline = projectedOutlineRadius(
+          bodyDirection.x, bodyDirection.y, bodyDirection.z, toward.x, toward.y, toward.z, renderedRadius, shape,
+        );
+        const outlineAngularRadius = Math.asin(THREE.MathUtils.clamp(outline / bodyDistance, 0, 0.999999));
+        return circleOcclusionFraction(sunAngularRadius, outlineAngularRadius, separation);
+      }
+    }
     return circleOcclusionFraction(sunAngularRadius, angularRadius, separation);
   }
 
@@ -10543,8 +10902,12 @@ export class PlanetariumMode {
         const md = Math.sqrt(mdx * mdx + mdy * mdy + mdz * mdz);
         // Rendered size, not the catalog radius: the mesh a player flies up to
         // is the inflated one, and the Land prompt has to appear where that
-        // sphere is.
-        const moonLandThreshold = Math.max(m.data.radiusAU * m.mesh.scale.x * 3, 0.0003);
+        // sphere is. The reach is held to half the live separation, so a moon
+        // close to its planet never claims the planet's own neighbourhood.
+        const moonLandThreshold = moonLandRangeAU(
+          m.data.radiusAU * m.mesh.scale.x,
+          Math.hypot(mp.x - wp.x, mp.y - wp.y, mp.z - wp.z),
+        );
         if (md < moonLandThreshold && md < closestDist) {
           closestDist = md;
           closest = { type: 'moon', name: m.data.name, parentPlanet: planet.data.name };
@@ -17021,7 +17384,7 @@ export class PlanetariumMode {
     const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
     startArrivalLook(
       this.cruiseAim,
-      { kind: 'planet', name: planet.name },
+      { kind: 'planet', name: planet.name, radiusAU: planet.radiusAU * this.planetScale },
       arrivalDistanceAU,
     );
     // Seed the governor with the WHOLE satellite system: in a cold system
@@ -17195,9 +17558,15 @@ export class PlanetariumMode {
       .copy(destination.bodyPosition)
       .sub(destination.position);
     const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    // The pose's own rendered size (the flyby anchor), which is also the disc
+    // the frame-keep floor fits on screen.
+    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
+    const renderedRForPose = parentForSize
+      ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
+      : moon.radiusAU;
     startArrivalLook(
       this.cruiseAim,
-      { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet },
+      { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet, radiusAU: renderedRForPose },
       arrivalDistanceAU,
     );
     // Catalog refs for the analytic per-frame moon position (the mesh is
@@ -17214,10 +17583,6 @@ export class PlanetariumMode {
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
     // in-system default would cross the whole standoff.
     this.governedMoonSeeds = [{ name: moon.name, parentPlanet: moon.parentPlanet }];
-    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
-    const renderedRForPose = parentForSize
-      ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
-      : moon.radiusAU;
     this.devLastArrivalPose = {
       body: moon.name,
       kind: 'moon',
@@ -18053,7 +18418,10 @@ export class PlanetariumMode {
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     if (!glareMat) return false;
     if (typeof opts.warmth === 'number') glareMat.uniforms.uVeilWarmth.value = opts.warmth;
-    if (typeof opts.strength === 'number') glareMat.uniforms.uVeilStrength.value = opts.strength;
+    if (typeof opts.strength === 'number') {
+      this.veilStrength = opts.strength;
+      glareMat.uniforms.uVeilStrength.value = this.veilStrength * this.veilScale;
+    }
     return true;
   }
 
@@ -18683,6 +19051,23 @@ export class PlanetariumMode {
   /** DEV: the authored pose of the last teleport arrival (see field). */
   devArrivalPose(): unknown {
     return this.devLastArrivalPose;
+  }
+
+  /** DEV: the live arrival look — whose it is, whether an input has
+   *  released it, and how far (degrees off the origin aim) the frame-keep
+   *  floor and the tracking shot each turned the camera on the last step.
+   *  Null once the look has ended. */
+  devArrivalLook(): unknown {
+    const look = this.cruiseAim.look;
+    if (!look) return null;
+    return {
+      kind: look.kind,
+      name: look.name,
+      released: look.releaseElapsedS !== null,
+      keepDeg: look.keepRad * RAD2DEG,
+      trackDeg: look.trackRad * RAD2DEG,
+      frameKeep: this.frameKeepEnabled,
+    };
   }
 
   /** DEV: which governed body owned the speed cap on the last cruise frame.
@@ -19463,15 +19848,37 @@ export class PlanetariumMode {
       if (m.data.name === landedInfo.name) continue; // never the ground underfoot
       add({ kind: 'moon', moonName: m.data.name }, bodyDisplayName(m.data.name), m.data.color);
     }
+    // The other planets, as the points the sky draws them as: never the
+    // system's own planet (underfoot, or the parent row above), nor a body
+    // without a brightness to draw it at (Pluto).
+    for (const planet of this.solarSystem?.planets ?? []) {
+      const name = planet.data.name;
+      if (name === parentName) continue;
+      const target: SurfaceTarget = { kind: 'planet', planetName: name };
+      const position = this.resolveSurfaceTargetScenePos(target, this.tmpSurfaceTargetPos);
+      const magnitude = position ? this.planetMagnitudeFromCamera(name, position) : Number.NaN;
+      if (!Number.isFinite(magnitude)) continue;
+      choices.push(makeSurfaceTargetChoice(
+        target,
+        bodyDisplayName(name),
+        this.surfaceTargetAngularDiameterDeg(target),
+        planet.data.color,
+        magnitude,
+      ));
+    }
     return orderSurfaceTargetChoices(choices);
   }
 
   /** Cheap row count for gating the ⌖ chip — no positions computed. Both
    *  vantage types sum the same: on a planet it's the Sun + the moons; on a
-   *  moon the parent replaces yourself in that count. */
+   *  moon the parent replaces yourself in that count. The other planets are
+   *  rows everywhere, so even Mercury and Venus, with no moons, get the chip. */
   private surfaceTargetChoiceCount(): number {
     if (!this.landedOn) return 0;
-    return 1 + getMoonsByPlanet(this.observatoryParentPlanetName() ?? '').length;
+    const parentName = this.observatoryParentPlanetName() ?? '';
+    let otherPlanets = 0;
+    for (const planet of PLANETS) if (planet.name !== parentName) otherPlanets++;
+    return 1 + getMoonsByPlanet(parentName).length + otherPlanets;
   }
 
   private openSurfaceTargetMenu() {
@@ -19648,7 +20055,7 @@ export class PlanetariumMode {
   }
 
   /**
-   * Earth finder metas: full/new via findEvent (cached until stale or
+   * Earth finder metas: full/new via findLunarPhaseEvent (cached until stale or
    * crossed), eclipse rows reuse the chunked upcoming-search results.
    */
   private observatoryNextDates(): { full: string; new: string; lunar: string; solar: string } | null {
@@ -19666,11 +20073,11 @@ export class PlanetariumMode {
       (cache.fullMs !== null && now > cache.fullMs) ||
       (cache.newMs !== null && now > cache.newMs);
     if (stale) {
-      const from = new Date(now + 60_000);
+      const fromUtcMs = now + 60_000;
       this.observatoryNextDatesCache = {
         computedAtUtcMs: now,
-        fullMs: findEvent('full-moon', from, 1)?.getTime() ?? null,
-        newMs: findEvent('new-moon', from, 1)?.getTime() ?? null,
+        fullMs: findLunarPhaseEvent('full-moon', fromUtcMs, 1),
+        newMs: findLunarPhaseEvent('new-moon', fromUtcMs, 1),
       };
     }
     const fresh = this.observatoryNextDatesCache!;
@@ -19732,6 +20139,8 @@ export class PlanetariumMode {
         return this.landedOn?.type === 'moon' ? this.landedOn.parentPlanet : 'the planet';
       case 'moon':
         return bodyDisplayName(target.moonName);
+      case 'planet':
+        return bodyDisplayName(target.planetName);
     }
   }
 
@@ -19758,6 +20167,37 @@ export class PlanetariumMode {
     );
   }
 
+  /** The phase of the lit body the surface view tracks, as seen from where
+   *  the camera stands, or its eclipse while it sits in its planet's shadow;
+   *  null while it tracks the Sun. */
+  private trackedBodyPhase(): { headline: string; meta: string } | null {
+    const target = this.surfaceTarget;
+    if (target.kind !== 'moon' && target.kind !== 'parent' && target.kind !== 'planet') return null;
+    const targetPos = this.resolveSurfaceTargetScenePos(target, this.tmpPhaseTarget);
+    if (!targetPos) return null;
+    // The Sun sits at the scene's floating origin, the player's negation.
+    const toSun = this.tmpPhaseToSun.set(-this.player.posX, -this.player.posY, -this.player.posZ).sub(targetPos);
+    const toEye = this.tmpPhaseToEye.copy(this.camera.position).sub(targetPos);
+    const lengths = toSun.length() * toEye.length();
+    if (!(lengths > 0)) return null;
+    const name = this.surfaceTargetDisplayName(target).replace(/^the /, '');
+    if (target.kind === 'planet') {
+      return trackedPlanetText(
+        name,
+        (1 + toSun.dot(toEye) / lengths) / 2,
+        this.planetMagnitudeFromCamera(target.planetName, targetPos),
+      );
+    }
+    // The sunlight the renderer dims the moon by: under half, it is eclipsed.
+    let shadowOf: string | null = null;
+    if (target.kind === 'moon') {
+      const parentName = this.observatoryParentPlanetName();
+      const entry = this.planetMoons.get(parentName ?? '')?.find((moon) => moon.data.name === target.moonName);
+      if (parentName && (entry?.shadeSmoothed ?? 1) < 0.5) shadowOf = bodyDisplayName(parentName);
+    }
+    return trackedBodyPhaseText(name, (1 + toSun.dot(toEye) / lengths) / 2, shadowOf);
+  }
+
   /** True when the surface view is pointed at the phase hero's own subject —
    *  the body the no-event headline is describing. */
   private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
@@ -19778,6 +20218,8 @@ export class PlanetariumMode {
     let headline: string;
     let subText: string;
     let subWarm: string | null = null;
+    // An event's line is the band's own; a phase the hero also shows is not.
+    let heroRepeats = false;
     if (event) {
       headline = PlanetariumMode.shadowEventLabel(event.spec);
       subText = this.surfaceNarrative(event.spec);
@@ -19792,19 +20234,22 @@ export class PlanetariumMode {
     } else {
       const subject = this.buildObservatorySubject();
       const phase = subject ? observatoryPhaseText(now, subject) : null;
-      headline = phase?.headline ?? `${this.landedOn.name} sky`;
-      subText = phase?.meta ?? '';
-      // A new companion is a real sight the frame cannot show: the disc is up
-      // there with its night side turned to you. Say so, or an empty frame
-      // reads as the body having failed to load. Keyed to the headline's own
-      // phase name — a "New" name spans under ~1% lit — so this line can never
-      // call a disc dark while the headline calls it a crescent.
-      if (
-        subject &&
-        phase &&
-        phase.headline.startsWith('New ') &&
-        this.isPhaseSubjectTracked(subject)
-      ) {
+      const subjectTracked = subject !== null && phase !== null && this.isPhaseSubjectTracked(subject);
+      // A lit body tracked that the hero does not describe — Phobos from
+      // Mars, which has no phase subject; Europa from Io — gets its own phase.
+      // Tracking the Sun keeps the system's line.
+      const tracked = subjectTracked ? null : this.trackedBodyPhase();
+      headline = tracked?.headline ?? phase?.headline ?? `${this.landedOn.name} sky`;
+      subText = tracked?.meta ?? phase?.meta ?? '';
+      heroRepeats = tracked === null;
+      // A new disc is a real sight the frame cannot show: it is up there with
+      // its night side turned to you. Say so, or an empty frame reads as the
+      // body having failed to load. Keyed to the headline's own phase name —
+      // a "New" name spans only the thinnest few percent — and only for the
+      // body tracked, so this line can never call a disc dark while the
+      // headline calls it a crescent.
+      const trackedHeadline = tracked?.headline ?? (subjectTracked ? phase?.headline ?? '' : '');
+      if (trackedHeadline.startsWith('New ')) {
         subText += ' — its unlit side faces you, so the disc is dark';
       }
     }
@@ -19862,6 +20307,7 @@ export class PlanetariumMode {
     const state: SurfaceHudState = {
       eyebrow: `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
+      heroRepeats,
       subText,
       subWarm,
       whenText: formatObservatoryClock(now),
@@ -19877,6 +20323,19 @@ export class PlanetariumMode {
       swapLabel: companion ? `Switch to ${bodyDisplayName(companion.name)}` : null,
     };
     this.observatoryHud.render(state);
+    this.surfaceAimLiftGoalPx = this.measureSurfaceAimLiftPx();
+  }
+
+  /** The aim lift the open phone sheet asks for, from the strip of sky the
+   *  HUD just measured between its chips and its band. Nothing on desktop,
+   *  where the panel stands beside the sky, nor while the tour frames the
+   *  picture itself. */
+  private measureSurfaceAimLiftPx(): number {
+    if (this.tutorial || !this.observatoryPanel.sheetFormActive()) return 0;
+    const canvas = this.renderer.domElement;
+    const canvasTop = canvas.getBoundingClientRect().top;
+    const free = this.observatoryHud.freeSkyPx();
+    return surfaceAimLiftPx(free.top - canvasTop, free.bottom - canvasTop, canvas.clientHeight);
   }
 
   /**
@@ -20253,15 +20712,17 @@ export class PlanetariumMode {
         ? { startUtcMs: lastPhase.utcMs, peakUtcMs: lastPhase.utcMs, endUtcMs: lastPhase.utcMs }
         : null;
     const fromUtcMs = stepperSearchFromUtcMs(parkedPhase, this.timeState.currentUtcMs, direction);
-    const found = findEvent(type, new Date(fromUtcMs), direction);
-    if (!found) {
+    // Full and new moon of the Moon as drawn (lunarPhase.ts), so the jump
+    // lands on the syzygy the scene shows.
+    const foundUtcMs = findLunarPhaseEvent(type, fromUtcMs, direction);
+    if (foundUtcMs === null) {
       this.notification.show('No event found within the search range');
       return;
     }
-    this.lastPhaseJump = { type, utcMs: found.getTime() };
+    this.lastPhaseJump = { type, utcMs: foundUtcMs };
     // Same park-and-watch policy as the shadow jumps.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
-    this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
+    this.setCurrentUtcMs(foundUtcMs - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
     // A full-moon jump can land inside a coinciding lunar eclipse. Adopt it:
     // the HUD then narrates the eclipse over the phase framing (same body,
@@ -20297,7 +20758,7 @@ export class PlanetariumMode {
     // phase jump can still land inside a coinciding eclipse, so it gets the
     // same hand-off.
     this.notification.show(
-      `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}` +
+      `${formatUtcLabel(foundUtcMs)} — ${OBSERVATORY_EVENT_LABELS[type]}` +
         this.observatoryJumpHandoff(),
     );
   }
@@ -20387,6 +20848,10 @@ export class PlanetariumMode {
         if (!moonMesh || !systemGroup) return null;
         return out.copy(systemGroup.position).add(moonMesh.mesh.position);
       }
+      case 'planet': {
+        const planet = this.planetMeshByName.get(target.planetName);
+        return planet ? out.copy(planet.group.position) : null;
+      }
     }
   }
 
@@ -20407,6 +20872,8 @@ export class PlanetariumMode {
             .radiusAU ?? 0
         );
       }
+      case 'planet':
+        return this.planetMeshByName.get(target.planetName)?.data.radiusAU ?? 0;
     }
   }
 
@@ -20495,6 +20962,13 @@ export class PlanetariumMode {
     // event; plain "Look up" frames the companion subject.
     const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
     this.surfaceTracking = true;
+    // A fresh entry starts on the centre and eases to the free sky once the
+    // HUD has measured it; a lift left from an earlier visit would otherwise
+    // drift the first frames. A re-point keeps the lift it is already at.
+    if (this.landedView !== 'surface') {
+      this.surfaceAimLiftGoalPx = 0;
+      this.surfaceAimLiftAppliedPx = 0;
+    }
     // Fresh target, fresh marker: the hysteresis band must not inherit the
     // previous target's brackets/reticle state across entries/jumps/swaps.
     this.surfaceMarkerKind = 'brackets';
@@ -20504,7 +20978,7 @@ export class PlanetariumMode {
     const entryFov = entryFovDeg(
       this.surfaceTargetAngularDiameterDeg(this.surfaceTarget),
       context,
-      this.surfaceTarget.kind === 'sun',
+      this.surfaceTarget.kind === 'sun' || this.surfaceTarget.kind === 'planet',
     );
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {
@@ -20607,6 +21081,7 @@ export class PlanetariumMode {
     // the way out, or the cruise sky would carry a lifted faint end for a beat.
     this.starGain = 1;
     if (this.starfield) setStarfieldGain(this.starfield, 1);
+    this.updatePlanetPointsForCamera(); // blanks the planet points
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceSpotPosed = null;
@@ -20636,16 +21111,19 @@ export class PlanetariumMode {
     // A half-degree disc at 10° FOV doesn't want a 14px DOM label on it.
     // #planet-labels also hosts the Sun label; constellation labels stay
     // (they're the sky itself). Un-hiding on surface exit still respects the
-    // "Planet labels" setting.
-    const show = !hidden && this.showBodyLabels;
-    const planetLabelsEl = document.getElementById('planet-labels');
-    if (planetLabelsEl) planetLabelsEl.style.display = show ? '' : 'none';
-    if (this.moonLabelContainer) this.moonLabelContainer.style.display = show ? '' : 'none';
+    // "Planet labels" setting. Inside the surface view the planet layer comes
+    // back for the planets drawn as points (renderSurfacePlanetLabels). The
+    // containers' display has one writer, syncWorldLabelContainers, which
+    // reads the view from landedView (already switched by both callers).
+    this.syncWorldLabelContainers();
     // The marker sprites are Three.js objects owned by the renderLabels loop,
     // which surface view skips — clear them only when nothing should paint them
     // (entering surface view, or both the label and marker flags off). Exiting
     // with labels off but markers on leaves them for the pipeline to revive.
     if (hidden || (!this.showBodyLabels && !this.showBodyMarkers)) this.planetLabels?.hideAll();
+    // The surface view shows this layer again for its planet points' names
+    // (renderSurfacePlanetLabels), and the Sun's label lives in it.
+    if (hidden) this.sunLabel.hide();
   }
 
   /** Drag look-around: content follows the finger; any drag breaks tracking. */
@@ -20811,11 +21289,28 @@ export class PlanetariumMode {
     // up to ~20° off-target). Parallel-transport a tangent up instead; it is
     // seeded from the camera's current up on entry/re-point/resume so
     // tracking never starts with a roll snap.
+    this.surfaceAimLiftAppliedPx +=
+      (this.surfaceAimLiftGoalPx - this.surfaceAimLiftAppliedPx) * (1 - Math.exp(-dt / SURFACE_AIM_EASE_S));
     if (this.surfaceTracking) {
       const forward = this.tmpSurfaceZenith.copy(targetPos).sub(this.camera.position);
       if (forward.lengthSq() > 0) forward.normalize();
       this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
       this.camera.lookAt(targetPos);
+      // The lift: turn the camera down by the view angle that shows the
+      // target that far up the finished frame, through the lens map the
+      // picture is drawn with. Recomputed every frame from the live FOV, so a
+      // pinch keeps the target where it is.
+      if (this.surfaceAimLiftAppliedPx > 0.05) {
+        const lens = this.camera.userData.lens as { strength: number; effectiveStrength?: number } | undefined;
+        const viewportHeight = Math.max(1, this.renderer.domElement.clientHeight);
+        this.camera.rotateX(
+          -viewAngleAtOutputNdcY(
+            (2 * this.surfaceAimLiftAppliedPx) / viewportHeight,
+            displayFovDeg(this.camera),
+            lens ? lens.effectiveStrength ?? lens.strength : 0,
+          ),
+        );
+      }
     }
 
     // The surface camera is now fully posed for this frame. Refresh its world
@@ -22165,6 +22660,8 @@ export class PlanetariumMode {
       // photometry is honest naked-eye sky.
       if (willDraw) this.updateMoonDotsForCamera();
     }
+    if (willDraw) this.updatePlanetPointsForCamera();
+    if (willDraw && !mapOpen && this.landedView === 'surface') this.renderSurfacePlanetLabels();
     // After the surface re-pin: the Sun metering (screen position, occlusion,
     // corona gate) must read this frame's camera pose, not last frame's.
     // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the
@@ -22251,6 +22748,11 @@ export class PlanetariumMode {
       // here and back into restoreState, and an unlabeled one would be read
       // as legacy and re-rotate the ship on every tutorial exit or tool return.
       headingBasis: 'ecliptic',
+      // The same for the positions it was saved against, and in cruise the
+      // body the ship rides with (saveAnchor.ts): a restore puts the ship
+      // back beside that body wherever the positions have moved it.
+      positionModel: POSITION_MODEL,
+      rideAnchor: this.captureRideAnchor(),
     };
     return this.journeyForSave(journey);
   }
@@ -22346,6 +22848,21 @@ export class PlanetariumMode {
     if (!persistPreference(setting, value)) this.preferencesPersisted = false;
   }
 
+  /** The body the ship rides with in cruise and its offset from it, for a
+   *  save (saveAnchor.ts); none when landed or riding nothing. */
+  private captureRideAnchor(): RideAnchor | undefined {
+    if (this.landedOn) return undefined;
+    const body = this.ride.dominantKey;
+    if (!body) return undefined;
+    const parentPlanet = MOONS.find((moon) => moon.name === body)?.parentPlanet;
+    return rideAnchorFor(
+      body,
+      parentPlanet,
+      { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
+      this.timeState.currentUtcMs,
+    ) ?? undefined;
+  }
+
   private restoreState(saved: PlanetariumState) {
     // Clear + cut: a restore reposes the whole journey absolutely.
     clearArrivalLook(this.cruiseAim);
@@ -22359,6 +22876,13 @@ export class PlanetariumMode {
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
+    // Saved in cruise beside a body: back beside it, where it is now.
+    const anchoredAU = new THREE.Vector3();
+    if (!saved.landedOn && saved.rideAnchor && anchoredShipPositionAU(saved.rideAnchor, saved.astroTimeUtcMs, anchoredAU)) {
+      this.player.posX = anchoredAU.x;
+      this.player.posY = anchoredAU.y;
+      this.player.posZ = anchoredAU.z;
+    }
     // Saves written before the flight frame moved onto the ecliptic hold
     // scene-equatorial angles; convert at APPLY so the ship still aims at the
     // same world direction (unconverted, a saved close approach would miss

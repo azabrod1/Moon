@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import html from '../../index.html?raw';
 import {
   GLASS_MAX_RECTS, GLASS_VOLATILE_DRAWS, GlassRegistry, glassFrameOutcome, blocksBackdrop, boxToBuffer, clampCornerRadii, glassCoverage,
@@ -147,7 +150,16 @@ describe('glass blurs outside index.html', () => {
   // The dormant flight mode builds its HUD with inline styles; it keeps the
   // browser's blur, deliberately. Any other blur in code would be one the
   // registry never hears of.
-  const sources = import.meta.glob(['../**/*.ts', '!../**/*.test.ts'], { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+  //
+  // Read from disk, keyed by the path from src/app: an eager
+  // import.meta.glob of every source as ?raw sent all 316 files through the
+  // module pipeline when the file was collected, 3.4 s for a text search.
+  const srcDir = fileURLToPath(new URL('..', import.meta.url));
+  const sources: Record<string, string> = {};
+  for (const path of readdirSync(srcDir, { recursive: true }) as string[]) {
+    if (!path.endsWith('.ts') || path.endsWith('.test.ts')) continue;
+    sources[`../${path.split(sep).join('/')}`] = readFileSync(join(srcDir, path), 'utf8');
+  }
   const CSS_ONLY = new Set(['../moonFlight/FlightInput.ts', '../moonFlight/FlightHUD.ts', '../moonFlight/MoonFlightMode.ts']);
 
   it('are only the flight HUD\'s', () => {

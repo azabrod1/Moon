@@ -297,6 +297,10 @@ void main() {
  *  rebased so that reference look is what every frame shape now draws. */
 export const SUN_VEIL_SCALE_H = 0.0314;
 export const SUN_VEIL_BETA = 1.12;
+/** The wash's peak HDR contribution at frame centre (`uVeilStrength`), before
+ *  the controller's per-frame amount and any scale the app asks for
+ *  (PlanetariumMode.setVeilScale). */
+export const SUN_VEIL_STRENGTH = 1.4;
 
 export const sunGlareFragmentShader = /* glsl */ `
 uniform float uExtent;

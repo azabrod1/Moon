@@ -162,7 +162,7 @@ describe('the Display page', () => {
     expect(pageIds.filter((id) => !pageRead.has(id) && !segmentIds.has(id))).toEqual([]);
   });
 
-  it('gives Real and Brightened a segment each, both always offered', () => {
+  it('gives True to life and Lit up a segment each, both always offered', () => {
     for (const id of segmentIds) expect(displayPage, id).toContain(`id="${id}"`);
     for (const mode of NIGHT_SIDES) expect(displayPage).toContain(`data-value="${mode}"`);
     // The markup's own checked segment is the default, so the page reads right
@@ -173,7 +173,7 @@ describe('the Display page', () => {
 
   it('describes the group by the note under it', () => {
     expect(displayPage).toContain('aria-describedby="settings-night-sides-note"');
-    expect(displayPage).toContain('role="radiogroup" aria-label="Night sides"');
+    expect(displayPage).toContain('role="radiogroup" aria-label="Dark side lighting"');
   });
 
   it('carries its value on the root row, the default in the markup', () => {

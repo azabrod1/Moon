@@ -11,6 +11,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
+import { createRetro } from './retro';
 import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
@@ -109,6 +110,7 @@ import {
   setSessionHazeCache, type HazeProbe,
 } from './app/hazeCache';
 import { GlassRegistry, glassFrameOutcome, type GlassElement, type GlassStyle } from './app/glassRects';
+import { clipWorldLabelsAroundGlass } from './app/labelGlassClip';
 import {
   installSeaWindMap, loadSeaWindMap, parseSeaWindMapParam, parseSeaWindParam, seaWindMapSource,
   seaWindTexture, seaWindTextureFrom, setSeaWindMips,
@@ -125,6 +127,9 @@ import {
 import { applyDesignFov, displayFovDeg, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
+import { loadFittedEphemeris } from './planetarium/world/ephemerisLoader';
+import { fittedEphemerisInstalled } from './astronomy/fittedEphemeris';
+import { correctedMoonNames } from './astronomy/moonCorrections';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { safeAreaInsets } from './shared/dom';
 import { onFullscreenChange } from './app/fullscreen';
@@ -269,6 +274,14 @@ if (import.meta.env.DEV) {
 // tone-map-first backbuffer resample (the path incapable GPUs take) can be
 // reproduced and QA'd on a dev machine.
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
+
+// The Retro look, a fun mode kept to src/retro: a pass at the end of the
+// planetarium's composer, its own stylesheet and its own Display row.
+const retro = createRetro({
+  renderer,
+  canDraw: useBloom,
+  changed: () => { refreshQualityPin(); applySceneResolution('look'); applyRetroLook(); forcedDrawRequest = true; },
+});
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
 // `?msaa=0` is the kill switch on any build, the other counts are the dev
@@ -596,14 +609,17 @@ function qualitySceneRatioRequest(): number | null {
 let sceneRatioWarm: number | null = null;
 
 /** Write the one request every path reads: the warm-up's rung while it holds
- *  one, else the measurement pin's ratio while one stands, else the level's
- *  own. */
+ *  one, else the measurement pin's ratio while one stands, else the Retro
+ *  look's while it is on, else the level's own. */
 function updateSceneRatioRequest(): void {
   if (sceneRatioWarm !== null) {
     upscaleRenderRatio = sceneRatioWarm;
     return;
   }
-  upscaleRenderRatio = upscalePinned ? upscalePinRatio : qualitySceneRatioRequest();
+  const viewport = viewportSize();
+  upscaleRenderRatio = upscalePinned
+    ? upscalePinRatio
+    : retro.sceneRatio(viewport.width, viewport.height, getTargetPixelRatio()) ?? qualitySceneRatioRequest();
 }
 
 /**
@@ -623,15 +639,16 @@ function recomputeQualityBounds(): void {
 /**
  * Every pin that holds Dynamic idle: a measurement that owns the ratio
  * (`?upscale=`, the DEV `?ratio=` / `__moon.pinRatio`), the perf sweep's run,
- * a fixed level, and a build with no composer to re-size. Idle means no
- * interval counts and no decision is made — not that the controller forgets
- * what it learned.
+ * a fixed level, the Retro look's own ratio, and a build with no composer to
+ * re-size. Idle means no interval counts and no decision is made — not that
+ * the controller forgets what it learned.
  */
 function refreshQualityPin(): void {
   const pinned = upscalePinned
     || pixelRatioPin !== null
     || qualitySweepHold
     || qualityLevel !== 'dynamic'
+    || retro.on
     || !useBloom;
   if (pinned === qualityIdle) return;
   qualityIdle = pinned;
@@ -1327,7 +1344,21 @@ let autoExposure = true;
 // The boot builds one at module load and the first mode switch asked for the
 // same one again, which threw away every pass program only to relink it on
 // the next frame.
-let composerBuiltFor: { cam: THREE.Camera; bloom: object; enabled: boolean; lens: number } | null = null;
+let composerBuiltFor: { cam: THREE.Camera; bloom: { strength: number }; enabled: boolean; lens: number } | null = null;
+
+/** What the Retro look asks of the planetarium (src/retro/index.ts): its
+ *  share of the glow (the Sun's veil, and the bloom while the planetarium's
+ *  composer is the live one) and its own ship. All of both, and the app's own
+ *  ship, with the look off. */
+function applyRetroLook(): void {
+  const glare = retro.glare;
+  planetariumMode?.setVeilScale(glare?.veil ?? 1);
+  planetariumMode?.setShipOverride(retro.ship);
+  const built = composerBuiltFor;
+  if (bloomPass && built && built.cam === planetariumCamera) {
+    bloomPass.strength = built.bloom.strength * (glare?.bloom ?? 1);
+  }
+}
 
 function buildComposer(
   cam: THREE.Camera,
@@ -1570,12 +1601,14 @@ function buildComposer(
     composer.addPass(upscalePass);
     composer.addPass(sharpenPass);
     composer.addPass(downsamplePass);
+    composer.addPass(retro.pass(outputTargetPass));
   }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
   // Every pass exists now: the same rectangle again, this time reaching the
   // finishing pass's own target and the three sampling sites' uniforms.
   sizeComposerToScene(cam);
   applyUpscalePasses();
+  applyRetroLook();
 }
 
 /** Which side of the canvas the live frame's scene is drawn on: smaller
@@ -1633,7 +1666,9 @@ function upscaleSharpenStopsLive(): number | null {
  * covered render to hide a compile.
  */
 function applyUpscalePasses(): void {
-  const mode = sceneRatioMode();
+  // The Retro look's pass (src/retro) draws the canvas from the finishing
+  // pass's own target: none of the resamples runs, as at the native ratio.
+  const mode = retro.on ? 'native' : sceneRatioMode();
   const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {
@@ -2506,6 +2541,7 @@ function drawWorldFrame() {
     if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
   }
   if (appMode === 'planetarium') planetariumMode?.noteWorldRendered(bootRender.current === 'live');
+  retro.frame(retro.on && appMode === 'planetarium' ? planetariumMode?.prominentBodyOnScreen() ?? null : null);
   if (glass && glassRegistry) {
     // The browser's blur goes off on the frame the engine's goes on, and comes
     // back on the frame it stops: the class and the canvas land together. A
@@ -2998,6 +3034,7 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           void import('./interior/InteriorMode').catch(() => {});
           void import('./volumeCompare/VolumeCompareMode').catch(() => {});
         });
+        applyRetroLook();
       }
       debugLog('Activating Planetarium mode');
       plmActivated = false;
@@ -3686,6 +3723,8 @@ function installDevHooks() {
       planetariumMode?.devSetLensRampBand(patch) ?? null,
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     arrivalPose: () => planetariumMode?.devArrivalPose() ?? null,
+    /** The live arrival look: `keepDeg` is how far the frame-keep floor turned the camera toward the destination on the last frame (planetarium/frameKeep.ts), `trackDeg` the tracking shot's own turn. Null once the look ends. */
+    arrivalLook: () => planetariumMode?.devArrivalLook() ?? null,
     governorOwner: () => planetariumMode?.devGovernorOwner() ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     /** Lift off from a landed body the way the deck's own row does; false when not landed. */
@@ -4509,6 +4548,9 @@ async function init() {
   // promise (and surfaces the real error — this kick must not double-report,
   // and an unguarded early rejection would leak as unhandled).
   loadBrightStarCatalog().catch(() => {});
+  // The ephemeris the same way: every position comes from it, and the
+  // solar-system build waits for it (its loader never rejects).
+  void loadFittedEphemeris();
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
   // days-old bundles while looking current). It rides with the debug overlay
@@ -4518,6 +4560,14 @@ async function init() {
   if (buildEl && window.__dbgEnabled) {
     buildEl.textContent = `build ${__BUILD_TAG__}`;
     buildEl.style.display = 'block';
+    // And which positions this session runs on: a failed ephemeris or
+    // moon-corrections load is otherwise silent (the analytic models answer
+    // instead).
+    void loadFittedEphemeris().then(() => {
+      buildEl.textContent =
+        `build ${__BUILD_TAG__} · ${fittedEphemerisInstalled() ? 'JPL ephemeris' : 'analytic positions'}` +
+        ` · ${correctedMoonNames().length} moons corrected`;
+    });
   }
 
   let lastTime = performance.now();
@@ -4551,6 +4601,13 @@ async function init() {
     if (glassRegistry && glassRouteLive()) {
       glassMoved = glassRegistry.scan() || glassRegistry.moving;
       glassScannedTick = tickSeq;
+      // The engine blurs only the canvas: clip the DOM world labels out from
+      // under its panels, or they read sharp through the glass
+      // (app/labelGlassClip.ts). Written only when the panels move.
+      clipWorldLabelsAroundGlass(glassRegistry.cssBoxes(), window.innerWidth, window.innerHeight);
+    } else {
+      // The browser's own backdrop blur covers the labels.
+      clipWorldLabelsAroundGlass([], window.innerWidth, window.innerHeight);
     }
     const forced = forcedDrawRequest || glassMoved;
     forcedDrawRequest = false;

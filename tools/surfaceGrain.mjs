@@ -3,7 +3,7 @@
 // grain every fill is made of, the per-octave amplitude that ties one to the
 // other, and the coverage-gap pass built on all three. Kept apart from
 // tools/gen-moonmaps.mjs so it can be exercised on a synthetic raster without
-// a decoder in the loop (src/planetarium/surfaceGrain.test.ts).
+// a decoder in the loop (tools/surfaceGrain.test.ts).
 //
 // COVERAGE GAPS, which is what the pass at the bottom exists for. A global
 // mosaic is a patchwork of what several spacecraft happened to fly over:

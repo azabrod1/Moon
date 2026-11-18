@@ -157,6 +157,7 @@ import {
   type MapShadeState,
 } from './mapShade';
 import { computeMoonShading, type MoonShadingState } from '../../astronomy/shadows';
+import { bodyShape } from '../../astronomy/bodyShape';
 import {
   clampFollowDistanceAU,
   followBounds,
@@ -6420,6 +6421,10 @@ export class SystemMap {
     const mesh = new THREE.Mesh(this.globeGeo, globeMat);
     mesh.renderOrder = GLOBE_RENDER_ORDER;
     globe.add(mesh);
+    // A flattened body (astronomy/bodyShape) is squashed along its pole, the
+    // group's local Y, as the world draws it.
+    const flattening = bodyShape(planet.name).flattening;
+    if (flattening > 0) mesh.scale.set(1, 1 - flattening, 1);
 
     let ringMat: THREE.MeshStandardMaterial | null = null;
     let ringMesh: THREE.Mesh | null = null;

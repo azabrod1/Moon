@@ -1,7 +1,7 @@
 {
   "provenance": {
     "source": "JPL Horizons API (https://ssd.jpl.nasa.gov/api/horizons.api), EPHEM_TYPE=VECTORS, VEC_TABLE=1, REF_PLANE=ECLIPTIC, REF_SYSTEM=J2000, OUT_UNITS=AU-D, CENTER='500@10' (heliocentric), TLIST in TDB",
-    "fetchedUtc": "2026-06-10",
+    "fetchedUtc": "2026-11-17",
     "note": "Heliocentric positions at shadow-engine-predicted event instants plus post-event controls. The test re-derives the shadow-cone geometry from these JPL vectors (dot products and norms only, so the ecliptic frame is fine) and checks the classification — pinning the engine's event timing and classification against JPL positions rather than our own ephemeris. jdTdb = UTC + 69.2 s. Regenerate via the recipe in shadows.test.ts only when astronomy math changes deliberately.",
     "events": [
       {
@@ -49,134 +49,134 @@
         "afterSample": "phobos-transit-after"
       }
     ],
-    "titanScanNote": "titanEclipseScan: 2h-grid heliocentric vectors spanning ±24h around the engine's predicted 2025-01-15 Titan eclipse peak. Titan's measured element residual (5.5° ≈ 6h of orbit) exceeds the eclipse duration, so peak-instant pinning is impossible — the test instead locates JPL's true eclipse window inside this scan and bounds the engine peak against it (±8h = 1.3× the residual-derived drift)."
+    "titanScanNote": "titanEclipseScan: 2h-grid heliocentric vectors spanning ±24h around the engine's predicted 2025-01-15 Titan eclipse peak. The test checks that JPL's geometry has Titan in Saturn's shadow at exactly the samples inside the engine's eclipse window."
   },
   "samples": {
     "io-eclipse-peak": {
-      "utc": "2025-06-01T12:25:28Z",
-      "jdTdb": 2460828.01848611,
+      "utc": "2025-06-01T12:30:18Z",
+      "jdTdb": 2460828.02184259,
       "vectors": {
         "Jupiter": [
-          -0.09405489845270791,
-          5.133646427304956,
-          -0.01922068037497161
+          -0.09408053782604982,
+          5.133647152533793,
+          -0.01922010967835959
         ],
         "Io": [
-          -0.09407445126833758,
-          5.136459573400844,
-          -0.01912094636774974
+          -0.0941337451816382,
+          5.136460012071083,
+          -0.0191208619202469
         ]
       }
     },
     "io-eclipse-after": {
-      "utc": "2025-06-01T15:00:00Z",
-      "jdTdb": 2460828.12580093,
+      "utc": "2025-06-01T14:10:00Z",
+      "jdTdb": 2460828.0910787,
       "vectors": {
         "Jupiter": [
-          -0.09487465133326167,
-          5.133669561187769,
-          -0.01920243326744698
+          -0.09460941619113283,
+          5.133662088215365,
+          -0.0192083373286544
         ],
         "Io": [
-          -0.09594295833480919,
-          5.136277547385739,
-          -0.01912482807612895
+          -0.09534817168364261,
+          5.13638008822373,
+          -0.01912215935970335
         ]
       }
     },
     "europa-eclipse-peak": {
-      "utc": "2026-01-02T21:25:49Z",
-      "jdTdb": 2461043.39372917,
+      "utc": "2026-01-02T21:02:00Z",
+      "jdTdb": 2461043.37718981,
       "vectors": {
         "Jupiter": [
-          -1.707689245470046,
-          4.924883299159734,
-          0.01774901936111322
+          -1.707569780355701,
+          4.924918384384392,
+          0.01774620054255244
         ],
         "Europa": [
-          -1.709279357293345,
-          4.929059784142328,
-          0.01784547151524286
+          -1.7090357316553,
+          4.929138733030446,
+          0.01784662757608504
         ]
       }
     },
     "europa-eclipse-after": {
-      "utc": "2026-01-03T00:30:00Z",
-      "jdTdb": 2461043.52163426,
+      "utc": "2026-01-02T23:00:00Z",
+      "jdTdb": 2461043.45913426,
       "vectors": {
         "Jupiter": [
-          -1.708613067096962,
-          4.924611885499789,
-          0.01777081849555968
+          -1.708161657911899,
+          4.924744528851889,
+          0.01776016644551407
         ],
         "Europa": [
-          -1.711109102148917,
-          4.928330763454847,
-          0.01783399091143553
+          -1.710228279414342,
+          4.928712587766074,
+          0.0178401171868377
         ]
       }
     },
     "ganymede-transit-peak": {
-      "utc": "2026-03-05T11:01:21Z",
-      "jdTdb": 2461104.96007176,
+      "utc": "2026-03-05T11:01:00Z",
+      "jdTdb": 2461104.9598287,
       "vectors": {
         "Jupiter": [
-          -2.145121112559081,
-          4.775047058446599,
-          0.02815832177700469
+          -2.145119416396301,
+          4.77504772502193,
+          0.02815828107191896
         ],
         "Ganymede": [
-          -2.142187285777192,
-          4.768531860910341,
-          0.02795201672264255
+          -2.142186983339623,
+          4.768531900136035,
+          0.02795193182667551
         ]
       }
     },
     "ganymede-transit-after": {
-      "utc": "2026-03-05T14:30:00Z",
-      "jdTdb": 2461105.10496759,
+      "utc": "2026-03-05T13:20:00Z",
+      "jdTdb": 2461105.05635648,
       "vectors": {
         "Jupiter": [
-          -2.146132192593623,
-          4.774649566178912,
-          0.02818258601723116
+          -2.145792997943906,
+          4.774782948776139,
+          0.02817444588447091
         ],
         "Ganymede": [
-          -2.142393612765504,
-          4.76856028903606,
-          0.02800422993578829
+          -2.1423182719588,
+          4.768539387339274,
+          0.02798636701450739
         ]
       }
     },
     "phobos-transit-peak": {
-      "utc": "2026-06-13T13:28:55Z",
-      "jdTdb": 2461205.06254861,
+      "utc": "2026-06-10T08:55:30Z",
+      "jdTdb": 2461201.87267593,
       "vectors": {
         "Mars": [
-          1.285783430844885,
-          0.6107235657606157,
-          -0.01872963992506385
+          1.302549732978966,
+          0.5662769028683337,
+          -0.02007221398207435
         ],
         "Phobos": [
-          1.285732601077286,
-          0.610694021770722,
-          -0.01870732102758042
+          1.302498540231074,
+          0.5662482117352214,
+          -0.02004963739682533
         ]
       }
     },
     "phobos-transit-after": {
-      "utc": "2026-06-13T15:00:00Z",
-      "jdTdb": 2461205.12580093,
+      "utc": "2026-06-10T09:35:00Z",
+      "jdTdb": 2461201.90010648,
       "vectors": {
         "Mars": [
-          1.285437313005557,
-          0.6115985975318916,
-          -0.01870281515285676
+          1.302411350752595,
+          0.5666617087002275,
+          -0.02006075651517467
         ],
         "Phobos": [
-          1.285445357437504,
-          0.6115378788863949,
-          -0.01871150549586205
+          1.302380158546789,
+          0.566608817076942,
+          -0.0200498047054045
         ]
       }
     }

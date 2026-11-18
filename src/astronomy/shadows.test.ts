@@ -2,7 +2,7 @@
  * Shadow-engine goldens.
  *
  * Catalog sources (greatest-eclipse instants quoted in TD; UTC = TD − ΔT,
- * ΔT ≈ 69 s in 2025–2028 — immaterial against the ±20 min tolerances):
+ * ΔT ≈ 69 s in 2025–2028, within 0.2 s of the clock's TT − UTC):
  * - Lunar: EclipseWise (Espenak), https://www.eclipsewise.com/lunar/LEdecade/LEdecade2021.html
  * - Solar: EclipseWise (Espenak), https://www.eclipsewise.com/solar/SEdecade/SEdecade2021.html
  *
@@ -15,15 +15,16 @@
  * new instants (fetch recipe in the goldens provenance), and update both the
  * sample vectors and instants — never hand-edit the engine's outputs in.
  *
- * Timing tolerances follow the measured-tolerance discipline: M3's per-moon
- * residuals (satelliteElements.ts header) convert via each moon's mean motion
- * — Io 1.06° ≈ 7 min, Titan 5.5° ≈ 4 h — and the fixture asserts are sized
- * above the measured drift with margin.
+ * Timing tolerances follow the measured-tolerance discipline. The moons are
+ * corrected to JPL (moonCorrections.ts, tens of km at worst: under a tenth of
+ * a minute of orbit), so a fixture instant drifting by minutes means the
+ * engine changed.
  */
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   computeShadowGeometry,
+  emptyShadowGeometry,
   computeShadowConeProfileKm,
   computeConeSilhouette,
   classifyEclipse,
@@ -45,12 +46,16 @@ import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 import { getSatelliteOrbitMeta } from './satellites';
 import { KM_PER_AU } from './constants';
 import goldens from './shadows.goldens.json';
+import { raySpheroidT, SPHERE_SHAPE, type SpheroidShape } from './spheroid';
+import { bodyShape } from './bodyShape';
+import { eclipticToEquatorial } from './planetary';
+import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 const MIN = 60_000;
 const HOUR = 3_600_000;
 
 function geometryScratch(): ShadowGeometry {
-  return { axialKm: 0, missKm: 0, penumbraRadiusKm: 0, umbraRadiusKm: 0, umbraLengthKm: 0 };
+  return emptyShadowGeometry();
 }
 function circumstanceScratch(): EclipseCircumstance {
   return { classification: 'none', penumbralMagnitude: 0, umbralMagnitude: 0, antumbralMagnitude: 0 };
@@ -224,11 +229,13 @@ describe('Earth: lunar eclipses vs EclipseWise', () => {
   it.each(CASES)('finds $peakUtc as $cls', ({ from, peakUtc, cls, umag }) => {
     const event = findShadowEvent(spec, Date.parse(from), 1);
     expect(event).not.toBeNull();
-    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(20 * MIN);
+    // On the fitted ephemeris (DE441) the peak lands within 1.5 s and the
+    // magnitude within 0.004; the bounds leave room for the catalog's own
+    // rounding and the ΔT it was computed with (69 s against 69.18 s here).
+    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(5_000);
     expect(event!.classification).toBe(cls);
-    // Truncated Meeus series + the Danjon 1/85 enlargement (EclipseWise uses
-    // its own convention) land within a few hundredths of magnitude.
-    expect(Math.abs(event!.umbralMagnitude! - umag)).toBeLessThan(0.1);
+    // The Danjon 1/85 shadow enlargement; EclipseWise uses its own convention.
+    expect(Math.abs(event!.umbralMagnitude! - umag)).toBeLessThan(0.01);
   });
 
   it('finds the 2027 penumbral-only eclipses (Feb 20, Aug 17)', () => {
@@ -272,7 +279,8 @@ describe('Earth: solar eclipses vs EclipseWise', () => {
   it.each(CASES)('finds $peakUtc as $cls', ({ from, peakUtc, cls }) => {
     const event = findShadowEvent(spec, Date.parse(from), 1);
     expect(event).not.toBeNull();
-    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(20 * MIN);
+    // Within about 1 s on the fitted ephemeris; see the lunar cases.
+    expect(Math.abs(event!.peakUtcMs - Date.parse(peakUtc))).toBeLessThan(5_000);
     expect(event!.classification).toBe(cls);
   });
 
@@ -296,6 +304,12 @@ describe('Earth: solar eclipses vs EclipseWise', () => {
     }
   });
 });
+
+/** A heliocentric J2000 ecliptic vector (the goldens' frame) in the scene
+ *  frame, where a body's pole (bodyShape) is expressed. */
+function fromEcliptic(vector: number[]): THREE.Vector3 {
+  return eclipticToEquatorial(new THREE.Vector3(vector[0], vector[2], -vector[1]));
+}
 
 describe('satellite events vs JPL Horizons vectors', () => {
   const samples = goldens.samples as Record<
@@ -326,18 +340,21 @@ describe('satellite events vs JPL Horizons vectors', () => {
         [afterSample, 'none'],
       ] as const) {
         const sample = samples[sampleName];
-        const parentVec = new THREE.Vector3(...(sample.vectors[parentName] as [number, number, number]));
-        const moonVec = new THREE.Vector3(...(sample.vectors[moonName] as [number, number, number]));
+        const parentVec = fromEcliptic(sample.vectors[parentName]);
+        const moonVec = fromEcliptic(sample.vectors[moonName]);
+        const parentShape = bodyShape(parentName);
         const occluder = typedSpec.kind === 'eclipse' ? parentVec : moonVec;
         const target = typedSpec.kind === 'eclipse' ? moonVec : parentVec;
         const occluderR = radiusKmOf(parentName, typedSpec.kind === 'eclipse' ? parentName : moonName);
         const targetR = radiusKmOf(parentName, typedSpec.kind === 'eclipse' ? moonName : parentName);
 
-        const g = computeShadowGeometry(occluder, occluderR, target, geometryScratch());
+        const g = typedSpec.kind === 'eclipse'
+          ? computeShadowGeometry(occluder, occluderR, target, geometryScratch(), 1, parentShape)
+          : computeShadowGeometry(occluder, occluderR, target, geometryScratch());
         const classification =
           typedSpec.kind === 'eclipse'
             ? classifyEclipse(g, targetR, circumstanceScratch()).classification
-            : classifyShadowTransit(g, occluderR, targetR, occluder.length() * KM_PER_AU);
+            : classifyShadowTransit(g, occluderR, targetR, occluder.length() * KM_PER_AU, parentShape);
         expect(classification, `${sampleName} (JPL vectors)`).toBe(expected);
       }
     },
@@ -355,25 +372,13 @@ describe('satellite events vs JPL Horizons vectors', () => {
     },
   );
 
-  it("Titan: engine peak lands inside JPL's eclipse window (±8 h residual bound)", () => {
-    // Titan's measured element residual (5.5° ≈ 6 h of orbit, see
-    // satelliteElements.ts) exceeds the ~5 h eclipse duration, so unlike the
-    // moons above its peak instant can't be pinned directly. Instead the
-    // 2 h-grid Horizons scan in the goldens locates JPL's true eclipse window
-    // and the engine peak must fall within 8 h (1.3× the residual drift).
+  it("Titan: the engine's eclipse window is JPL's on the scan's 2 h grid", () => {
+    // The mean elements alone put Titan up to 6 h of orbit off JPL, more than
+    // the eclipse lasts; corrected, it is within seconds. So at every sample
+    // of the 2 h-grid Horizons scan around the event, JPL's geometry has Titan
+    // in Saturn's shadow exactly when the engine's window says so.
     const saturnR = 60_268;
     const titanR = getMoonsByPlanet('Saturn').find((m) => m.name === 'Titan')!.radiusKm;
-    const inEclipse: number[] = [];
-    for (const row of goldens.titanEclipseScan) {
-      const saturn = new THREE.Vector3(...(row.Saturn as [number, number, number]));
-      const titan = new THREE.Vector3(...(row.Titan as [number, number, number]));
-      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch());
-      const c = classifyEclipse(g, titanR, circumstanceScratch());
-      if (c.classification !== 'none') inEclipse.push(Date.parse(row.utc));
-    }
-    expect(inEclipse.length).toBeGreaterThan(0); // JPL confirms an eclipse in the ±24 h window
-    const jplWindowMid = (inEclipse[0] + inEclipse[inEclipse.length - 1]) / 2;
-
     const event = findShadowEvent(
       { kind: 'eclipse', parentPlanet: 'Saturn', moonName: 'Titan' },
       Date.parse('2025-01-14T00:00:00Z'),
@@ -381,7 +386,89 @@ describe('satellite events vs JPL Horizons vectors', () => {
     );
     expect(event).not.toBeNull();
     expect(event!.classification).toBe('total');
-    expect(Math.abs(event!.peakUtcMs - jplWindowMid)).toBeLessThan(8 * HOUR);
+    let inEclipseSamples = 0;
+    for (const row of goldens.titanEclipseScan) {
+      const saturn = fromEcliptic(row.Saturn as number[]);
+      const titan = fromEcliptic(row.Titan as number[]);
+      const g = computeShadowGeometry(saturn, saturnR, titan, geometryScratch(), 1, bodyShape('Saturn'));
+      const jplInEclipse = classifyEclipse(g, titanR, circumstanceScratch()).classification !== 'none';
+      const utcMs = Date.parse(row.utc);
+      expect(jplInEclipse, row.utc).toBe(utcMs >= event!.startUtcMs && utcMs <= event!.endUtcMs);
+      if (jplInEclipse) inEclipseSamples++;
+    }
+    expect(inEclipseSamples).toBeGreaterThan(0);
+  });
+});
+
+describe('a flattened occluder and target', () => {
+  // Saturn's shape, the Sun at its full 26.7° latitude over the equator.
+  const equatorialKm = 60_268;
+  const saturnPos = new THREE.Vector3(9.5, 0, 0);
+  const axis = saturnPos.clone().normalize();
+  const latitude = (26.7 * Math.PI) / 180;
+  const pole = new THREE.Vector3(Math.sin(latitude), Math.cos(latitude), 0);
+  const shape: SpheroidShape = { flattening: 1 - 54_364 / equatorialKm, poleX: pole.x, poleY: pole.y, poleZ: pole.z };
+  const projectedPole = pole.clone().addScaledVector(axis, -pole.dot(axis)).normalize();
+  const major = new THREE.Vector3().crossVectors(axis, projectedPole).normalize();
+  const across = (psiDeg: number) =>
+    major.clone().multiplyScalar(Math.cos((psiDeg * Math.PI) / 180)).addScaledVector(projectedPole, Math.sin((psiDeg * Math.PI) / 180));
+
+  it("casts cones that match exact rays to the Sun's limb, at Titan's and Iapetus's distances", () => {
+    const saturnKm = saturnPos.clone().multiplyScalar(KM_PER_AU);
+    /** Share of 36 limb points whose line from `targetKm` meets the body. */
+    const limbBlocked = (targetKm: THREE.Vector3) => {
+      const toSun = targetKm.clone().negate().normalize();
+      const first = new THREE.Vector3().crossVectors(toSun, new THREE.Vector3(0, 0, 1)).normalize();
+      const second = new THREE.Vector3().crossVectors(toSun, first);
+      let blocked = 0;
+      for (let step = 0; step < 36; step++) {
+        const angle = (2 * Math.PI * step) / 36;
+        const limb = first.clone().multiplyScalar(KM_CONSTANTS.SUN_RADIUS * Math.cos(angle))
+          .addScaledVector(second, KM_CONSTANTS.SUN_RADIUS * Math.sin(angle));
+        const origin = targetKm.clone().sub(saturnKm);
+        const toLimb = limb.sub(targetKm);
+        const t = raySpheroidT(origin.x, origin.y, origin.z, toLimb.x, toLimb.y, toLimb.z, equatorialKm, shape);
+        if (t > 0 && t < 1) blocked++;
+      }
+      return blocked / 36;
+    };
+    for (const axialKm of [1_221_870, 3_560_000]) {
+      for (const psiDeg of [0, 45, 90]) {
+        const direction = across(psiDeg);
+        const targetKm = (missKm: number) => saturnKm.clone().addScaledVector(axis, axialKm).addScaledVector(direction, missKm);
+        const edge = (inside: (blocked: number) => boolean) => {
+          let low = 0, high = 2 * equatorialKm;
+          for (let step = 0; step < 40; step++) {
+            const middle = (low + high) / 2;
+            if (inside(limbBlocked(targetKm(middle)))) low = middle; else high = middle;
+          }
+          return low;
+        };
+        const g = computeShadowGeometry(saturnPos, equatorialKm, targetKm(1000).divideScalar(KM_PER_AU), geometryScratch(), 1, shape);
+        const where = `${axialKm} km behind, ${psiDeg}° from the equator`;
+        expect(Math.abs(g.umbraRadiusKm - edge((blocked) => blocked === 1)), where).toBeLessThan(15);
+        expect(Math.abs(g.penumbraRadiusKm - edge((blocked) => blocked > 0)), where).toBeLessThan(15);
+      }
+    }
+  });
+
+  it("is touched at its outline: a shadow over the pole's flattened band misses", () => {
+    // A 200 km occluder 100,000 km sunward of Saturn, its axis 58,000 km out:
+    // inside the equator's reach, outside the pole's (54,364 km at B = 0).
+    const sideOn: SpheroidShape = { ...shape, poleX: 0, poleY: 1, poleZ: 0 };
+    const target = saturnPos.clone();
+    const touch = (direction: THREE.Vector3, targetShape: SpheroidShape) => {
+      const occluder = target.clone()
+        .addScaledVector(axis, -100_000 / KM_PER_AU)
+        .addScaledVector(direction, 58_000 / KM_PER_AU);
+      const g = computeShadowGeometry(occluder, 200, target, geometryScratch());
+      return classifyShadowTransit(g, 200, equatorialKm, occluder.length() * KM_PER_AU, targetShape);
+    };
+    const polar = new THREE.Vector3(0, 1, 0);
+    const equatorial = new THREE.Vector3(0, 0, 1);
+    expect(touch(polar, SPHERE_SHAPE)).toBe('total');
+    expect(touch(polar, sideOn)).toBe('none');
+    expect(touch(equatorial, sideOn)).toBe('total');
   });
 });
 

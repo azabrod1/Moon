@@ -22,7 +22,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # No dependency's install script runs in a job that can deploy the site.
+      # The only one in the tree compiles cpu-features, a native helper of the
+      # offline texture encoder (gen-ktx2) that nothing here calls. The repo's
+      # own postinstall is skipped with them, so its one job, the patch to
+      # three, is run by name: without it the build ships unpatched three.
+      - run: npm ci --ignore-scripts
+      - run: npx patch-package
       - run: npx tsc
       - run: npm test
       # Sector tile sets ship from their own repo through jsDelivr (see

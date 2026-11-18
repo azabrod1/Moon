@@ -113,12 +113,21 @@ function augmented(archetype: SurfaceArchetype): THREE.MeshStandardMaterial {
 }
 
 const hash = (glsl: string): string => createHash('sha256').update(glsl).digest('hex');
+/** Every pin of an earlier text resolves the body scale's define off: with it
+ *  off a program is the one from before the flattened globes. */
+const withoutBodyScale = (glsl: string): string => resolveDefine(glsl, 'BODY_SCALE', false);
 
 /** The injected fragment text as a development build compiles it — both
  *  readings of every GPU-efficiency switch (app/perfSwitches.ts) — and as a
  *  production build does, the cheap reading alone; and the night shell's. */
-const DEV_FRAGMENT_HASH = '0cd987d1f37f74451ae1dc30842c0d1c6978c70e89aaed808f48496e69254648';
-const PROD_FRAGMENT_HASH = '53fd35ac9bd45ec6c5540f2699f604d28e4190f5e599fa55fec67f3c25195b55';
+const DEV_FRAGMENT_HASH = 'f57d6628dcbd7fa037224021809abdf87c65e69ef3b9d561b5e57504329f23f3';
+const PROD_FRAGMENT_HASH = 'beb2160c2be3359319229d72a26f7efb759dbc1b4c6a55612b8ea024e876f020';
+/** The same two texts with the body scale's define OFF (world/surfaceShading
+ *  BODY_SCALE), resolved as the preprocessor resolves it: the hashes the
+ *  shipped texts carried before the flattened globes, unchanged. Every pin
+ *  below is of a text with this define resolved off as well. */
+const BODY_SCALE_OFF_DEV_FRAGMENT_HASH = '0cd987d1f37f74451ae1dc30842c0d1c6978c70e89aaed808f48496e69254648';
+const BODY_SCALE_OFF_PROD_FRAGMENT_HASH = '53fd35ac9bd45ec6c5540f2699f604d28e4190f5e599fa55fec67f3c25195b55';
 /** The same two texts with the haze cache's define OFF (`?hazecache=0`,
  *  app/hazeCache.ts), resolved as the preprocessor resolves it: the hashes the
  *  shipped texts carried before the cache existed, unchanged. Every pin below
@@ -221,6 +230,22 @@ describe('the injected surface shader', () => {
       .toBe(import.meta.env.DEV ? DEV_FRAGMENT_HASH : PROD_FRAGMENT_HASH);
   });
 
+  it('is the text it was with the body scale\'s define off, after the preprocessor', () => {
+    // BODY_SCALE (world/surfaceShading) starts the cast-shadow traces from the
+    // drawn ground of a flattened globe. Every line it adds is a whole line
+    // inside its own conditional and every line it replaces stands verbatim in
+    // its #else, so with it off every surface compiles the program from before
+    // it, character for character: the hashes the shipped texts carried then.
+    const shader = compile(augmented('earth'));
+    const off = withoutBodyScale(shader.fragmentShader);
+    expect(off).not.toMatch(/BODY_SCALE|bodyPos|uBodyScale/);
+    expect(hash(off)).toBe(import.meta.env.DEV ? BODY_SCALE_OFF_DEV_FRAGMENT_HASH : BODY_SCALE_OFF_PROD_FRAGMENT_HASH);
+    expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
+    expect(shader.vertexShader).not.toContain('BODY_SCALE');
+    expect(augmented('earth').defines?.BODY_SCALE).toBe('');
+    expect(augmented('cloud').defines?.BODY_SCALE).toBe('');
+  });
+
   it('is the text it was with the haze cache\'s define off, after the preprocessor', () => {
     // HAZE_CACHE (app/hazeCache.ts) is a compile-time define, on unless
     // `?hazecache=0`. Every line it adds is a whole line inside its own
@@ -228,7 +253,7 @@ describe('the injected surface shader', () => {
     // so with it off every surface compiles the program from before the
     // cache, character for character, in either build.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(shader.fragmentShader, 'HAZE_CACHE', false);
+    const off = resolveDefine(withoutBodyScale(shader.fragmentShader), 'HAZE_CACHE', false);
     expect(off).not.toMatch(/HAZE_CACHE|uHaze|hazeSunInscatter|hazeReason/);
     expect(hash(off)).toBe(import.meta.env.DEV ? HAZE_OFF_DEV_FRAGMENT_HASH : HAZE_OFF_PROD_FRAGMENT_HASH);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -300,7 +325,7 @@ describe('the injected surface shader', () => {
     // lobe had an axis, character for character, in either build: these are
     // the two hashes the shipped texts carried then.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(resolveDefine(shader.fragmentShader, 'SEA_AXIS', false), 'HAZE_CACHE', false);
+    const off = resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'SEA_AXIS', false), 'HAZE_CACHE', false);
     expect(off).not.toMatch(/SEA_AXIS|seaAxis|seaBeckmannAxis|uniform mat3 normalMatrix/);
     expect(hash(off)).toBe(import.meta.env.DEV ? SEA_AXIS_OFF_DEV_FRAGMENT_HASH : SEA_AXIS_OFF_PROD_FRAGMENT_HASH);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -324,7 +349,7 @@ describe('the injected surface shader', () => {
     const shader = compile(augmented('earth'));
     // The cloud field's define is resolved off too: the deck's alone, off
     // under `?cloudtiles=0` (world/cloudField).
-    const off = resolveDefine(resolveDefine(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false),
+    const off = resolveDefine(resolveDefine(resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'CLOUD_FIELD', false),
       'CLOUD_SHADOW', false), 'CLOUD_LIGHT', false), 'SEA_AXIS', false), 'HAZE_CACHE', false);
     expect(off).not.toMatch(/CLOUD_SHADOW|CLOUD_LIGHT|CLOUD_FIELD/);
     expect(compile(augmented('cloud')).fragmentShader).toBe(shader.fragmentShader);
@@ -340,7 +365,7 @@ describe('the injected surface shader', () => {
     // with it off the ground, the deck and the LUT shell compile the programs
     // from before the colour table existed, character for character.
     const shader = compile(augmented('earth'));
-    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'MIE_EXACT', false), 'SEA_AXIS', false),
+    const off = resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'MIE_EXACT', false), 'SEA_AXIS', false),
       'HAZE_CACHE', false);
     expect(off).not.toMatch(/MIE_EXACT|uMieColour|getScatteringAndMieColour3D|getMieColour3D/);
     expect(hash(off)).toBe(import.meta.env.DEV ? MIE_OFF_DEV_FRAGMENT_HASH : MIE_OFF_PROD_FRAGMENT_HASH);
@@ -377,11 +402,11 @@ describe('the injected surface shader', () => {
     // The lobe along the wind (SEA_AXIS) reads the wind's axis in the same
     // chunk, so the base's text is the one with both off; the default build's
     // sea text, the lobe on and the foam off, is pinned beside it.
-    const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', false),
+    const off = resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'WHITECAPS', false), 'SEA_AXIS', false),
       'HAZE_CACHE', false);
     expect(off).not.toMatch(/WHITECAPS|FOAM_ALBEDO|seaFoam|SEA_AXIS|seaAxisWind/);
     expect(hash(off)).toBe(import.meta.env.DEV ? WHITECAPS_OFF_SEA_DEV_FRAGMENT_HASH : WHITECAPS_OFF_SEA_PROD_FRAGMENT_HASH);
-    const axisOn = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'WHITECAPS', false), 'SEA_AXIS', true),
+    const axisOn = resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'WHITECAPS', false), 'SEA_AXIS', true),
       'HAZE_CACHE', false);
     expect(axisOn).not.toMatch(/WHITECAPS|FOAM_ALBEDO|seaFoam/);
     expect(axisOn).toContain('vec4 seaWindTexel = textureGrad(uSeaWindMap, seaUv, seaDx, seaDy);');
@@ -474,20 +499,20 @@ describe('the injected surface shader', () => {
     // and nothing else.
     for (const archetype of ['earth', 'cloud'] as SurfaceArchetype[]) {
       const shader = compile(augmented(archetype));
-      const off = resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader, 'CLOUD_FIELD', false), 'SEA_AXIS', false),
+      const off = resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader), 'CLOUD_FIELD', false), 'SEA_AXIS', false),
         'HAZE_CACHE', false);
       expect(off).not.toMatch(/CLOUD_FIELD|cloudField|uCloudPage/);
       expect(hash(off), archetype).toBe(import.meta.env.DEV ? FIELD_OFF_DEV_FRAGMENT_HASH : FIELD_OFF_PROD_FRAGMENT_HASH);
       // The blank lines are all of it: each chunk read as its one newline is
       // the same text...
-      expect(resolveDefine(resolveDefine(resolveDefine(shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
+      expect(resolveDefine(resolveDefine(resolveDefine(withoutBodyScale(shader.fragmentShader).replace(CLOUD_FIELD_DECLS, '\n').replace(CLOUD_FIELD_MIX, '\n'),
         'CLOUD_FIELD', false), 'SEA_AXIS', false), 'HAZE_CACHE', false), archetype).toBe(off);
       // ...and with both chunks gone, newlines and all, the shipped text is
       // the one production compiled before the field reached it — once the
       // single-Mie colour, which came after, is resolved off as well.
       if (!import.meta.env.DEV) {
         const without = resolveDefine(resolveDefine(resolveDefine(resolveDefine(
-          shader.fragmentShader.replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
+          withoutBodyScale(shader.fragmentShader).replace(CLOUD_FIELD_DECLS, '').replace(CLOUD_FIELD_MIX, ''),
           'CLOUD_FIELD', false), 'MIE_EXACT', false), 'SEA_AXIS', false), 'HAZE_CACHE', false);
         expect(hash(without), archetype).toBe(PRE_FIELD_PROD_FRAGMENT_HASH);
       }
@@ -850,7 +875,9 @@ describe('the grade on a direct view', () => {
 
 describe('the eclipse on the ground and on the air', () => {
   it('dims both by one number, traced once', () => {
-    const glsl = compile(augmented('earth')).fragmentShader;
+    // As the program compiles: the body scale's define on (its #else holds the
+    // text from before it, a second spelling of the same one trace).
+    const glsl = resolveDefine(compile(augmented('earth')).fragmentShader, 'BODY_SCALE', true);
     // One accumulation over the casters...
     expect(glsl).toContain('sunVisible *= 1.0 - occ * dayFactor;');
     expect(glsl.match(/moonShadowOcclusion\(uMoonShadow\[i\]/g)).toHaveLength(1);

@@ -12,6 +12,9 @@ export interface PlanetData {
   semiMajorAxisAU: number;
   radiusAU: number;       // equatorial radius in AU
   radiusKm: number;
+  /** (equatorial − polar)/equatorial along the spin pole; absent is a sphere
+   *  (astronomy/bodyShape.ts). */
+  flattening?: number;
   axialTiltDeg: number;
   orbitalVelocityKmS: number;
   color: number;           // hex UI tint (deck rows, labels, orbit lines)
@@ -30,14 +33,27 @@ export interface PlanetData {
                            // ("N₂ / O₂", "CO₂ (thin)"). Optional because the
                            // moons' catalog only names the three that have one;
                            // every planet carries it, Mercury as 'None'.
-  poleRaDeg: number;          // IAU north pole right ascension
-  poleDecDeg: number;         // IAU north pole declination
+  poleRaDeg: number;          // IAU north pole right ascension (at J2000.0)
+  poleDecDeg: number;         // IAU north pole declination (at J2000.0)
   primeMeridianDegAtJ2000: number;   // IAU prime meridian angle at J2000.0
   primeMeridianRateDegPerDay: number; // rotation rate in degrees/day
+  /** IAU terms in one precession angle N = argumentDegAtJ2000 +
+   *  argumentRateDegPerCentury · T (Neptune): α += raSinDeg · sin N,
+   *  δ += decCosDeg · cos N, W += meridianSinDeg · sin N. The pole and prime
+   *  meridian above already hold them at J2000, so a reader that wants a fixed
+   *  pole has the J2000 one; computeBodyOrientationQuaternion adds the change
+   *  since. */
+  rotationPrecession?: {
+    argumentDegAtJ2000: number;
+    argumentRateDegPerCentury: number;
+    raSinDeg: number;
+    decCosDeg: number;
+    meridianSinDeg: number;
+  };
   systemRadiusAU: number;             // radius at which speed throttle begins
 }
 
-import { KM_PER_AU } from '../../astronomy/constants';
+import { KM_PER_AU, SUN_RADIUS_KM } from '../../astronomy/constants';
 
 function kmToAU(km: number): number {
   return km / KM_PER_AU;
@@ -45,8 +61,8 @@ function kmToAU(km: number): number {
 
 export const SUN_DATA = {
   name: 'Sun',
-  radiusAU: kmToAU(696_340),     // ~0.00465 AU
-  radiusKm: 696_340,
+  radiusAU: kmToAU(SUN_RADIUS_KM),     // ~0.00465 AU
+  radiusKm: SUN_RADIUS_KM,
   color: 0xfff5e0,
 };
 
@@ -76,10 +92,12 @@ export const PLANETS: PlanetData[] = [
     moons: 0,
     description: 'Smallest planet, heavily cratered',
     atmosphere: 'None',
-    poleRaDeg: 281.0097,
-    poleDecDeg: 61.4143,
-    primeMeridianDegAtJ2000: 329.5469,
-    primeMeridianRateDegPerDay: 6.1385025,
+    // IAU 2015 (Archinal et al. 2018; NAIF pck00011), without the pole's
+    // −0.0328 T and −0.0049 T drifts or the 0.01° librations in W.
+    poleRaDeg: 281.0103,
+    poleDecDeg: 61.4155,
+    primeMeridianDegAtJ2000: 329.5988,
+    primeMeridianRateDegPerDay: 6.1385108,
     systemRadiusAU: 0.01,
   },
   {
@@ -145,10 +163,15 @@ export const PLANETS: PlanetData[] = [
     moons: 2,
     description: 'The Red Planet, with polar ice caps',
     atmosphere: 'CO₂ (thin)',
-    poleRaDeg: 317.269202,
-    poleDecDeg: 54.432516,
-    primeMeridianDegAtJ2000: 176.049863,
-    primeMeridianRateDegPerDay: 350.89198226,
+    // IAU 2015 (Archinal et al. 2018; NAIF pck00011): the constant terms and
+    // the 71,000-year terms, whose argument (79.398797°, 166.325722°,
+    // 95.391654° + 0.5042615° per century) leaves them constant over the
+    // window; without these the pole sat 1.6° off. Left out: the pole's
+    // −0.109 T and −0.058 T drifts and the sub-0.0003° short terms.
+    poleRaDeg: 317.269202 + 0.419057 * Math.sin((79.398797 * Math.PI) / 180),
+    poleDecDeg: 54.432516 + 1.591274 * Math.cos((166.325722 * Math.PI) / 180),
+    primeMeridianDegAtJ2000: 176.049863 + 0.584542 * Math.sin((95.391654 * Math.PI) / 180),
+    primeMeridianRateDegPerDay: 350.891982443297,
     systemRadiusAU: 0.01,
   },
   {
@@ -158,6 +181,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 5.203,
     radiusAU: kmToAU(71_492),
     radiusKm: 71_492,
+    flattening: 1 - 66_854 / 71_492,   // polar 66,854 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 3.13,
     orbitalVelocityKmS: 13.07,
     color: 0xa89060,
@@ -181,6 +205,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 9.588,
     radiusAU: kmToAU(60_268),
     radiusKm: 60_268,
+    flattening: 1 - 54_364 / 60_268,   // polar 54,364 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 26.73,
     orbitalVelocityKmS: 9.69,
     color: 0xbfb08a,
@@ -204,6 +229,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
+    flattening: 1 - 24_973 / 25_559,   // polar 24,973 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 97.77,
     orbitalVelocityKmS: 6.81,
     color: 0x6aa0b8,
@@ -227,6 +253,7 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,
+    flattening: 1 - 24_341 / 24_764,   // polar 24,341 km (IAU WGCCRE, 1 bar)
     axialTiltDeg: 29.56,
     orbitalVelocityKmS: 5.43,
     color: 0x2a4ab8,
@@ -237,10 +264,19 @@ export const PLANETS: PlanetData[] = [
     moons: 14,
     description: 'Deep blue ice giant, strongest winds',
     atmosphere: 'H₂ / He / CH₄',
-    poleRaDeg: 299.36,
-    poleDecDeg: 43.46,
-    primeMeridianDegAtJ2000: 249.978,
+    // IAU 2015 (NAIF pck00011): the constant terms with the precession terms
+    // (N = 357.85° + 52.316° per century) as they stood at J2000.
+    poleRaDeg: 299.36 + 0.7 * Math.sin((357.85 * Math.PI) / 180),
+    poleDecDeg: 43.46 - 0.51 * Math.cos((357.85 * Math.PI) / 180),
+    primeMeridianDegAtJ2000: 249.978 - 0.48 * Math.sin((357.85 * Math.PI) / 180),
     primeMeridianRateDegPerDay: 541.1397757,
+    rotationPrecession: {
+      argumentDegAtJ2000: 357.85,
+      argumentRateDegPerCentury: 52.316,
+      raSinDeg: 0.7,
+      decCosDeg: -0.51,
+      meridianSinDeg: -0.48,
+    },
     systemRadiusAU: 0.01,
   },
 ];

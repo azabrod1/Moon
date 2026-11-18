@@ -35,6 +35,7 @@ import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, OBLIQUITY_DEG, RAD } from './constants';
 import { PLANETARIUM_BODIES, PLANETS } from '../planetarium/planets/planetData';
+import orientationGolden from './bodyOrientation.goldens.json';
 
 function norm360(deg: number): number {
   return ((deg % 360) + 360) % 360;
@@ -135,16 +136,16 @@ describe('computeBodyPoleQuaternion (de-spin foundation)', () => {
 
   it('puts Earth\'s prime meridian at GMST (absolute rotation phase)', () => {
     // At 2000-01-01 12:00 UTC, GMST ≈ 280.46°: Greenwich points at that RA.
-    // Evaluated through ttJDFromUtcMs — the production computeBodyState path —
-    // the IAU W model lands within ~0.05°; the 0.5° tolerance absorbs the
-    // UT1/ΔT-level coarseness of the pin value. Do not tighten. This is the
+    // Earth's rotation angle now comes from the clock (earthOrientation.ts,
+    // pinned to ERFA's values there), and at J2000 it equals GMST to well
+    // under the pin's own rounding, which is the tolerance. This is the
     // absolute-phase test that no spin model could pass in the mirrored frame.
     const earth = PLANETS.find((p) => p.name === 'Earth')!;
     const jdTT = ttJDFromUtcMs(Date.UTC(2000, 0, 1, 12, 0, 0));
     const prime = new THREE.Vector3(1, 0, 0).applyQuaternion(
       computeBodyOrientationQuaternion(earth, jdTT),
     );
-    expect(prime.angleTo(raDecToVector(280.46, 0)) * RAD).toBeLessThan(0.5);
+    expect(prime.angleTo(raDecToVector(280.46, 0)) * RAD).toBeLessThan(0.005);
   });
 
   it('shares its pole axis with the spinning orientation at any time', () => {
@@ -411,35 +412,20 @@ describe('orbit-line trajectory sampling', () => {
   });
 
   it('samples an unchanged trajectory inside the element tables', () => {
-    // Vertices captured from the implementation before the clamp existed, so
-    // dates in normal use can never shift.
-    const pinned: Record<string, [number, number, number][]> = {
-      Mercury: [
-        [-0.386162580868, -0.046510443847, 0.161982283037],
-        [0.213430738183, -0.196952516747, 0.327276918536],
-        [-0.386350184923, -0.046084476307, 0.161220675913],
-      ],
-      Earth: [
-        [-0.56514561749, 0.320652791149, -0.73959296003],
-        [-0.174965414608, -0.397835177137, 0.917615889787],
-        [-0.565072428897, 0.320672885432, -0.73963930795],
-      ],
-      Pluto: [
-        [8.281972048607, 11.368945327422, -44.43617176275],
-        [-14.640470670596, -3.625333859281, 25.752389737417],
-        [8.201920610862, 11.399950209489, -44.441357394118],
-      ],
-    };
-    const vertices = [0, 3, 8];
-    for (const [name, expected] of Object.entries(pinned)) {
+    // Inside the tables the clamp must not move a line: every vertex is the
+    // body's own drawn position at that vertex's instant, a period spread
+    // evenly around the centre. (This used to pin vertices captured from the
+    // implementation, which a deliberate change to the time scale moves.)
+    const vertexCount = 8;
+    for (const name of ['Mercury', 'Earth', 'Pluto']) {
       const planet = PLANETARIUM_BODIES.find((p) => p.name === name)!;
-      const points = sampleTrajectoryLinePoints(planet, TODAY_MS, 8);
-      vertices.forEach((vertex, k) => {
-        const where = `${name} vertex ${vertex}`;
-        expect(points[vertex].x, where).toBeCloseTo(expected[k][0], 11);
-        expect(points[vertex].y, where).toBeCloseTo(expected[k][1], 11);
-        expect(points[vertex].z, where).toBeCloseTo(expected[k][2], 11);
-      });
+      const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+      const points = sampleTrajectoryLinePoints(planet, TODAY_MS, vertexCount);
+      for (const vertex of [0, 3, 8]) {
+        const vertexUtcMs = TODAY_MS + (vertex / vertexCount - 0.5) * periodMs;
+        const drawn = computeBodyPositionAU(planet, vertexUtcMs);
+        expect(points[vertex].distanceTo(drawn), `${name} vertex ${vertex}`).toBeLessThan(1e-12);
+      }
     }
   });
 });
@@ -596,6 +582,43 @@ describe('the zero-allocation out params', () => {
       expect(returned).toBe(out);
       expect(out.longitude).toBe(fresh.longitude);
       expect(out.distance).toBe(fresh.distance);
+    }
+  });
+});
+
+describe('planet rotation models against JPL Horizons', () => {
+  // Horizons' sub-Earth point: the planet posed and turned one light time
+  // back, seen from Earth's true (not drawn) centre, in each body's stated
+  // longitude convention, latitude planetodetic on its stated radii. The
+  // golden's dates are TT, turned to UTC through the app's own clock, so a
+  // future ΔT forecast is not under test.
+  it('puts the sub-Earth point where Horizons does (tools/sub-observer-golden.mjs)', () => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const earth = PLANETS.find((planet) => planet.name === 'Earth')!;
+    const lightSecondsPerAU = 499.004784;
+    const wrap = (degrees: number) => ((degrees % 360) + 540) % 360 - 180;
+    for (const row of orientationGolden.rows) {
+      const planet = PLANETS.find((candidate) => candidate.name === row.planet)!;
+      const [year, month, day] = row.utc.slice(0, 11).split('-');
+      const jdTT = Date.UTC(Number(year), months.indexOf(month), Number(day)) / 86_400_000 + 2440587.5;
+      let utcMs = (jdTT - 2440587.5) * 86_400_000;
+      for (let iteration = 0; iteration < 4; iteration++) utcMs += (jdTT - ttJDFromUtcMs(utcMs)) * 86_400_000;
+      const drawnEarth = computeBodyPositionAU(earth, utcMs);
+      const earthNow = computeBodyPositionAU(earth, utcMs + drawnEarth.length() * lightSecondsPerAU * 1000);
+      let lightMs = 0;
+      for (let iteration = 0; iteration < 4; iteration++) {
+        lightMs = computeBodyPositionAU(planet, utcMs - lightMs).distanceTo(earthNow) * lightSecondsPerAU * 1000;
+      }
+      const toEarth = earthNow.sub(computeBodyPositionAU(planet, utcMs - lightMs)).normalize()
+        .applyQuaternion(computeBodyOrientationQuaternion(planet, ttJDFromUtcMs(utcMs - lightMs)).invert());
+      // Body frame: +X longitude 0, +Y north, +Z 90° west.
+      const eastDeg = Math.atan2(-toEarth.z, toEarth.x) / DEG;
+      const centricRad = Math.asin(toEarth.y);
+      const flatteningSquared = (row.polarKm / row.equatorialKm) ** 2;
+      const latDeg = Math.atan2(Math.sin(centricRad), Math.cos(centricRad) * flatteningSquared) / DEG;
+      const label = `${row.planet} ${row.utc}`;
+      expect(Math.abs(wrap((row.eastPositive ? eastDeg : -eastDeg) - row.lonDeg)), label).toBeLessThan(0.1);
+      expect(Math.abs(latDeg - row.latDeg), label).toBeLessThan(0.1);
     }
   });
 });

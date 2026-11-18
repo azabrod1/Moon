@@ -19,6 +19,19 @@
  * lit-world treatment needs the interior). The ghost's gain is normalized by
  * the map's mean luminance so a dark-ocean Earth reads as translucent as
  * bright-banded Jupiter rather than a solid unlit ball.
+ *
+ * The giants are spheres here, though the planetarium and Look inside draw
+ * them flattened along their poles (astronomy/bodyShape). On purpose: the
+ * tool's subject is volume, and the sphere of the volumetric-mean radius
+ * (compareLogic.MEAN_RADII_KM) holds exactly the body's volume — that is the
+ * radius's definition, and what the count is computed from. The flattened
+ * shape of that volume is wider at the equator and shorter at the poles
+ * (Saturn by 3.5% and 6.6%), and the whole pour would have to know it: the
+ * solver's wall and mouth, the cap the liquid fills, the heap on it, the
+ * melt; and a flattened filler cannot be one of the solver's rigid balls.
+ * Squashing the drawn glass alone would show balls through Saturn's polar
+ * wall, and squashing the mean-radius sphere by 1 − f would take a tenth off
+ * Saturn's volume and the count's honesty with it.
  */
 import * as THREE from 'three';
 import {

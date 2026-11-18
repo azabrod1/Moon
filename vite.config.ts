@@ -25,4 +25,8 @@ export default defineConfig({
   define: {
     __BUILD_TAG__: JSON.stringify(`${buildTag} · ${buildDate}`),
   },
+  // Every suite runs on the shipped ephemeris, as the booted app does.
+  test: {
+    setupFiles: ['src/astronomy/fittedEphemerisSetup.ts'],
+  },
 });

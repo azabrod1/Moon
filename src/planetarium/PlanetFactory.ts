@@ -20,10 +20,13 @@
 import * as THREE from 'three';
 import { PLANETS, type PlanetData, SUN_DATA } from './planets/planetData';
 import { SUN_RADIUS_AU } from '../astronomy/constants';
+import { bodyShape } from '../astronomy/bodyShape';
+import type { SpheroidShape } from '../astronomy/spheroid';
 import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
 import {
   atmosphereVertexShader,
   atmosphereFragmentShader,
+  atmosphereFragmentShaderOblate,
 } from '../shared/shaders/atmosphere';
 import {
   sunGlareFragmentShader,
@@ -36,6 +39,7 @@ import {
   sunProminenceVertexShader,
   SUN_ATMOSPHERE_TINT_RGB,
   SUN_GLARE_EXTENT_SOLAR_RADII,
+  SUN_VEIL_STRENGTH,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
@@ -797,6 +801,10 @@ export function createAtmosphereMaterial(
       fx?: SurfaceShadingFx;
       sunTan?: number;
     };
+    /** Analytic tier: the body is flattened along this pole (scene space),
+     *  and its shell is squashed with it; the shell then wears the variant
+     *  that measures in the frame where both are spheres. */
+    oblate?: SpheroidShape;
   },
 ): THREE.ShaderMaterial {
   if (tier === 'lut') {
@@ -810,10 +818,17 @@ export function createAtmosphereMaterial(
       initialSunDir: opts?.initialSunDir,
     });
   }
+  const oblate = opts?.oblate && opts.oblate.flattening > 0 ? opts.oblate : null;
   return new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
-    fragmentShader: atmosphereFragmentShader,
+    fragmentShader: oblate ? atmosphereFragmentShaderOblate : atmosphereFragmentShader,
     uniforms: {
+      ...(oblate
+        ? {
+            uPoleWorld: { value: new THREE.Vector3(oblate.poleX, oblate.poleY, oblate.poleZ) },
+            uPoleStretch: { value: 1 / (1 - oblate.flattening) - 1 },
+          }
+        : {}),
       uSunDirWorld: { value: opts?.initialSunDir?.clone() ?? new THREE.Vector3(0, 0, 1) },
       alphaScale: { value: opts?.initialAlpha ?? 0.0 },
       uDayColor: { value: new THREE.Vector3(...config.dayColor) },
@@ -860,12 +875,14 @@ export function createAtmosphereMaterial(
  *  difference this change makes to a device with no float targets. */
 export const ATMOSPHERE_SHELL_RENDER_ORDER = 1;
 
-function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
+function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig, shape: SpheroidShape): THREE.Mesh {
   const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
   // alphaScale starts at 0: faded out until the per-frame distance feed runs
   // (no first-frame flash); uSunDirWorld is fed per frame the same way.
-  const mesh = new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU, 'analytic'));
+  const mesh = new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU, 'analytic', { oblate: shape }));
   mesh.renderOrder = ATMOSPHERE_SHELL_RENDER_ORDER;
+  // Squashed with the globe it wraps (the group's local Y is the pole).
+  if (shape.flattening > 0) mesh.scale.set(1, 1 - shape.flattening, 1);
   return mesh;
 }
 
@@ -1241,12 +1258,24 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
   mesh.name = `${planet.name} surface`;
+  // A flattened body (astronomy/bodyShape) draws its sphere squashed along
+  // the pole: the group's local Y. The scale is the mesh's, never the
+  // group's, which is the render scale every frame resets (and the rings'
+  // frame). The surface shader's cast-shadow traces start from the same
+  // squashed ground (uBodyScale). Normals follow through the normal matrix.
+  // Texture rows land at the latitude of the unsquashed sphere's, a fraction
+  // of the flattening off the geographic one.
+  const shape = bodyShape(planet.name);
+  if (shape.flattening > 0) {
+    mesh.scale.set(1, 1 - shape.flattening, 1);
+    fx.uBodyScale.value.set(1, 1 - shape.flattening, 1);
+  }
 
   // Atmosphere glow for planets with atmospheres
   let atmosphere: THREE.Mesh | undefined;
   const atmosConfig = ATMOSPHERES[planet.name];
   if (atmosConfig) {
-    atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
+    atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig, shape);
     atmosphere.name = `${planet.name}Atmosphere`;
     group.add(atmosphere);
   }
@@ -1388,7 +1417,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let rings: THREE.Mesh | undefined;
   let ringFx: RingShadingFx | undefined;
   if (ringCfg) {
-    const built = createPlanetRings(planet.radiusAU, ringCfg, sunTan);
+    const built = createPlanetRings(planet.radiusAU, ringCfg, sunTan, bodyShape(planet.name).flattening);
     rings = built.mesh;
     ringFx = built.fx;
     group.add(rings);
@@ -1551,7 +1580,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
       // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) is driven
       // per frame, and the support the wash needs goes into uDrawnHalfPx.
-      uVeilStrength: { value: 1.4 },
+      uVeilStrength: { value: SUN_VEIL_STRENGTH },
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
       // Veil diffraction-arm decay lengths (CSS px) and coefficient, driven

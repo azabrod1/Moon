@@ -1,8 +1,9 @@
 /**
  * Types for the map generator's texture arithmetic, hand-written because
- * tools/ sits outside the TypeScript project (tsconfig includes only src/).
- * They exist so src/planetarium/surfaceGrain.test.ts can drive the real passes
- * on a synthetic raster instead of restating what they do.
+ * tools/ sits outside the TypeScript project (tsconfig includes src/ and, of
+ * tools/, only the test beside this file). They exist so
+ * tools/surfaceGrain.test.ts can drive the real passes on a synthetic raster
+ * instead of restating what they do.
  *
  * Every raster here is one channel of a wrapping equirect map, held as a
  * Float32Array of W x H, and every distance in a spec is in DEGREES, scaled by

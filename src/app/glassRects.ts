@@ -275,6 +275,15 @@ export function blocksBackdrop(style: GlassStyle, marked: boolean): boolean {
 export const GLASS_VOLATILE_DRAWS = 8;
 
 /** What the registry remembers of one element between frames. */
+/** A panel's box as the page lays it out, in CSS pixels from the viewport's
+ *  top left. */
+export interface GlassCssBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 interface Track {
   /** Its box at the last scan of this tick, if it was glass. */
   seen: GlassRect | null;
@@ -318,6 +327,8 @@ export class GlassRegistry {
   private readonly tracks = new Map<GlassElement, Track>();
   private readonly styles = new Map<GlassElement, GlassStyle>();
   private readonly handedOver = new Set<GlassElement>();
+  /** Each element's box in CSS pixels as last read fresh (cssBoxes). */
+  private readonly cssBoxByElement = new Map<GlassElement, GlassCssBox>();
   /** What the last drawn frame drew, flattened, for the change test. */
   private drawnKey: number[] = [];
   private readonly ancestorVerdict = new Map<GlassElement, boolean>();
@@ -392,6 +403,22 @@ export class GlassRegistry {
         break;
       }
       out.push(rect);
+    }
+    return out;
+  }
+
+  /**
+   * This frame's panels the engine blurs, as CSS boxes: the world labels are
+   * DOM above the canvas, which the engine's blur never reaches, so they are
+   * clipped out under these (app/labelGlassClip.ts). Panels handed to the
+   * browser are left out, as its backdrop blur covers the labels itself.
+   */
+  cssBoxes(): GlassCssBox[] {
+    const out: GlassCssBox[] = [];
+    for (const el of this.elements) {
+      if (!this.tracks.get(el)?.seen || this.handedOver.has(el)) continue;
+      const box = this.cssBoxByElement.get(el);
+      if (box) out.push(box);
     }
     return out;
   }
@@ -594,6 +621,7 @@ export class GlassRegistry {
     const r = el.getBoundingClientRect();
     this.boxReads++;
     if (!(r.width > 0 && r.height > 0)) return null;
+    this.cssBoxByElement.set(el, { left: r.left, top: r.top, right: r.right, bottom: r.bottom });
     const mapped = boxToBuffer(r, canvas);
     if (!mapped) return null;
     // The element's own transform scale: its layout width against its box.

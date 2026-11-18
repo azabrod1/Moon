@@ -80,6 +80,9 @@ for (const T of TARGETS) {
       localStorage.clear();
       sessionStorage.clear();
       indexedDB.deleteDatabase('orbital-sim-storage');
+      // A fresh profile opens on the first-visit welcome card, which refuses
+      // the map (isHelpOpen) without being the help card dismissed below.
+      localStorage.setItem('planetarium-help-seen', '1');
     } catch { /* fresh-profile best effort */ }
   });
   const page = await context.newPage();

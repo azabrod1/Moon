@@ -390,6 +390,31 @@ export const PLANET_ARRIVAL_STANDOFF_FLOOR_AU = 2e-5;
  *  Cordelia) this is what actually binds. Unchanged from the original. */
 export const MOON_ARRIVAL_SEPARATION_CAP = 0.45;
 
+/** How far out a moon's "Land on…" prompt reaches when its rendered sphere
+ *  is too small to reach on its own: ~45,000 km, so a moon a long way from
+ *  its planet can be landed on from where it first reads as a body. */
+export const MOON_LAND_RANGE_FLOOR_AU = 0.0003;
+
+/** The share of the live moon–parent separation that floor may claim. Past
+ *  half way to its planet the ship is beside the planet, not the moon: the
+ *  bare floor reached right across the Mars system, so a teleport to Mars
+ *  (parked ~30,000 km out) was always offered Phobos (9,400 km from Mars),
+ *  and a teleport to Pluto its moons. Set above MOON_ARRIVAL_SEPARATION_CAP,
+ *  so a teleport to any moon still parks inside its own prompt's reach. */
+export const MOON_LAND_RANGE_SEPARATION_FRAC = 0.5;
+
+/** Distance from a moon's centre within which its Land prompt is offered:
+ *  three rendered radii, or the floor, held to MOON_LAND_RANGE_SEPARATION_FRAC
+ *  of the live separation from its planet. A moon farther than ~90,000 km
+ *  from its planet keeps the plain floor; only the close-in moons (Mars's,
+ *  Pluto's, the inner moonlets of Uranus and Neptune) are held in. */
+export function moonLandRangeAU(renderedRadiusAU: number, separationAU: number): number {
+  const floor = separationAU > 0
+    ? Math.min(MOON_LAND_RANGE_FLOOR_AU, separationAU * MOON_LAND_RANGE_SEPARATION_FRAC)
+    : MOON_LAND_RANGE_FLOOR_AU;
+  return Math.max(renderedRadiusAU * 3, floor);
+}
+
 /**
  * The legacy centered planet framing — the postcard: drop on the sunward
  * radial at 8 radii (floored by the collision envelope + legacy floor),

@@ -6,6 +6,7 @@ import segmented from './ui/SegmentedControl.ts?raw';
 import { QUALITY_LEVELS } from '../app/renderQuality';
 import { FRAME_RATES } from '../app/frameRateSetting';
 import { NIGHT_SIDES, nightSidesSummary, DEFAULT_NIGHT_SIDES } from '../app/nightSidesSetting';
+import { DEFAULT_LOOK, LOOKS } from '../app/retroSetting';
 
 // The ☰ panel is vanilla HTML and the TypeScript reaches it by id, so nothing
 // but a running app connects the two: a row renamed in the HTML leaves a
@@ -105,9 +106,9 @@ describe('the Graphics page', () => {
   });
 
   it('holds every control in the panel as a radiogroup of checkable radios', () => {
-    // Quality and Frame rate here, Night sides on the Display page.
+    // Quality and Frame rate here, Night sides and Look on the Display page.
     const groups = [...panelMarkup.matchAll(/role="radiogroup"[\s\S]*?<\/div>/g)].map((m) => m[0]);
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(4);
     for (const group of groups) {
       const radios = [...group.matchAll(/role="radio"/g)];
       expect(radios.length).toBeGreaterThanOrEqual(2);
@@ -137,7 +138,10 @@ describe('the Display page', () => {
     .filter((id) => id !== 'menu-page-display');
   // The segments are read by their data-value, like the Graphics page's, so
   // their ids are pinned against the setting's own list instead.
-  const segmentIds = new Set(NIGHT_SIDES.map((mode) => `settings-night-sides-${mode}`));
+  const segmentIds = new Set([
+    ...NIGHT_SIDES.map((mode) => `settings-night-sides-${mode}`),
+    ...LOOKS.map((look) => `settings-look-${look}`),
+  ]);
 
   it('lives inside the panel, behind a tier row that names it', () => {
     expect(panelMarkup).toContain('class="menu-page" data-page="display" id="menu-page-display" hidden');
@@ -152,7 +156,7 @@ describe('the Display page', () => {
   });
 
   it('declares every id the TypeScript writes into it', () => {
-    for (const id of ['settings-night-sides-seg', 'settings-night-sides-note']) {
+    for (const id of ['settings-night-sides-seg', 'settings-night-sides-note', 'settings-look-field', 'settings-look-seg', 'settings-look-note']) {
       expect(pageRead.has(id), id).toBe(true);
       expect(displayPage, id).toContain(`id="${id}"`);
     }
@@ -174,6 +178,13 @@ describe('the Display page', () => {
   it('describes the group by the note under it', () => {
     expect(displayPage).toContain('aria-describedby="settings-night-sides-note"');
     expect(displayPage).toContain('role="radiogroup" aria-label="Night sides"');
+    expect(displayPage).toContain('aria-describedby="settings-look-note"');
+    expect(displayPage).toContain('role="radiogroup" aria-label="Look"');
+  });
+
+  it('gives Modern and Retro a segment each, Modern checked in the markup', () => {
+    for (const look of LOOKS) expect(displayPage).toContain(`data-value="${look}" id="settings-look-${look}"`);
+    expect(displayPage).toContain(`aria-checked="true" data-value="${DEFAULT_LOOK}" id="settings-look-${DEFAULT_LOOK}"`);
   });
 
   it('carries its value on the root row, the default in the markup', () => {

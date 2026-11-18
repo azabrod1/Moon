@@ -72,6 +72,13 @@ export function setStarfieldPixelRatio(
   if (uniform) uniform.value = pointSpritePixelRatio(sceneRatio, outputRatio);
 }
 
+/** The smallest diameter a star is drawn at, in scene pixels: 0 for none,
+ *  the Retro look's floor otherwise (PlanetariumMode.setPointMinimumPx). */
+export function setStarfieldMinimumPx(starfield: THREE.Points, minimumPx: number): void {
+  const uniform = (starfield.material as THREE.ShaderMaterial).uniforms?.pointMinPx;
+  if (uniform) uniform.value = minimumPx;
+}
+
 /** `sceneRatio` is the ratio the stars are rasterised at, `outputRatio` the
  *  one the canvas is presented at; they differ only where the resolution
  *  levels drive the scene (see pointSpritePixelRatio). */
@@ -125,6 +132,9 @@ export function createPlanetariumStarfield(sceneRatio: number, outputRatio: numb
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       pixelRatio: { value: pointSpritePixelRatio(sceneRatio, outputRatio) },
+      // The smallest diameter a star is drawn at, in scene px: 0 (no floor)
+      // except in the Retro look (setStarfieldMinimumPx).
+      pointMinPx: { value: 0 },
       // Telescope light grasp, driven only by the surface view's narrow field.
       // Exactly 1 everywhere else, where it is a no-op on every star.
       uStarGain: { value: 1 },
@@ -143,6 +153,7 @@ export function createPlanetariumStarfield(sceneRatio: number, outputRatio: numb
         varying vec4 vLensSourceToOutputPx;
         varying float vLensSamplesPerAxis;
         uniform float pixelRatio;
+        uniform float pointMinPx;
         uniform float uStarGain;
         ${sunGlareMaskGLSL()}
         void main() {
@@ -160,7 +171,8 @@ ${lensPointSpriteVertexGLSL}
             ? 1.0 - pow(1.0 - alpha, uStarGain)
             : alpha;
           vAlpha = gained
-            * (1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position));
+            * (1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position))
+            * pointFloorLight;
         }
       `,
     fragmentShader: `

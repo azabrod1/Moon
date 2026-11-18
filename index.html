@@ -20,6 +20,17 @@
        favicon.svg if the art changes. -->
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
   <meta name="theme-color" content="#050814" />
+  <!-- The Retro look's class, before the first paint, so the loading screen
+       never flashes the modern look. Same key and same precedence as
+       app/retroSetting.ts (the URL's ?retro= first, the saved word second);
+       main takes it from there, sizing the grid (--px) once the canvas exists. -->
+  <script>
+    try {
+      const retroWord = (new URLSearchParams(location.search).get('retro') ?? 'unasked').trim().toLowerCase();
+      const retroAsked = /^(1|on|retro|)$/.test(retroWord) ? true : /^(0|off|modern)$/.test(retroWord) ? false : null;
+      if (retroAsked ?? localStorage.getItem('planetarium-look') === 'retro') document.documentElement.classList.add('retro');
+    } catch { /* storage blocked: the modern look */ }
+  </script>
   <style>
 
     /* Geist, bundled with the app (public/fonts, SIL OFL 1.1 — OFL.txt sits
@@ -5118,6 +5129,17 @@
               <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="brightened" id="settings-night-sides-brightened">Brightened</button>
             </div>
             <div class="menu-note" id="settings-night-sides-note"></div>
+          </div>
+          <!-- Hidden where the device cannot draw the Retro picture (no float
+               targets, so no composer): app/retroSetting.ts LookControl.offered. -->
+          <div class="menu-field" id="settings-look-field">
+            <div class="menu-field-label">Look</div>
+            <div class="menu-seg" role="radiogroup" aria-label="Look"
+                 aria-describedby="settings-look-note" id="settings-look-seg">
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="true" data-value="modern" id="settings-look-modern">Modern</button>
+              <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="retro" id="settings-look-retro">Retro</button>
+            </div>
+            <div class="menu-note" id="settings-look-note"></div>
           </div>
         </div>
         <!-- Who the maps, data and code came from. Static text: nothing in the

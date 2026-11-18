@@ -73,6 +73,8 @@ export class MoonDots {
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
         pixelRatio: { value: pointSpritePixelRatio(sceneRatio, outputRatio) },
+        // The smallest diameter, in scene px: 0 except in the Retro look (setMinimumPx).
+        pointMinPx: { value: 0 },
         ...(this.sunGlareMaskUniforms ?? createLensShaderUniforms()),
       },
       // The lens-aware point-sprite kernels are shared with the starfield
@@ -87,6 +89,7 @@ export class MoonDots {
         varying vec4 vLensSourceToOutputPx;
         varying float vLensSamplesPerAxis;
         uniform float pixelRatio;
+        uniform float pointMinPx;
         ${masked ? sunGlareMaskGLSL() : lensShaderGLSL}
         void main() {
           vColor = color;
@@ -94,6 +97,7 @@ export class MoonDots {
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           ${lensPointSpriteVertexGLSL}
+          vAlpha *= pointFloorLight;
           ${masked ? `vAlpha *= 1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position);` : ''}
         }
       `,
@@ -127,6 +131,12 @@ export class MoonDots {
    *  change to the output ratio, or a quality rung moving the scene ratio. */
   setPixelRatio(sceneRatio: number, outputRatio: number): void {
     this.mat.uniforms.pixelRatio.value = pointSpritePixelRatio(sceneRatio, outputRatio);
+  }
+
+  /** The smallest diameter a dot is drawn at, in scene pixels: 0 for none,
+   *  the Retro look's floor otherwise. */
+  setMinimumPx(minimumPx: number): void {
+    this.mat.uniforms.pointMinPx.value = minimumPx;
   }
 
   /** Keep source-prewarp point footprints invariant in final framebuffer px. */

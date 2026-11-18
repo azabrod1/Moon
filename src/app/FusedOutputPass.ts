@@ -642,12 +642,16 @@ export class FusedOutputPass extends OutputTargetPass {
   ): void {
     if (this.variant.box) {
       const u = this.material.uniforms;
-      // Only while this write is the canvas: the box draws at output size,
-      // and its own target is scene-sized. main never asks for it otherwise.
-      const box = this.boxWanted && this.renderToScreen;
+      // Only while this write is the canvas, or a target given its own output
+      // size (the Retro look's grid): the box draws at output size, and the
+      // pass's own target is otherwise scene-sized. main never asks for it
+      // otherwise.
+      const explicit = this.renderToScreen ? null : this.outputSize;
+      const box = this.boxWanted && (this.renderToScreen || explicit !== null);
       u.uBox.value = box ? 1 : 0;
       if (box) {
-        renderer.getDrawingBufferSize(this.bufferSize);
+        if (explicit) this.bufferSize.set(explicit.width, explicit.height);
+        else renderer.getDrawingBufferSize(this.bufferSize);
         const outW = Math.max(1, Math.floor(this.bufferSize.x));
         const outH = Math.max(1, Math.floor(this.bufferSize.y));
         // The sub-rectangle the scene was really drawn into, not its

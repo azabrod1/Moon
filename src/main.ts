@@ -11,6 +11,9 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
+import { RetroPresentPass } from './app/RetroPresentPass';
+import { RETRO_SCENE_SUPERSAMPLE, retroGrid, type RetroGrid } from './app/retroScreen';
+import { lookSetting, resolveBootLook, type Look } from './app/retroSetting';
 import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
@@ -460,6 +463,7 @@ function glassRouteLive(): boolean {
     && (import.meta.env.DEV ? perfSwitchOn('engine-glass') : true)
     && composer !== null
     && outputTargetPass instanceof FusedOutputPass
+    && !retroOn()
     && !(appMode === 'planetarium' && planetariumMode?.isMapOpen() === true);
 }
 
@@ -518,6 +522,10 @@ const maxGlTargetSize = (() => {
   return Number.isFinite(buffer) && buffer > 0 ? Math.min(texture, buffer) : texture;
 })();
 
+/** The Look row's value this session (app/retroSetting.ts): the URL's word,
+ *  else the saved one, else Modern. Up here, ahead of the quality pin that
+ *  reads it at load; the rest of the Look lives beside Night sides below. */
+let look: Look = resolveBootLook(location.search);
 let qualityLevel: QualityLevel = resolveBootQualityLevel();
 let qualityBoundsLive: QualityBounds = qualityBounds(qualityBoundsInput());
 let qualityLadderLive: QualityLadder = dynamicLadder(qualityBoundsLive);
@@ -633,6 +641,7 @@ function recomputeQualityBounds(): void {
  */
 function refreshQualityPin(): void {
   const pinned = upscalePinned
+    || (look === 'retro' && useBloom)
     || pixelRatioPin !== null
     || qualitySweepHold
     || qualityLevel !== 'dynamic'
@@ -808,6 +817,83 @@ function setNightSides(mode: NightSides): void {
   nightSides = mode;
   writeNightSides(mode);
   applyNightLift(mode);
+}
+
+// ================================================================
+// Look: Modern or Retro
+// ================================================================
+// The ☰ Display page's Look row (app/retroSetting.ts). Retro draws the
+// planetarium's frame into one small grid of big pixels (app/retroScreen.ts),
+// cuts it to 256 colours on the way to the canvas (app/RetroPresentPass.ts)
+// and puts the `retro` class and the grid's size (`--px`) on <html> for the
+// interface. Only where there is a composer: a device without float targets
+// keeps today's picture and is not offered the row. The other modes draw
+// their own pictures as ever; the interface's class reaches them too.
+
+/** The pass that shows the grid, on the planetarium's composer. */
+let retroPass: RetroPresentPass | null = null;
+const retroBufferSize = new THREE.Vector2();
+
+/** Whether a composer built for `cam` draws the Retro look. */
+function retroFor(cam: THREE.Camera): boolean {
+  return look === 'retro' && useBloom && cam === planetariumCamera;
+}
+
+/** Whether the live frame is drawn in the Retro look. */
+function retroOn(): boolean {
+  return composer !== null && retroFor(composerCamera());
+}
+
+/** The grid for the canvas as it stands. The scene is drawn 1.5 × the grid
+ *  where the finishing pass can average it down (its box), else 1:1. */
+function liveRetroGrid(): RetroGrid {
+  renderer.getDrawingBufferSize(retroBufferSize);
+  const averages = outputTargetPass instanceof FusedOutputPass
+    && outputTargetPass.variant.box === true
+    && fusedDownsampleOn();
+  return retroGrid(retroBufferSize.x, retroBufferSize.y, getTargetPixelRatio(), averages ? RETRO_SCENE_SUPERSAMPLE : 1);
+}
+
+/** Big pixels a star, moon dot, planet point or orbit line is at least drawn
+ *  across in the Retro look. Under one, the grid's box would average most of
+ *  them into black or into dashes; this is about the size the period's games
+ *  drew a star or a chart line at. */
+const RETRO_POINT_MINIMUM_BIG_PIXELS = 1.25;
+
+/** The point floor for the frame as it stands, in scene pixels: 0 outside Retro. */
+function applyRetroPointMinimum(): void {
+  const grid = retroOn() ? liveRetroGrid() : null;
+  const sceneForGrid = grid ? grid.scene.width / grid.virtual.width : 0;
+  planetariumMode?.setPointMinimumPx(
+    grid ? RETRO_POINT_MINIMUM_BIG_PIXELS * sceneForGrid : 0,
+    grid ? RETRO_POINT_MINIMUM_BIG_PIXELS * grid.cssPixel : 0,
+  );
+}
+
+/** The interface's half: the class and the size of one big pixel in CSS px.
+ *  Run after every renderer size, so `--px` follows the canvas. The inline
+ *  script in index.html has already set the class from the same setting. */
+function applyLookToPage(): void {
+  const retro = look === 'retro' && useBloom;
+  const root = document.documentElement;
+  root.classList.toggle('retro', retro);
+  if (retro) root.style.setProperty('--px', `${liveRetroGrid().cssPixel}px`);
+  else root.style.removeProperty('--px');
+}
+
+/** The Look row, changed: saved on its own key and applied from the next
+ *  frame. Nothing is rebuilt: the scene's size, the passes' enabled flags and
+ *  the page's class move (applySceneResolution), so there is no half-built
+ *  frame to cover. */
+function setLook(next: Look): void {
+  if (next === 'retro' && !useBloom) return;
+  look = next;
+  lookSetting.write(next);
+  applyLookToPage();
+  if (next === 'retro') retroPass?.warm(renderer);
+  refreshQualityPin();
+  applySceneResolution(`look ${next}`);
+  forcedDrawRequest = true;
 }
 /** True where this boot's URL named a frame rate. A capture pin then leaves
  *  the cap alone: a run under `?fps=` is a run ABOUT the pacing, and it waits
@@ -1116,6 +1202,7 @@ function getTargetPixelRatio(): number {
  *  with the upscaler on, and only for the planetarium's own composer — the
  *  other modes' composers, and the direct path, stay at the output ratio. */
 function scenePixelRatioFor(cam: THREE.Camera, outputRatio: number): number {
+  if (retroFor(cam)) return liveRetroGrid().scene.width / Math.max(1, viewportSize().width);
   return cam === planetariumCamera ? renderPixelRatio(outputRatio, upscaleRenderRatio) : outputRatio;
 }
 
@@ -1154,6 +1241,7 @@ function applyRenderResolution() {
   // the next change.
   const viewport = viewportSize();
   renderer.setSize(viewport.width, viewport.height, false);
+  applyLookToPage();
   if (composer && sceneTarget) {
     // A page zoom, a move to another monitor or a resize across the 4K
     // budget can change the sample count: retarget it and drop the GL
@@ -1196,7 +1284,8 @@ function fixedAllocationFor(cam: THREE.Camera): boolean {
   return fixedSceneAllocation
     && cam === planetariumCamera
     && qualityLevel === 'dynamic'
-    && !upscalePinned;
+    && !upscalePinned
+    && !retroFor(cam);
 }
 
 /** The ratio those targets are ALLOCATED at, as against the one being drawn. */
@@ -1227,6 +1316,19 @@ function sceneAllocationRatioFor(cam: THREE.Camera): number {
  */
 function sizeComposerToScene(cam: THREE.Camera): void {
   if (!composer) return;
+  if (retroFor(cam)) {
+    // The Retro look: the scene at the grid's own size in device pixels, and
+    // the finishing pass drawing the grid itself (app/retroScreen.ts).
+    const grid = liveRetroGrid();
+    if (grid.scene.width !== sceneAllocSize.width || grid.scene.height !== sceneAllocSize.height) {
+      composer.setSize(grid.scene.width, grid.scene.height);
+      sceneAllocSize = { width: grid.scene.width, height: grid.scene.height };
+    }
+    if (outputTargetPass) outputTargetPass.outputSize = { width: grid.virtual.width, height: grid.virtual.height };
+    applySceneViewports(grid.scene.width, grid.scene.height);
+    return;
+  }
+  if (outputTargetPass) outputTargetPass.outputSize = null;
   const viewport = viewportSize();
   const alloc = sceneTargetSize(viewport.width, viewport.height, sceneAllocationRatioFor(cam));
   if (alloc.width !== sceneAllocSize.width || alloc.height !== sceneAllocSize.height) {
@@ -1274,7 +1376,9 @@ function applySceneViewports(width: number, height: number): void {
   // Made now under a fixed allocation, because a rung change must not be the
   // first thing that ever binds it; left lazy otherwise, so a build that never
   // resamples allocates nothing.
-  const ldr = outputTargetPass?.ensureTarget(
+  // Not in the Retro look: the finishing pass's target is the grid's size
+  // there, filled edge to edge, and fits itself on every render.
+  const ldr = retroOn() ? null : outputTargetPass?.ensureTarget(
     rects.alloc.width, rects.alloc.height, fixedAllocationFor(composerCamera()),
   ) ?? null;
   for (const target of [sceneTarget, composer.renderTarget2, ldr]) {
@@ -1373,6 +1477,7 @@ function buildComposer(
   upscalePass = null;
   sharpenPass = null;
   downsamplePass = null;
+  retroPass = null;
   directLensTexture?.dispose();
   directLensTexture = null;
   screenTarget?.dispose();
@@ -1574,6 +1679,12 @@ function buildComposer(
     composer.addPass(upscalePass);
     composer.addPass(sharpenPass);
     composer.addPass(downsamplePass);
+    // The Retro look's screen (app/RetroPresentPass.ts): enabled only while
+    // the look is on, and then the last enabled pass, so three hands it the
+    // canvas. Linked now when the boot starts in the look, under the cover.
+    retroPass = new RetroPresentPass(outputTargetPass, liveRetroGrid);
+    composer.addPass(retroPass);
+    if (look === 'retro') retroPass.warm(renderer);
   }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
   // Every pass exists now: the same rectangle again, this time reaching the
@@ -1587,10 +1698,11 @@ function buildComposer(
  *  larger (averaged down). A pass costs a whole canvas of fill, so the
  *  comparison is exact — a ratio a hair off its own output ratio must read as
  *  native rather than buy two passes for nothing. */
-type SceneRatioMode = 'upscale' | 'native' | 'supersample';
+type SceneRatioMode = 'upscale' | 'native' | 'supersample' | 'retro';
 
 function sceneRatioMode(): SceneRatioMode {
   if (composer === null || composerBuiltFor?.cam !== planetariumCamera) return 'native';
+  if (retroOn()) return 'retro';
   const outputRatio = getTargetPixelRatio();
   const sceneRatio = getScenePixelRatio();
   if (sceneRatio < outputRatio - 1e-6) return 'upscale';
@@ -1638,6 +1750,20 @@ function upscaleSharpenStopsLive(): number | null {
  */
 function applyUpscalePasses(): void {
   const mode = sceneRatioMode();
+  if (retroPass) retroPass.enabled = mode === 'retro';
+  if (mode === 'retro') {
+    // The finishing pass draws the grid into its own target, averaging the
+    // larger scene there where its text carries the box, and the retro pass
+    // is the last enabled pass: none of the three resamples runs.
+    if (upscalePass) upscalePass.enabled = false;
+    if (sharpenPass) sharpenPass.enabled = false;
+    if (downsamplePass) downsamplePass.enabled = false;
+    if (outputTargetPass instanceof FusedOutputPass) {
+      outputTargetPass.setBox(outputTargetPass.variant.box === true && fusedDownsampleOn(), downsampleFilter);
+    }
+    if (upscalePass) debugLog('Upscale', upscaleState());
+    return;
+  }
   const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {
@@ -1688,6 +1814,7 @@ function applySceneResolution(why: string): void {
   const sceneRatio = getScenePixelRatio();
   sizeComposerToScene(composerCamera());
   applyUpscalePasses();
+  applyRetroPointMinimum();
   planetariumMode?.onScenePixelRatioChanged();
   debugLog('Quality', {
     why,
@@ -2984,7 +3111,11 @@ async function switchAppMode(newMode: AppMode, request?: ToolRequest): Promise<b
           },
           // The Display page's Night sides row.
           { mode: () => nightSides, set: setNightSides },
+          // And its Look row, offered only where the composer draws it.
+          { look: () => look, set: setLook, offered: () => useBloom },
         );
+        // The Retro look's point floor, for a boot that starts in it.
+        applyRetroPointMinimum();
         // Every tool entry arrives here ("How many fit?", Look inside): the
         // mode closes its own entry surfaces and snapshots the journey, then
         // this callback owns the switch, carrying the request's context.
@@ -3835,6 +3966,24 @@ function installDevHooks() {
     setNightSides: (mode: NightSides) => {
       setNightSides(mode);
       return { mode: nightSides, lift: nightLiftUniform.value };
+    },
+    /** The Look and, in Retro, the grid the frame is drawn on
+     *  (app/retroScreen.ts): block, big pixels across and down, the scene's
+     *  draw, one big pixel in CSS px, and whether the retro pass is the one
+     *  drawing the canvas. */
+    look: () => ({
+      look,
+      on: retroOn(),
+      grid: retroOn() ? liveRetroGrid() : null,
+      present: retroPass?.enabled ?? false,
+      finishingTarget: outputTargetPass?.target
+        ? `${outputTargetPass.target.width}x${outputTargetPass.target.height}` : null,
+      sceneTarget: sceneTarget ? `${sceneTarget.width}x${sceneTarget.height}` : null,
+    }),
+    /** Pick Modern or Retro, exactly as the Display page's Look row does. */
+    setLook: (next: Look) => {
+      setLook(next);
+      return look;
     },
     /** The night lift's strength, live, for a tuning sheet out of one page
      *  load: a fraction of albedo on every planetarium body's night half (0 is

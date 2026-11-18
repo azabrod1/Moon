@@ -21,6 +21,7 @@ import {
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
+  ORBIT_LINE_WIDTH_PX,
 } from './SolarSystem';
 import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
@@ -130,6 +131,7 @@ import {
   getStarColor,
   setStarfieldGain,
   setStarfieldPixelRatio,
+  setStarfieldMinimumPx,
   starfieldFaintLimitMag,
 } from './world/starfield';
 import { MoonDots } from './world/MoonDots';
@@ -593,6 +595,7 @@ import { FRAME_RATES, type FrameRate, type FrameRateControl } from '../app/frame
 import {
   NIGHT_SIDES, NIGHT_SIDES_NOTES, nightSidesSummary, type NightSides, type NightSidesControl,
 } from '../app/nightSidesSetting';
+import { LOOKS, LOOK_NOTES, type Look, type LookControl } from '../app/retroSetting';
 import {
   FRAME_RATE_NOTES, QUALITY_LEVEL_NOTES, graphicsSummary, offeredQualityLevels, qualityReadout,
 } from '../app/graphicsMenu';
@@ -2816,6 +2819,8 @@ export class PlanetariumMode {
   /** The Display page's Night sides row, owned by the entry point (it applies
    *  the value before this mode exists and saves it on its own key). */
   private readonly nightSides: NightSidesControl;
+  /** And its Look row (app/retroSetting.ts), owned the same way. */
+  private readonly look: LookControl;
   // Dev tripwire for the warm-up: program count right after it, compared a
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
@@ -2872,6 +2877,8 @@ export class PlanetariumMode {
     frameRate: FrameRateControl,
     // And the Display page's Night sides row.
     nightSides: NightSidesControl,
+    // And its Look row.
+    look: LookControl,
   ) {
     this.scene = scene;
     this.camera = camera;
@@ -2889,6 +2896,7 @@ export class PlanetariumMode {
     this.quality = quality;
     this.frameRate = frameRate;
     this.nightSides = nightSides;
+    this.look = look;
     // Read the device once, before any body loads, so anisotropy and tier
     // limits apply to the very first textures created and every later
     // decision spends the same numbers. The signals and the profile are this
@@ -3579,6 +3587,8 @@ export class PlanetariumMode {
         this.planetPointsFilled = false;
         this.scene.add(this.planetPoints.points);
       }
+      // Made after main may already have set the Retro look's floor.
+      this.applyPointMinimum();
 
       // The ☰ preferences come from their own keys, with a save from before
       // the keys existed read once more as the fallback and copied onto them.
@@ -5316,6 +5326,33 @@ export class PlanetariumMode {
    * display offers (the bounds are recomputed before this hook runs on a
    * resize) and the DEV bridge can set a level without touching the segments.
    */
+  /** The smallest diameter, in scene pixels, every star, moon dot and planet
+   *  point is drawn at: 0 except in the Retro look, whose coarse grid would
+   *  average a sub-pixel point away (main.ts, app/retroScreen.ts). */
+  private pointMinimumPx = 0;
+
+  /** And the narrowest an orbit line is drawn, in CSS px: its own width
+   *  except in the Retro look, where that is about half a big pixel and the
+   *  grid's average would break it into dashes. */
+  private orbitLineMinimumCssPx = 0;
+
+  /** Set by main whenever the look or the grid moves. */
+  setPointMinimumPx(minimumPx: number, orbitLineMinimumCssPx = 0): void {
+    this.pointMinimumPx = minimumPx;
+    this.orbitLineMinimumCssPx = orbitLineMinimumCssPx;
+    this.applyPointMinimum();
+  }
+
+  private applyPointMinimum(): void {
+    if (this.starfield) setStarfieldMinimumPx(this.starfield, this.pointMinimumPx);
+    this.moonDots?.setMinimumPx(this.pointMinimumPx);
+    this.planetPoints?.setMinimumPx(this.pointMinimumPx);
+    const lineWidth = Math.max(ORBIT_LINE_WIDTH_PX, this.orbitLineMinimumCssPx);
+    for (const line of this.solarSystem?.orbitLines ?? []) {
+      (line.material as { linewidth: number }).linewidth = lineWidth;
+    }
+  }
+
   onScenePixelRatioChanged(): void {
     if (this.menuPanel.isOpen() && this.menuPanel.page() === 'graphics') this.syncGraphicsPage();
     const sceneRatio = this.scenePixelRatio();
@@ -5323,6 +5360,7 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, sceneRatio, outputRatio);
     if (this.moonDots) this.moonDots.setPixelRatio(sceneRatio, outputRatio);
     if (this.planetPoints) this.planetPoints.setPixelRatio(sceneRatio, outputRatio);
+    this.applyPointMinimum();
     if (this.solarSystem) setPointEnergyPixelRatio(this.solarSystem.asteroidBelt, sceneRatio, outputRatio);
     // The cloud field's guard is measured in the scene target's own pixels and
     // judged in the tile ratio's (world/cloudField): one uniform, the ratio of
@@ -13493,6 +13531,11 @@ export class PlanetariumMode {
     // Night sides, on the Display page: both values are offered everywhere.
     wireSegmented(document.getElementById('settings-night-sides-seg'), (value) => {
       this.nightSides.set(value as NightSides);
+      this.syncDisplayPage();
+    });
+    // Look, on the same page: offered only where the composer can draw Retro.
+    wireSegmented(document.getElementById('settings-look-seg'), (value) => {
+      this.look.set(value as Look);
       this.syncDisplayPage();
     });
 
@@ -23384,6 +23427,13 @@ export class PlanetariumMode {
     setSegmentValue(seg, mode);
     setText('settings-night-sides-note', NIGHT_SIDES_NOTES[mode]);
     this.menuPanel.setTierValue('display', nightSidesSummary(mode));
+    const look = this.look.look();
+    const lookField = document.getElementById('settings-look-field');
+    if (lookField) lookField.hidden = !this.look.offered();
+    const lookSeg = document.getElementById('settings-look-seg');
+    setSegmentOffered(lookSeg, LOOKS);
+    setSegmentValue(lookSeg, look);
+    setText('settings-look-note', LOOK_NOTES[look]);
   }
 
   /** The rung ladder under "Now rendering": a pip per rung with the one being

@@ -1090,11 +1090,49 @@ async function sheetDragCase(context, viewport) {
   const wanted = Math.min(peek + 200, full);
   check(Math.abs(dragged - wanted) <= 12, `${tag}: a 200 px drag from ${peek} px left the sheet at ${dragged} px, expected ${wanted}`);
 
+  // A short summary must fit its contents even when opened from the full list.
+  await page.locator('#interior-legend [data-region="outerCore"]').click();
+  const summary = await settledHeight();
+  const bottomGap = await page.evaluate(() =>
+    document.getElementById('interior-panel').getBoundingClientRect().bottom
+    - document.getElementById('interior-inspector').getBoundingClientRect().bottom);
+  check(summary < full && bottomGap >= 0 && bottomGap <= 12,
+    `${tag}: summary from the full list is ${summary} px with ${bottomGap} px below its content`);
+  await page.getByRole('button', { name: 'Evidence & sources', exact: true }).click();
+  check(await settledHeight() > summary, `${tag}: the evidence page did not expand`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - summary) <= 2, `${tag}: returning from evidence did not refit the summary`);
+  await page.locator('#interior-inspector .ii-back').click();
+  check(Math.abs(await settledHeight() - full) <= 2, `${tag}: returning to the list did not restore its height`);
+
   // And back: a tap at the full height returns the sheet to its peek.
   await page.evaluate(() => document.getElementById('interior-grip').click());
   const backToPeek = await settledHeight();
   check(Math.abs(backToPeek - peek) <= 2, `${tag}: a tap at the full height left the sheet at ${backToPeek} px, expected the peek ${peek}`);
   check(await expanded() === 'false', `${tag}: the grip still reports expanded back at the peek`);
+
+  // A body with a shorter list, picked while the sheet is at full: the sheet
+  // comes down to the new list rather than keep empty glass under it, and a
+  // grab of the grip then holds it where it is instead of jumping it there.
+  await page.evaluate(() => document.getElementById('interior-grip').click());
+  await settledHeight();
+  await page.evaluate(() => window.__moon.interiorPick('Phobos'));
+  await page.waitForFunction(() => {
+    const current = window.__moon.interiorState();
+    return current.bodyId === 'Phobos' && !current.loading && window.__moon.interiorReady();
+  }, undefined, { timeout: 120000 });
+  const shortFull = await settledHeight();
+  const listGap = await page.evaluate(() =>
+    document.getElementById('interior-panel').getBoundingClientRect().bottom
+    - document.getElementById('interior-page-layers').getBoundingClientRect().bottom);
+  check(shortFull < full && listGap >= 0 && listGap <= 12,
+    `${tag}: after picking Phobos at full the sheet is ${shortFull} px with ${listGap} px below its list`);
+  const grabFrom = await gripCentre();
+  await page.mouse.move(grabFrom.x, grabFrom.y);
+  await page.mouse.down();
+  const grabbed = await panelHeight();
+  await page.mouse.up();
+  check(Math.abs(grabbed - shortFull) <= 2, `${tag}: a grab of the grip moved the sheet from ${shortFull} px to ${grabbed} px before the finger did`);
   notes.push(`${tag}: peek ${peek} full ${full}, a 200 px drag reached ${dragged}; viewOffset.y ${peekShift} to ${draggedShift}`);
   check(errors.length === 0, `${tag}: page errors: ${errors.join(' | ')}`);
   await page.close();

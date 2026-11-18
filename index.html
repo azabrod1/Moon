@@ -2662,9 +2662,9 @@
       }
       .interior-grip:active { cursor: grabbing; }
       .interior-grip span { display: block; width: 38px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.3); }
-      /* The sheet floats above the home indicator by the bar (its bottom
-         offset above), so its rows need no padding under it. */
-      .interior-scroll { padding: 0 14px 8px; }
+      /* fullHeightPx reads scrollHeight after a page change. A shorter page must
+         keep its content height even while the sheet is still tall. */
+      .interior-scroll { flex-grow: 0; padding: 0 14px 8px; }
       .interior-view { min-height: 44px; }
       .interior-scale-seg .interior-view { min-height: 44px; }
       /* The thin-layers note is a row with its link a full-height target; "more" grows its hit area around its text. */

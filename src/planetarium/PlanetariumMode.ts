@@ -170,8 +170,8 @@ import {
   latLonFromBodyDirection,
   parseCoordinates,
   raySphereDistance,
-  SITE_GAZE_ABOVE_HORIZON_DEG,
   siteFrame,
+  siteGazeAltitudeDeg,
   formatSiteCoordinates,
   siteRiseText,
   type Site,
@@ -21634,12 +21634,14 @@ export class PlanetariumMode {
     if (!this.surfaceSiteTargetDown) this.surfaceSiteRiseCache = null;
   }
 
-  /** Track from a site: the horizon level (up is the zenith), and a target
-   *  under it never looked at through the ground — the gaze holds a little
-   *  above the horizon at its azimuth while the HUD says where it went. */
+  /** Track from a site: the horizon level (up is the zenith), and the gaze
+   *  where siteGazeAltitudeDeg rests it for this field of view: on a high
+   *  target, lowered under a low one so the horizon is in the picture, and
+   *  never into the ground after a target that has set (the HUD says where
+   *  it went). */
   private aimFromSite(standing: SiteFrame, forward: THREE.Vector3): void {
     const aim = altAz(forward, standing);
-    const lookAltitude = this.surfaceSiteTargetDown ? SITE_GAZE_ABOVE_HORIZON_DEG : aim.altitudeDeg;
+    const lookAltitude = siteGazeAltitudeDeg(aim.altitudeDeg, displayFovDeg(this.camera));
     const look = directionFromAltAz(lookAltitude, aim.azimuthDeg, standing, this.tmpSiteLook);
     this.camera.up.copy(Math.abs(look.dot(standing.zenith)) > 0.999 ? standing.north : standing.zenith);
     this.camera.lookAt(this.tmpSiteSunDirection.copy(this.camera.position).add(look));

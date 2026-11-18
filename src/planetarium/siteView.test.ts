@@ -19,6 +19,7 @@ import {
   latLonFromBodyDirection,
   parseCoordinates,
   raySphereDistance,
+  siteGazeAltitudeDeg,
   horizonDipDeg,
   siteFrame,
   siteRiseText,
@@ -114,6 +115,33 @@ describe('sites', () => {
     expect(parseCoordinates('12.7')).toBeNull();
     expect(formatSpot(-2, -80)).toBe('2.0° S, 80.0° W');
     expect(formatSpot(12.7, 86.52)).toBe('12.7° N, 86.5° E');
+  });
+
+  it('bring the horizon into the frame under a low target, and centre a high one', () => {
+    const fov = 12;
+    // High: centred, the horizon nowhere near.
+    expect(siteGazeAltitudeDeg(40, fov)).toBe(40);
+    expect(siteGazeAltitudeDeg(fov, fov)).toBe(fov);
+    // Low (Earth 3.55° up from the Moon's limb): the horizon a sixth of the
+    // field under centre, the target above centre.
+    expect(siteGazeAltitudeDeg(3.55, fov)).toBeCloseTo(fov / 6, 12);
+    // Never lifted more than a quarter of the field above centre.
+    for (let altitude = 0; altitude <= 2 * fov; altitude += 0.25) {
+      expect(altitude - siteGazeAltitudeDeg(altitude, fov)).toBeLessThanOrEqual(fov / 4 + 1e-9);
+    }
+    expect(5 - siteGazeAltitudeDeg(5, fov)).toBeCloseTo(fov / 4, 12);
+    // Under the horizon: the same low gaze, so setting does not move the frame.
+    expect(siteGazeAltitudeDeg(-0.2, fov)).toBeCloseTo(fov / 6, 12);
+    expect(siteGazeAltitudeDeg(-30, fov)).toBeCloseTo(fov / 6, 12);
+    // No step anywhere, and the gaze never passes the target on the way up.
+    let previous = siteGazeAltitudeDeg(-1, fov);
+    for (let altitude = -1; altitude <= 2 * fov; altitude += 0.01) {
+      const next = siteGazeAltitudeDeg(altitude, fov);
+      expect(next - previous).toBeGreaterThanOrEqual(-1e-9);
+      expect(next - previous).toBeLessThan(0.02);
+      if (altitude >= fov / 6) expect(next).toBeLessThanOrEqual(altitude + 1e-9);
+      previous = next;
+    }
   });
 
   it('word a rise and a place the way the HUD prints them', () => {

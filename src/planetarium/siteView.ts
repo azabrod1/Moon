@@ -18,9 +18,33 @@ import { geodeticToBodyFrameKm } from '../astronomy/earthShape';
 
 const DEG = Math.PI / 180;
 
-/** Where the gaze holds, degrees above the horizon, while the tracked
- *  target is below it: the view never looks into the ground. */
-export const SITE_GAZE_ABOVE_HORIZON_DEG = 10;
+/**
+ * Where the gaze rests, as an altitude, while the view tracks a target from a
+ * site through a vertical field of `fovDeg`.
+ *
+ * A target high in the sky is simply centred: the horizon is far out of the
+ * frame. A low one is not, because centring it leaves the horizon just off
+ * the bottom edge and the picture reads as a disc on black, with nothing to
+ * say the viewer is standing anywhere. So under a low target the gaze drops
+ * until the horizon lies a sixth of the field below centre (two-thirds of
+ * the way down the picture) with the target above it. The target is never
+ * lifted more than a quarter of the field above centre, where a disc fitted
+ * to the frame still clears the top row of controls; past that the gaze
+ * eases back onto the target, reaching it a whole field up. A target under
+ * the horizon gets the same low gaze at its azimuth: the horizon it will
+ * rise over, in the same place in the frame, so the picture does not jump
+ * as it sets.
+ *
+ * Continuous in both arguments, so a running clock or a pinch moves the
+ * framing smoothly, and never above the target.
+ */
+export function siteGazeAltitudeDeg(targetAltitudeDeg: number, fovDeg: number): number {
+  const low = fovDeg / 6;
+  const lift = fovDeg / 4;
+  if (targetAltitudeDeg >= fovDeg) return targetAltitudeDeg;
+  if (targetAltitudeDeg <= low + lift) return low;
+  return low + ((targetAltitudeDeg - low - lift) * (fovDeg - low)) / (fovDeg - low - lift);
+}
 
 export interface Site {
   /** The body stood on: a planet's or a moon's catalog name. */

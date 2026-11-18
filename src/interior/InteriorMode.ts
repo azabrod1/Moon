@@ -1723,13 +1723,21 @@ export class InteriorMode {
     this.setSheetHeight(this.peekHeightPx(), { snap: false, frameAtOnce: true });
   }
 
-  /** The panel's content is what sets the sheet's resting height — a body with
-   *  rings has a taller footer — so a sheet still at rest follows the content
-   *  when it turns over. One the reader has drawn taller stays where they put it. */
+  /** The panel's content sets both of the sheet's ends — a body with rings has a
+   *  taller footer, a body with few layers a shorter list — so a sheet still at
+   *  rest follows the content when it turns over, and one left taller than the
+   *  new content comes down to it: it would show empty glass under the last
+   *  row, and the next grab of the grip would clamp it there in one jump.
+   *  Anywhere between the two ends stays where the reader put it. */
   private syncSheetToContent(): void {
     if (!isPhoneViewport() || this.sheetDrag !== null) return;
     const peekPx = this.peekHeightPx();
-    if (this.sheetHeightPx <= peekPx) this.setSheetHeight(peekPx, { snap: true });
+    if (this.sheetHeightPx <= peekPx) {
+      this.setSheetHeight(peekPx, { snap: true });
+      return;
+    }
+    const fullPx = this.fullHeightPx();
+    if (this.sheetHeightPx > fullPx) this.setSheetHeight(fullPx, { snap: true });
   }
 
   /** Leaving the inspector: the sheet goes back to the height the reader had. */

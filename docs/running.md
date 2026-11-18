@@ -11,6 +11,7 @@ Starting points and diagnosis
 - `?debug=1` shows the error and debug overlay. It works on a phone too.
 - `?nosw=1` removes the service worker and its cached files.
 - `?nofloat=1` uses the simpler render path, with no glow.
+- `?retro=1` (or `0`) starts in the Retro look, or out of it, for one load (`src/retro/index.ts`).
 
 Picture quality and frame rate
 - `?quality=low|medium|dynamic` starts at that graphics level (`app/renderQuality.ts`). DEV also takes `high`.
@@ -42,7 +43,7 @@ Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)
 - DEV tuning: `?glint=<roughness>[,<scale>[,<cap>]]` for one sea roughness, `?seawindmap=<url>` for another wind map (a picture with the speed in red and the axis in green and blue, as `gen:seawind --png` writes it; a grey picture or raw bytes is the speed alone), `?seawindmips=0` to read the wind map at full detail at every distance, `?haze=<0..1>[,<0..1>[,<0..1>]]` for how much haze shows straight down, then toward the rim, then where the full haze at the very limb starts (1 for none), `?aerosol=<amount>` for the air's dust and salt (`world/atmosphereModel.ts`), `?airfade=<seconds>` for how long the air takes to come in once its tables are ready (8 by default, 0 for all at once).
 
 Night, lens and flight
-- `?nightexposure=0` turns off the dimming of night sides while daylight is in view (`world/nightExposure.ts`). `?nightsides=real|brightened` starts with that Night sides setting.
+- `?nightexposure=0` turns off the dimming of night sides while daylight is in view (`world/nightExposure.ts`). `?nightsides=real|brightened` starts with the Display page's "Dark side of planets and moons" at True to life (`real`) or Lit up (`brightened`).
 - `?ride=0` stops the ship riding along with a nearby planet (`planetarium/rideFrame.ts`).
 - `?framekeep=0` lets a teleport arrive without turning the camera to keep the destination on screen, as before (`planetarium/frameKeep.ts`). It only matters on narrow screens, such as a phone held upright.
 - `?orbitanchor=0` draws orbit lines the old way (`planetarium/orbitLineAnchor.ts`).

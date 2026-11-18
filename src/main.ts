@@ -11,6 +11,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { DownsamplePass, OutputTargetPass, SharpenPass, UpscalePass, type DownsampleFilter } from './app/UpscalePass';
+import { createRetro } from './retro';
 import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
@@ -273,6 +274,14 @@ if (import.meta.env.DEV) {
 // tone-map-first backbuffer resample (the path incapable GPUs take) can be
 // reproduced and QA'd on a dev machine.
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
+
+// The Retro look, a fun mode kept to src/retro: a pass at the end of the
+// planetarium's composer, its own stylesheet and its own Display row.
+const retro = createRetro({
+  renderer,
+  canDraw: useBloom,
+  changed: () => { refreshQualityPin(); applySceneResolution('look'); forcedDrawRequest = true; },
+});
 
 // Multisampling for the composer's scene target (app/renderResolution.ts):
 // `?msaa=0` is the kill switch on any build, the other counts are the dev
@@ -600,14 +609,17 @@ function qualitySceneRatioRequest(): number | null {
 let sceneRatioWarm: number | null = null;
 
 /** Write the one request every path reads: the warm-up's rung while it holds
- *  one, else the measurement pin's ratio while one stands, else the level's
- *  own. */
+ *  one, else the measurement pin's ratio while one stands, else the Retro
+ *  look's while it is on, else the level's own. */
 function updateSceneRatioRequest(): void {
   if (sceneRatioWarm !== null) {
     upscaleRenderRatio = sceneRatioWarm;
     return;
   }
-  upscaleRenderRatio = upscalePinned ? upscalePinRatio : qualitySceneRatioRequest();
+  const viewport = viewportSize();
+  upscaleRenderRatio = upscalePinned
+    ? upscalePinRatio
+    : retro.sceneRatio(viewport.width, viewport.height, getTargetPixelRatio()) ?? qualitySceneRatioRequest();
 }
 
 /**
@@ -627,15 +639,16 @@ function recomputeQualityBounds(): void {
 /**
  * Every pin that holds Dynamic idle: a measurement that owns the ratio
  * (`?upscale=`, the DEV `?ratio=` / `__moon.pinRatio`), the perf sweep's run,
- * a fixed level, and a build with no composer to re-size. Idle means no
- * interval counts and no decision is made — not that the controller forgets
- * what it learned.
+ * a fixed level, the Retro look's own ratio, and a build with no composer to
+ * re-size. Idle means no interval counts and no decision is made — not that
+ * the controller forgets what it learned.
  */
 function refreshQualityPin(): void {
   const pinned = upscalePinned
     || pixelRatioPin !== null
     || qualitySweepHold
     || qualityLevel !== 'dynamic'
+    || retro.on
     || !useBloom;
   if (pinned === qualityIdle) return;
   qualityIdle = pinned;
@@ -1574,6 +1587,7 @@ function buildComposer(
     composer.addPass(upscalePass);
     composer.addPass(sharpenPass);
     composer.addPass(downsamplePass);
+    composer.addPass(retro.pass(outputTargetPass));
   }
   composerBuiltFor = { cam, bloom, enabled, lens: lensRequestedStrength };
   // Every pass exists now: the same rectangle again, this time reaching the
@@ -1637,7 +1651,9 @@ function upscaleSharpenStopsLive(): number | null {
  * covered render to hide a compile.
  */
 function applyUpscalePasses(): void {
-  const mode = sceneRatioMode();
+  // The Retro look's pass (src/retro) draws the canvas from the finishing
+  // pass's own target: none of the resamples runs, as at the native ratio.
+  const mode = retro.on ? 'native' : sceneRatioMode();
   const easu = mode === 'upscale' && upscaleFilter === 'easu';
   if (upscalePass) upscalePass.enabled = easu;
   if (sharpenPass) {
@@ -2510,6 +2526,7 @@ function drawWorldFrame() {
     if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
   }
   if (appMode === 'planetarium') planetariumMode?.noteWorldRendered(bootRender.current === 'live');
+  retro.frame(retro.on && appMode === 'planetarium' ? planetariumMode?.prominentBodyOnScreen() ?? null : null);
   if (glass && glassRegistry) {
     // The browser's blur goes off on the frame the engine's goes on, and comes
     // back on the frame it stops: the class and the canvas land together. A

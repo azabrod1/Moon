@@ -1,8 +1,9 @@
 name: Generator tests
 
-# tools/*.test.ts: the map generators' own tests. The code they check never
+# tools/*.test.ts: the generators' own tests. The code they check never
 # ships — tools/gen-moonmaps.mjs is the only importer of tools/surfaceGrain.mjs,
-# and the maps it writes are committed — and the suite takes most of a minute,
+# tools/gen-pixel-fonts.mjs the only one of tools/pixelFont.mjs, and what they
+# write is committed — and the suite takes most of a minute,
 # so it runs when that code changes, beside the deploy instead of in front of
 # it. A generator test that pins something the app reads stays in src/, where
 # the deploy runs it (see docs/testing.md).
@@ -12,6 +13,8 @@ on:
     paths:
       - 'tools/surfaceGrain.*'
       - 'tools/gen-moonmaps.mjs'
+      - 'tools/pixelFont.*'
+      - 'tools/gen-pixel-fonts.mjs'
       - 'tools/*.test.ts'
       - 'package-lock.json'
       - '.github/workflows/tools-tests.yml'
@@ -19,6 +22,8 @@ on:
     paths:
       - 'tools/surfaceGrain.*'
       - 'tools/gen-moonmaps.mjs'
+      - 'tools/pixelFont.*'
+      - 'tools/gen-pixel-fonts.mjs'
       - 'tools/*.test.ts'
       - 'package-lock.json'
       - '.github/workflows/tools-tests.yml'

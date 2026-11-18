@@ -1784,8 +1784,8 @@ export class PlanetariumMode {
   private planetPointsFilled = false;
   /** The surface view's site (stage 2): where on the landed body the eye
    *  stands, a few metres up. Session state, cleared with the landing like
-   *  the picked target, not saved with the journey yet; null keeps the
-   *  sliding vantage. Set from the spot picker (openSitePicker) or
+   *  the picked target and saved with it in the journey (landedSite); null
+   *  keeps the sliding vantage. Set from the spot picker (openSitePicker) or
    *  devStandAt; Moon only for now. */
   private surfaceSite: Site | null = null;
   /** The ground under the site (world/siteGround.ts), built at activation so
@@ -23364,6 +23364,16 @@ export class PlanetariumMode {
       astroTimeRate: this.timeState.rate,
       astroTimePaused: this.timeState.paused && !clockHeld,
       landedOn: this.landedOn,
+      // The spot stood at is part of the landing. Read from the field, not
+      // through activeSurfaceSite: the tour and the missions only suspend a
+      // site, and their snapshots must carry it back.
+      landedSite: this.landedOn && this.surfaceSite?.body === this.landedOn.name
+        ? {
+            latitudeDeg: this.surfaceSite.latitudeDeg,
+            longitudeDeg: this.surfaceSite.longitudeDeg,
+            ...(this.surfaceSite.name ? { name: this.surfaceSite.name } : {}),
+          }
+        : undefined,
       systemSpeed: this.player.systemSpeedMultiplier,
       autopilotTarget: this.autopilotTarget,
       autopilotUserEngaged: this.autopilotUserEngaged,
@@ -23566,6 +23576,18 @@ export class PlanetariumMode {
 
     if (saved.landedOn) {
       this.enterLandedMode(saved.landedOn);
+      // The landing clears the spot (new ground); a saved one belongs to
+      // this landing, where the body still has ground to stand on.
+      this.surfaceSite = saved.landedSite && this.landedOn?.name === saved.landedOn.name
+        && SITE_GROUND_ALBEDO_LINEAR[saved.landedOn.name] !== undefined
+        ? {
+            body: saved.landedOn.name,
+            latitudeDeg: saved.landedSite.latitudeDeg,
+            longitudeDeg: saved.landedSite.longitudeDeg,
+            heightKm: SITE_EYE_HEIGHT_KM,
+            ...(saved.landedSite.name ? { name: saved.landedSite.name } : {}),
+          }
+        : null;
     } else {
       this.resetCruiseCamera();
     }

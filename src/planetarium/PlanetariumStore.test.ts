@@ -69,6 +69,20 @@ describe('autopilot provenance migration (autopilotUserEngaged)', () => {
   });
 });
 
+describe('landedSite — the spot stood at is part of the landing', () => {
+  const moon = { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
+  it('keeps a spot with its landing, and drops one that has no landing or is off the globe', () => {
+    expect(sanitizePlanetariumState(rawSave({ landedOn: moon, landedSite: { latitudeDeg: -2, longitudeDeg: -80 } }))?.landedSite)
+      .toEqual({ latitudeDeg: -2, longitudeDeg: -80 });
+    expect(sanitizePlanetariumState(rawSave({ landedOn: moon, landedSite: { latitudeDeg: 0.67416, longitudeDeg: 23.47314, name: 'Tranquility Base' } }))?.landedSite)
+      .toEqual({ latitudeDeg: 0.67416, longitudeDeg: 23.47314, name: 'Tranquility Base' });
+    expect(sanitizePlanetariumState(rawSave({ landedSite: { latitudeDeg: -2, longitudeDeg: -80 } }))?.landedSite).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ landedOn: moon, landedSite: { latitudeDeg: 91, longitudeDeg: 0 } }))?.landedSite).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ landedOn: moon, landedSite: { latitudeDeg: 'x', longitudeDeg: 0 } }))?.landedSite).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ landedOn: moon }))?.landedSite).toBeUndefined();
+  });
+});
+
 describe('headingBasis — the flight-frame migration flag', () => {
   // Absence is load-bearing: it is how a save written before heading/pitch
   // became ecliptic angles is recognized, so it may never be defaulted in.

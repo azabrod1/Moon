@@ -3887,7 +3887,7 @@ export function surfaceGroundField(mat: THREE.Material): boolean {
 
 /**
  * Read the ground field on this material instead of the full one, or go back:
- * the same grain with few craters or none (world/surfaceDetailNoise), for a
+ * the grain with a few thinned craters (world/surfaceDetailNoise), for a
  * body whose photograph already carries its real craters. The two fields share
  * one height range and gradient scale, so only the texture and the mean it is
  * read against change; the shader text is the same, and so is the program.

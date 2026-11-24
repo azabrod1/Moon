@@ -29,7 +29,7 @@ Picture quality and frame rate
 Ground and map tiles
 - `?sectors=0` turns off the detailed map tiles. `?groundcull=0` draws the ground hidden under them again (`world/groundCull.ts`); Earth's night lights stay cut, or they would draw twice.
 - `?tilebytes=0` uploads tiles the old way. `?sphereworker=0` builds a body's finer sphere on the main thread, a piece a frame, instead of in a worker (`world/fineSpheres.ts`). `?synth=0` turns off the extra close-up surface detail. DEV `?synthdepth=<1..8>` builds that detail from that many rungs of craters instead of 7 (`world/surfaceShading.ts`), for comparing the picture and the cost.
-- DEV `?ground=<craters>[,<grainGain>]` gives the moons whose map is an 8K photograph and whose relief is invented (Io, Europa, Ganymede, Callisto, Enceladus, Tethys, Dione) a second close-up field: the same fine grain with that many of the usual craters, thinned evenly (0 for none), its grain's slopes times the gain (`world/surfaceDetailNoise.ts`). For example `?ground=0` or `?ground=12,1.6`.
+- `?groundfield=0` puts the moons with a sharp photograph (Io, Europa, Callisto, Enceladus, Tethys, Dione) back on the full field of invented craters; by default they wear a second field with only a few, so the craters in the photograph are not doubled (`world/surfaceDetailNoise.ts`, which bodies in `PlanetFactory.ts`). DEV `?ground=<craters>[,<grainGain>]` builds that second field from another recipe, for example `?ground=0` or `?ground=30,1.3`. DEV `?groundall=1` puts it on every photographed moon whose relief is invented, Ganymede and the ones with softer maps included.
 - DEV `?tiles=<url>` loads tiles from another address.
 
 Earth's sea, air and clouds (in `world/surfaceShading.ts` unless named)

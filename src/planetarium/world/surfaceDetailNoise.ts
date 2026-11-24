@@ -33,15 +33,16 @@
  * every surface in the system.
  *
  * TWO FIELDS. The full field above, and a GROUND field: the same two grain
- * octaves with few craters or none. A colour map that is a photograph already
- * carries the body's real craters down to its own texel, so up close the full
- * field's invented craters land on top of the real ones and the surface wears
- * two sets. Turning the craters down cannot be done at sample time — craters
+ * octaves, steeper, with a few of the craters. A colour map that is a
+ * photograph already carries the body's real craters down to its own texel,
+ * so up close the full field's invented craters land on top of the real ones
+ * and the surface wears two sets. Turning the craters down cannot be done at sample time — craters
  * and grain are summed into one map — so a body that must keep the grain
- * without the craters reads a second map instead. It is stored in the full
- * field's own range and gradient scale, so the one shader reads either through
- * the same uniforms and a byte means the same height in both; only its mean
- * differs. It is built only when a body asks for it.
+ * without most of the craters reads a second map instead. It is stored in the
+ * full field's own range and gradient scale, so the one shader reads either
+ * through the same uniforms and a byte means the same height in both; only its
+ * mean differs. It is built only when a body asks for it; which bodies do is
+ * world/PlanetFactory's rule (`wearsGroundField`).
  */
 import * as THREE from 'three';
 import { periodicLattice, periodicValueNoise } from './periodicNoise';
@@ -404,20 +405,29 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): BuiltSurfac
 
 /**
  * Craters in the ground field, thinned evenly out of the full field's own
- * population (thinnedCraterField), so a sparse ground is a subset of the
- * craters the full field draws, with the same mix of sizes. Zero is ground
- * with no craters at all.
+ * population (thinnedCraterField), so they are a subset of the craters the
+ * full field draws, with the same mix of sizes.
+ *
+ * Judged by eye on Dione, Tethys and Callisto. On a sharp photograph the full
+ * field's craters sat over the real ones as a second set. Twelve evenly
+ * thinned craters are too small and too rare to show where the photograph
+ * still has craters of its own, and they give the closest view, where the
+ * photograph has nothing left to say, something to read as ground.
  */
-export const SURFACE_GROUND_CRATERS = 0;
+export const SURFACE_GROUND_CRATERS = 12;
 
-/** The ground field's grain, as a gain on the slopes of the full field's
- *  octaves. One is the grain every body wears today. */
-export const SURFACE_GROUND_GRAIN_GAIN = 1.0;
+/**
+ * The ground field's grain, as a gain on the slopes of the full field's
+ * octaves. Judged by eye: without the craters' walls the unscaled grain read
+ * as blur with a faint grit at about 20 screen pixels per map texel, and three
+ * times it read as burnt sandpaper. At this gain and crater count nothing in
+ * the stored height or gradient clips.
+ */
+export const SURFACE_GROUND_GRAIN_GAIN = 1.6;
 
-/** DEV `?ground=<craters>[,<grainGain>]`: the ground field's recipe this boot,
- *  and the switch that puts it on the bodies whose colour map is a photograph
- *  (world/PlanetFactory). Without it every body draws the full field and the
- *  ground field is never built. */
+/** DEV `?ground=<craters>[,<grainGain>]`: a recipe for the ground field this
+ *  boot in place of the two constants above, for tuning by eye. It changes
+ *  what the ground field is, not which bodies wear it. */
 export function parseGroundParam(search: string): SurfaceFieldRecipe | null {
   if (!import.meta.env.DEV) return null;
   const raw = new URLSearchParams(search).get('ground');
@@ -430,15 +440,35 @@ export function parseGroundParam(search: string): SurfaceFieldRecipe | null {
   return { craters, grainGain };
 }
 
-/** This boot's DEV ground recipe, or null when the switch is absent. */
-export const SURFACE_GROUND_SWITCH =
-  typeof location === 'undefined' ? null : parseGroundParam(location.search);
-
 /** The recipe the ground field is built with this boot. */
-export const SURFACE_GROUND_RECIPE: SurfaceFieldRecipe = SURFACE_GROUND_SWITCH ?? {
-  craters: SURFACE_GROUND_CRATERS,
-  grainGain: SURFACE_GROUND_GRAIN_GAIN,
-};
+export const SURFACE_GROUND_RECIPE: SurfaceFieldRecipe =
+  (typeof location === 'undefined' ? null : parseGroundParam(location.search)) ?? {
+    craters: SURFACE_GROUND_CRATERS,
+    grainGain: SURFACE_GROUND_GRAIN_GAIN,
+  };
+
+/**
+ * Which bodies wear the ground field this boot (world/PlanetFactory decides
+ * per body):
+ * - 'shipped': the bodies the rule there names;
+ * - 'off': none — `?groundfield=0`, in any build, puts every body back on the
+ *   full crater field, the way it was before there were two;
+ * - 'all': DEV `?groundall=1`, every photographed body that draws invented
+ *   relief, whatever its map's resolution, for judging bodies outside the
+ *   rule by eye. `?groundfield=0` wins over it.
+ */
+export type GroundFieldMode = 'shipped' | 'off' | 'all';
+
+export function parseGroundFieldMode(search: string, dev: boolean = import.meta.env.DEV): GroundFieldMode {
+  const params = new URLSearchParams(search);
+  if (params.get('groundfield') === '0') return 'off';
+  if (dev && params.get('groundall') === '1') return 'all';
+  return 'shipped';
+}
+
+/** This boot's mode. */
+export const SURFACE_GROUND_MODE: GroundFieldMode =
+  typeof location === 'undefined' ? 'shipped' : parseGroundFieldMode(location.search);
 
 /**
  * Build the ground field's bytes, stored in the FULL field's own range.

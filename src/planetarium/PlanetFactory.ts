@@ -52,7 +52,7 @@ import {
   surfaceDrawsDetailField, surfaceReliefKind, type SurfaceArchetype, type SurfaceReliefKind,
   type SurfaceShadingFx,
 } from './world/surfaceShading';
-import { SURFACE_GROUND_SWITCH, type SurfaceFieldRecipe } from './world/surfaceDetailNoise';
+import { SURFACE_GROUND_MODE, type GroundFieldMode } from './world/surfaceDetailNoise';
 import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
 import { surfaceLookOf } from './world/surfaceLook';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -980,35 +980,47 @@ export function synthCraterShare(name: string, archetype: SurfaceArchetype): num
 }
 
 /**
- * Whether a body wears the close-range GROUND field — the grain with few
- * craters or none (world/surfaceDetailNoise) — instead of the full field.
+ * Bodies the ground-field rule below would name that keep the full field.
  *
- * All three of these, read off the body's own data:
+ * Ganymede: at about 20 screen pixels per map texel its photograph is too soft
+ * to stand on its own, and with the invented craters gone it read as fog
+ * (judged by eye). The full field's craters are what its close view is made of.
+ */
+const FULL_FIELD_KEEPERS = new Set(['Ganymede']);
+
+/**
+ * Whether a body wears the close-range GROUND field — the grain with a few
+ * thinned craters (world/surfaceDetailNoise) — instead of the full field.
+ *
+ * All of these, read off the body's own data:
  * - its colour map is a photograph (`textureKey` names a file), which already
  *   carries the body's real craters, so the full field's invented ones land on
  *   top of them up close and the surface wears two sets;
- * - that photograph's sharpest rung is 8K (the ladder's own table), which is
- *   where the map is sharp enough for the real craters to be what the eye
- *   reads — on a softer map the invented ones are still most of the detail;
+ * - that photograph's sharpest rung is 8K (the ladder's own table): only there
+ *   is the map sharp enough for its real craters to be what the eye reads;
  * - the surface draws invented relief at all: a body whose relief counts as
  *   measured (an elevation map, or a photograph read as bump) never draws the
- *   field's craters as relief, and is left exactly as it is, grain included.
+ *   field's craters as relief, and is left exactly as it is, grain included;
+ * - it is not one of FULL_FIELD_KEEPERS.
+ * That is Io, Europa, Callisto, Enceladus, Tethys and Dione.
+ *
+ * `?groundfield=0` puts every body back on the full field; DEV `?groundall=1`
+ * drops the 8K rule and the keepers, for judging the softer photographs.
  *
  * A body's crater share is untouched: on the ground field it only draws the
- * grain finer and fainter, which suits the resurfaced moons.
- *
- * Only under the DEV `?ground=` switch for now, while the recipe is judged by
- * eye; without it every body wears the full field, as it always has.
+ * ground finer and fainter, which suits the resurfaced moons.
  */
 export function wearsGroundField(
+  name: string,
   textureKey: string | undefined,
   archetype: SurfaceArchetype,
   relief: SurfaceReliefKind,
-  groundSwitch: SurfaceFieldRecipe | null = SURFACE_GROUND_SWITCH,
+  mode: GroundFieldMode = SURFACE_GROUND_MODE,
 ): boolean {
-  if (groundSwitch === null || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
-  if (TEXTURE_UPGRADE_TIERS[textureKey]?.at(-1) !== '8k') return false;
-  return relief !== 'measured' && surfaceDrawsDetailField(archetype);
+  if (mode === 'off' || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
+  if (relief === 'measured' || !surfaceDrawsDetailField(archetype)) return false;
+  if (mode === 'all') return true;
+  return TEXTURE_UPGRADE_TIERS[textureKey]?.at(-1) === '8k' && !FULL_FIELD_KEEPERS.has(name);
 }
 
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
@@ -1233,7 +1245,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // A planet's photograph is its bump map, which counts as measured relief, so
   // under today's rule no planet wears the ground field; asked all the same, so
   // the rule lives in one place.
-  if (wearsGroundField(planet.textureKey, planetArchetype(planet), surfaceReliefKind(mat))) {
+  if (wearsGroundField(planet.name, planet.textureKey, planetArchetype(planet), surfaceReliefKind(mat))) {
     setSurfaceGroundField(mat, true);
   }
   // Higher colour tiers on close approach, for the keys that have them (see
@@ -2110,7 +2122,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
 
     // Which close-range field the moon reads. After the measured-relief flag
     // above, which is part of the answer.
-    if (wearsGroundField(moonData.textureKey, archetype, surfaceReliefKind(mat))) {
+    if (wearsGroundField(moonData.name, moonData.textureKey, archetype, surfaceReliefKind(mat))) {
       setSurfaceGroundField(mat, true);
     }
 

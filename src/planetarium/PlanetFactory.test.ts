@@ -110,6 +110,7 @@ import {
   NIGHT_LIFT_STRENGTH,
   nightLiftUniform,
   seaWindOn,
+  type SurfaceArchetype,
 } from './world/surfaceShading';
 import { PLANETS } from './planets/planetData';
 import { seaWindTexture } from './world/seaWind';
@@ -4280,35 +4281,45 @@ describe('a colour-rung swap and the body\'s air', () => {
 });
 
 describe('which bodies wear the ground field', () => {
-  const on = { craters: 0, grainGain: 1 };
+  const moons: [string, string, SurfaceArchetype][] = [
+    ['Io', 'io', 'airless'], ['Europa', 'europa', 'icy'], ['Ganymede', 'ganymede', 'icy'],
+    ['Callisto', 'callisto', 'icy'], ['Enceladus', 'enceladus', 'icy'], ['Tethys', 'tethys', 'icy'],
+    ['Dione', 'dione', 'icy'], ['Rhea', 'rhea', 'icy'], ['Mimas', 'mimas', 'icy'],
+    ['Iapetus', 'iapetus', 'icy'], ['Charon', 'charon', 'icy'], ['Triton', 'triton', 'icy'],
+    ['Titan', 'titan', 'icy'], ['Miranda', 'miranda', 'icy'], ['Ariel', 'ariel', 'icy'],
+  ];
+  const wearing = (mode: 'shipped' | 'off' | 'all') =>
+    moons.filter(([name, key, archetype]) => wearsGroundField(name, key, archetype, 'none', mode))
+      .map(([name]) => name);
 
-  it('is none of them without the DEV switch', () => {
-    // Until its recipe is chosen by eye, a boot without `?ground=` draws
-    // exactly what it did.
-    expect(wearsGroundField('dione', 'icy', 'none')).toBe(false);
-    expect(wearsGroundField('io', 'airless', 'painted')).toBe(false);
+  it('is the moons with a sharp photograph and invented relief, Ganymede kept on the full field', () => {
+    expect(wearing('shipped')).toEqual(['Io', 'Europa', 'Callisto', 'Enceladus', 'Tethys', 'Dione']);
+    // And the boot's own mode is the shipped one, with nothing in the URL.
+    expect(wearsGroundField('Dione', 'dione', 'icy', 'none')).toBe(true);
+    expect(wearsGroundField('Ganymede', 'ganymede', 'icy', 'none')).toBe(false);
+    // A painted bump is invented relief too.
+    expect(wearsGroundField('Dione', 'dione', 'icy', 'painted', 'shipped')).toBe(true);
   });
 
-  it('is the photographed moons with an 8K map and invented relief, under the switch', () => {
-    // The seven the rule names, as their moons are built: no measured relief.
-    for (const key of ['io', 'europa', 'ganymede', 'callisto', 'enceladus', 'tethys', 'dione']) {
-      expect(wearsGroundField(key, key === 'io' ? 'airless' : 'icy', 'none', on), key).toBe(true);
-      expect(wearsGroundField(key, 'icy', 'painted', on), key).toBe(true);
+  it('puts every body back on the full field under ?groundfield=0', () => {
+    expect(wearing('off')).toEqual([]);
+  });
+
+  it('takes every photographed moon with invented relief under DEV ?groundall=1', () => {
+    expect(wearing('all')).toEqual(moons.map(([name]) => name));
+  });
+
+  it('never touches a body whose relief counts as measured, nor one that draws no field', () => {
+    for (const mode of ['shipped', 'all'] as const) {
+      expect(wearsGroundField('Moon', 'moon', 'airless', 'measured', mode)).toBe(false);
+      expect(wearsGroundField('Mercury', 'mercury', 'airless', 'measured', mode)).toBe(false);
+      expect(wearsGroundField('Pluto', 'pluto', 'airless', 'measured', mode)).toBe(false);
+      expect(wearsGroundField('Mars', 'mars', 'rocky', 'measured', mode)).toBe(false);
+      expect(wearsGroundField('Jupiter', 'jupiter', 'gas', 'none', mode)).toBe(false);
+      expect(wearsGroundField('Earth', 'earthDay', 'earth', 'measured', mode)).toBe(false);
+      // A painted moon has no real craters to clash with.
+      expect(wearsGroundField('Phobos', undefined, 'airless', 'none', mode)).toBe(false);
     }
-    // A photograph whose sharpest rung is 4K or less: its invented craters are
-    // still most of the detail up close.
-    for (const key of ['rhea', 'mimas', 'iapetus', 'charon', 'triton', 'titan', 'miranda', 'ariel']) {
-      expect(wearsGroundField(key, 'icy', 'none', on), key).toBe(false);
-    }
-    // Measured relief: never drew the field's craters as relief, left alone.
-    expect(wearsGroundField('moon', 'airless', 'measured', on)).toBe(false);
-    expect(wearsGroundField('mercury', 'airless', 'measured', on)).toBe(false);
-    expect(wearsGroundField('pluto', 'airless', 'measured', on)).toBe(false);
-    expect(wearsGroundField('mars', 'rocky', 'measured', on)).toBe(false);
-    // A painted moon, and a surface class that draws no field.
-    expect(wearsGroundField(undefined, 'airless', 'none', on)).toBe(false);
-    expect(wearsGroundField('jupiter', 'gas', 'none', on)).toBe(false);
-    expect(wearsGroundField('earthDay', 'earth', 'measured', on)).toBe(false);
   });
 });
 

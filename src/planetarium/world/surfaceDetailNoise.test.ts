@@ -13,7 +13,7 @@ import {
   SURFACE_GROUND_CRATERS,
   SURFACE_GROUND_GRAIN_GAIN,
   SURFACE_GROUND_RECIPE,
-  SURFACE_GROUND_SWITCH,
+  parseGroundFieldMode,
   thinnedCraterField,
   craterProfile,
   SURFACE_DETAIL_CRATER_DEPTH,
@@ -225,15 +225,34 @@ describe('the built field', () => {
 describe('the ground field', () => {
   const size = SURFACE_DETAIL_SIZE;
   const full = buildSurfaceDetailNoise(size);
-  const ground = buildSurfaceGroundNoise(
+  // The grain alone, for the checks on what the field is made of; the shipped
+  // recipe for the checks on what is uploaded.
+  const ground = buildSurfaceGroundNoise({ craters: 0, grainGain: 1 }, size, full.range);
+  const shipped = buildSurfaceGroundNoise(
     { craters: SURFACE_GROUND_CRATERS, grainGain: SURFACE_GROUND_GRAIN_GAIN }, size, full.range,
   );
 
-  it('ships with no craters and today\'s grain, and is off without the switch', () => {
-    expect(SURFACE_GROUND_CRATERS).toBe(0);
-    expect(SURFACE_GROUND_GRAIN_GAIN).toBe(1);
-    expect(SURFACE_GROUND_SWITCH).toBeNull();
-    expect(SURFACE_GROUND_RECIPE).toEqual({ craters: 0, grainGain: 1 });
+  it('ships the recipe judged by eye: twelve thinned craters, the grain 1.6 times as steep', () => {
+    expect(SURFACE_GROUND_CRATERS).toBe(12);
+    expect(SURFACE_GROUND_GRAIN_GAIN).toBe(1.6);
+    expect(SURFACE_GROUND_RECIPE).toEqual({ craters: 12, grainGain: 1.6 });
+  });
+
+  it('stores the shipped recipe without clamping a height or a gradient', () => {
+    // Stored in the full field's range, a steeper grain or a deeper crater
+    // would clamp; the shipped recipe must not.
+    expect(shipped.clipped).toBe(0);
+    expect(shipped.heightClipped).toBe(0);
+    expect(shipped.mean - full.mean).toBeGreaterThan(0.02);
+  });
+
+  it('chooses which bodies wear it from the URL, the DEV override only in DEV', () => {
+    expect(parseGroundFieldMode('', true)).toBe('shipped');
+    expect(parseGroundFieldMode('?groundfield=0', false)).toBe('off');
+    expect(parseGroundFieldMode('?groundfield=0', true)).toBe('off');
+    expect(parseGroundFieldMode('?groundall=1', true)).toBe('all');
+    expect(parseGroundFieldMode('?groundall=1', false)).toBe('shipped');
+    expect(parseGroundFieldMode('?groundall=1&groundfield=0', true)).toBe('off');
   });
 
   it('is the grain alone when it has no craters, stored in the full field\'s range', () => {
@@ -323,7 +342,8 @@ describe('the ground field', () => {
   });
 
   it('reads its recipe from the DEV switch', () => {
-    expect(parseGroundParam('?ground=0')).toEqual({ craters: 0, grainGain: 1 });
+    // The gain left out is the shipped one.
+    expect(parseGroundParam('?ground=0')).toEqual({ craters: 0, grainGain: SURFACE_GROUND_GRAIN_GAIN });
     expect(parseGroundParam('?ground=12,1.6')).toEqual({ craters: 12, grainGain: 1.6 });
     expect(parseGroundParam('?ground=-1')).toBeNull();
     expect(parseGroundParam('?ground=2.5')).toBeNull();

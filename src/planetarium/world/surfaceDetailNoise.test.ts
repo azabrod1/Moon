@@ -14,6 +14,7 @@ import {
   SURFACE_GROUND_GRAIN_GAIN,
   SURFACE_GROUND_RECIPE,
   SURFACE_GROUND_SWITCH,
+  thinnedCraterField,
   craterProfile,
   SURFACE_DETAIL_CRATER_DEPTH,
   SURFACE_DETAIL_CRATER_MAX,
@@ -262,11 +263,29 @@ describe('the ground field', () => {
     expect(full.range.min).toBeLessThan(-4 * grainReach);
   });
 
-  it('draws its sparse craters from the full field\'s own population', () => {
-    // A sparse ground is a subset of the craters the full field draws, so a
-    // count between the two is a thinning rather than a different surface.
+  it('thins its sparse craters evenly out of the full field\'s own population', () => {
+    // A subset of the craters the full field draws, so a sparse ground is a
+    // thinning rather than a different surface — and an EVEN one through the
+    // sizes, so it keeps today's mix (mostly small) instead of the few big
+    // bowls that read as bubbles over a photograph's real craters.
     const all = craterField(SURFACE_DETAIL_CRATERS);
-    for (const c of craterField(12)) expect(all).toContainEqual(c);
+    const sparse = thinnedCraterField(12);
+    expect(sparse).toHaveLength(12);
+    for (const c of sparse) expect(all).toContainEqual(c);
+    expect(new Set(sparse).size).toBe(12);
+    const median = (cs: { radius: number }[]) => {
+      const r = cs.map((c) => c.radius).sort((a, b) => a - b);
+      return r[Math.floor(r.length / 2)];
+    };
+    const geometricMid = Math.sqrt(SURFACE_DETAIL_CRATER_MIN * SURFACE_DETAIL_CRATER_MAX);
+    const smallShare = (cs: { radius: number }[]) => cs.filter((c) => c.radius < geometricMid).length / cs.length;
+    expect(Math.abs(smallShare(sparse) - smallShare(all))).toBeLessThan(0.1);
+    expect(median(sparse) / median(all)).toBeGreaterThan(0.8);
+    expect(median(sparse) / median(all)).toBeLessThan(1.25);
+    // Deterministic, and the whole population at the full count.
+    expect(thinnedCraterField(12)).toEqual(sparse);
+    expect(thinnedCraterField(SURFACE_DETAIL_CRATERS)).toEqual(all);
+    expect(thinnedCraterField(0)).toEqual([]);
   });
 
   it('holds every height and gradient its default recipe stores', () => {

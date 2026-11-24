@@ -49,7 +49,8 @@ import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind
 import {
   augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
   setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceWaterGloss,
-  surfaceDrawsDetailField, type SurfaceArchetype, type SurfaceShadingFx,
+  surfaceDrawsDetailField, surfaceReliefKind, type SurfaceArchetype, type SurfaceReliefKind,
+  type SurfaceShadingFx,
 } from './world/surfaceShading';
 import { SURFACE_GROUND_SWITCH, type SurfaceFieldRecipe } from './world/surfaceDetailNoise';
 import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
@@ -66,7 +67,7 @@ import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
   applyColorTierTexture, applyNormalTierTexture, earnedUpgradeTier, initialColorTierRank,
-  makeNormalUpgrade, makeTextureUpgrade, PLANET_TEXTURE_FILES, resolveUpgradeTier, TIER_RANK,
+  makeNormalUpgrade, makeTextureUpgrade, PLANET_TEXTURE_FILES, resolveUpgradeTier, TEXTURE_UPGRADE_TIERS, TIER_RANK,
   upgradeComplete, type NormalUpgrade, type TextureUpgrade,
 } from './world/textureLadder';
 
@@ -982,22 +983,32 @@ export function synthCraterShare(name: string, archetype: SurfaceArchetype): num
  * Whether a body wears the close-range GROUND field — the grain with few
  * craters or none (world/surfaceDetailNoise) — instead of the full field.
  *
- * The bodies it is for are the ones whose colour map is a photograph: the
- * photograph already carries the body's real craters, and the full field's
- * invented ones land on top of them up close, so the surface wears two sets.
- * A body with a painted map has no real craters for the invented ones to
- * clash with. `photoFile` is the file the body's texture key resolves to, or
- * undefined for a body with none.
+ * All three of these, read off the body's own data:
+ * - its colour map is a photograph (`textureKey` names a file), which already
+ *   carries the body's real craters, so the full field's invented ones land on
+ *   top of them up close and the surface wears two sets;
+ * - that photograph's sharpest rung is 8K (the ladder's own table), which is
+ *   where the map is sharp enough for the real craters to be what the eye
+ *   reads — on a softer map the invented ones are still most of the detail;
+ * - the surface draws invented relief at all: a body whose relief counts as
+ *   measured (an elevation map, or a photograph read as bump) never draws the
+ *   field's craters as relief, and is left exactly as it is, grain included.
+ *
+ * A body's crater share is untouched: on the ground field it only draws the
+ * grain finer and fainter, which suits the resurfaced moons.
  *
  * Only under the DEV `?ground=` switch for now, while the recipe is judged by
  * eye; without it every body wears the full field, as it always has.
  */
 export function wearsGroundField(
-  photoFile: string | undefined,
+  textureKey: string | undefined,
   archetype: SurfaceArchetype,
+  relief: SurfaceReliefKind,
   groundSwitch: SurfaceFieldRecipe | null = SURFACE_GROUND_SWITCH,
 ): boolean {
-  return groundSwitch !== null && photoFile !== undefined && surfaceDrawsDetailField(archetype);
+  if (groundSwitch === null || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
+  if (TEXTURE_UPGRADE_TIERS[textureKey]?.at(-1) !== '8k') return false;
+  return relief !== 'measured' && surfaceDrawsDetailField(archetype);
 }
 
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
@@ -1219,7 +1230,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // default of 1 did to the clouds).
   seatSurfaceAirRadius(fx.air, planet.radiusAU);
   setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
-  if (wearsGroundField(PLANET_TEXTURE_FILES[planet.textureKey], planetArchetype(planet))) {
+  // A planet's photograph is its bump map, which counts as measured relief, so
+  // under today's rule no planet wears the ground field; asked all the same, so
+  // the rule lives in one place.
+  if (wearsGroundField(planet.textureKey, planetArchetype(planet), surfaceReliefKind(mat))) {
     setSurfaceGroundField(mat, true);
   }
   // Higher colour tiers on close approach, for the keys that have them (see
@@ -2065,8 +2079,6 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // first compile.
     fx.uNightLift = nightLiftUniform;
     setSurfaceCraterShare(mat, synthCraterShare(moonData.name, archetype));
-    const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
-    if (wearsGroundField(photoFile, archetype)) setSurfaceGroundField(mat, true);
 
     // Real elevation-derived normal map (linear), where one exists. The flag
     // goes up with the request, not with the arrival, so the lazy painter never
@@ -2096,11 +2108,18 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       });
     }
 
+    // Which close-range field the moon reads. After the measured-relief flag
+    // above, which is part of the answer.
+    if (wearsGroundField(moonData.textureKey, archetype, surfaceReliefKind(mat))) {
+      setSurfaceGroundField(mat, true);
+    }
+
     // Photo-textured moons (Moon, Io, …) stream their real image; on arrival it
     // replaces the procedural colour through the same rank swap the 4K upgrade
     // uses, whether that arrival is at boot or minutes later. Until then the
     // painted texture is what shows — a failed fetch never puts grey on a moon.
     // photoLoaded tells the painter not to clobber a photo that already won.
+    const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
     const photoUrl = photoFile ? resolveTextureUrl(photoFile, '2k') : undefined;
     if (photoUrl) {
       fetchTextureDurably({

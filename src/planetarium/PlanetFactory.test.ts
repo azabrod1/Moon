@@ -4280,23 +4280,35 @@ describe('a colour-rung swap and the body\'s air', () => {
 });
 
 describe('which bodies wear the ground field', () => {
+  const on = { craters: 0, grainGain: 1 };
+
   it('is none of them without the DEV switch', () => {
-    // The photographed moons are the bodies it is for; until its recipe is
-    // chosen by eye, a boot without `?ground=` draws exactly what it did.
-    expect(wearsGroundField('dione.v2.webp', 'icy')).toBe(false);
-    expect(wearsGroundField(undefined, 'airless')).toBe(false);
-    expect(wearsGroundField('jupiter.v2.webp', 'gas')).toBe(false);
+    // Until its recipe is chosen by eye, a boot without `?ground=` draws
+    // exactly what it did.
+    expect(wearsGroundField('dione', 'icy', 'none')).toBe(false);
+    expect(wearsGroundField('io', 'airless', 'painted')).toBe(false);
   });
 
-  it('is every photographed body whose surface draws the field, under the switch', () => {
-    const on = { craters: 0, grainGain: 1 };
-    expect(wearsGroundField('dione.v2.webp', 'icy', on)).toBe(true);
-    expect(wearsGroundField('mercury.v2.webp', 'airless', on)).toBe(true);
-    // A painted moon has no real craters to clash with.
-    expect(wearsGroundField(undefined, 'airless', on)).toBe(false);
-    // And a surface class that draws no field has nothing to swap.
-    expect(wearsGroundField('jupiter.v2.webp', 'gas', on)).toBe(false);
-    expect(wearsGroundField('earth-day.v2.webp', 'earth', on)).toBe(false);
+  it('is the photographed moons with an 8K map and invented relief, under the switch', () => {
+    // The seven the rule names, as their moons are built: no measured relief.
+    for (const key of ['io', 'europa', 'ganymede', 'callisto', 'enceladus', 'tethys', 'dione']) {
+      expect(wearsGroundField(key, key === 'io' ? 'airless' : 'icy', 'none', on), key).toBe(true);
+      expect(wearsGroundField(key, 'icy', 'painted', on), key).toBe(true);
+    }
+    // A photograph whose sharpest rung is 4K or less: its invented craters are
+    // still most of the detail up close.
+    for (const key of ['rhea', 'mimas', 'iapetus', 'charon', 'triton', 'titan', 'miranda', 'ariel']) {
+      expect(wearsGroundField(key, 'icy', 'none', on), key).toBe(false);
+    }
+    // Measured relief: never drew the field's craters as relief, left alone.
+    expect(wearsGroundField('moon', 'airless', 'measured', on)).toBe(false);
+    expect(wearsGroundField('mercury', 'airless', 'measured', on)).toBe(false);
+    expect(wearsGroundField('pluto', 'airless', 'measured', on)).toBe(false);
+    expect(wearsGroundField('mars', 'rocky', 'measured', on)).toBe(false);
+    // A painted moon, and a surface class that draws no field.
+    expect(wearsGroundField(undefined, 'airless', 'none', on)).toBe(false);
+    expect(wearsGroundField('jupiter', 'gas', 'none', on)).toBe(false);
+    expect(wearsGroundField('earthDay', 'earth', 'measured', on)).toBe(false);
   });
 });
 

@@ -135,9 +135,7 @@ export const SURFACE_DETAIL_GRAIN: readonly { cells: number; slope: number }[] =
  */
 export const SURFACE_DETAIL_GRADIENT_SCALE = 70;
 
-/** Deterministic stream of values in [0, 1) — the same map on every device.
- *  The craters are drawn from it in order, so the first N of a population of
- *  any size are the same N craters. */
+/** Deterministic stream of values in [0, 1) — the same map on every device. */
 function mixer(seed: number): () => number {
   let state = (seed >>> 0) || 1;
   return () => {
@@ -218,6 +216,22 @@ export function craterField(
   return craters;
 }
 
+/**
+ * `count` craters of the full field's population, spread evenly through it in
+ * order of size, largest first. A sparse field drawn from these is a subset of
+ * the full field's craters with the same mix of sizes — mostly small, a few
+ * large — rather than whichever craters happened to be drawn first, which
+ * keeps the large ones out of proportion and reads as a few big bubbles.
+ * At the full count it is the full population itself.
+ */
+export function thinnedCraterField(count: number): Crater[] {
+  const all = craterField(SURFACE_DETAIL_CRATERS);
+  const n = Math.max(0, Math.min(count, all.length));
+  const kept: Crater[] = [];
+  for (let k = 0; k < n; k++) kept.push(all[Math.floor(((k + 0.5) * all.length) / n)]);
+  return kept;
+}
+
 /** The signed offset from `c` to `p` on a tile that wraps at 1. */
 function wrapDelta(p: number, c: number): number {
   const d = p - c;
@@ -259,7 +273,7 @@ export interface BuiltSurfaceField {
 
 /** Lay a field's craters and grain into raw height and gradient arrays. */
 function rawSurfaceField(size: number, recipe: SurfaceFieldRecipe): RawSurfaceField {
-  const craters = craterField(recipe.craters);
+  const craters = thinnedCraterField(recipe.craters);
   const grain = SURFACE_DETAIL_GRAIN.map((o, i) => ({
     cells: o.cells,
     // The height that slope reaches across one cell, times the recipe's gain.
@@ -389,9 +403,10 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): BuiltSurfac
 }
 
 /**
- * Craters in the ground field: the first this many of the full field's own
- * population, so a sparse ground is a subset of the craters the full field
- * draws rather than a different set. Zero is ground with no craters at all.
+ * Craters in the ground field, thinned evenly out of the full field's own
+ * population (thinnedCraterField), so a sparse ground is a subset of the
+ * craters the full field draws, with the same mix of sizes. Zero is ground
+ * with no craters at all.
  */
 export const SURFACE_GROUND_CRATERS = 0;
 

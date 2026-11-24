@@ -217,5 +217,19 @@
     "used_by": [
       "gen-relief (mars-normal.v3 boot map, 4k rung, 8192 crop source)"
     ]
+  },
+  "Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m.tif": {
+    "sha256": "d4c0880c39d062994a6f02c0462ec6c87f60fdcc504546915e076e2cd472b1da",
+    "bytes": 4247470901,
+    "width": 92160,
+    "height": 46080,
+    "product": "Mercury MESSENGER MDIS Basemap BDR Global Mosaic 166m (92160x46080 mono GeoTIFF, 8-bit, 1 band, LZW; NoData 0), the full-resolution file the 665 m copy that gen-moonmaps cuts Mercury's boot map and rungs from was reduced from",
+    "license": "Public domain",
+    "citation": "NASA/JHUAPL/Carnegie Institution of Washington; published by the USGS Astrogeology Science Center. Public domain.",
+    "url": "https://planetarymaps.usgs.gov/mosaic/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m.tif",
+    "product_page": "https://astrogeology.usgs.gov/search/map/mercury_messenger_mdis_basemap_bdr_mosaic_global_166m",
+    "used_by": [
+      "gen-tiles mercury (its finest level, from which the coarser levels are averaged down)"
+    ]
   }
 }

@@ -282,9 +282,10 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // Earth's cloud deck is NASA's Blue Marble cloud composite: the 2K boot map
 // and both rungs are cut from the one cloud master the deck's HD field pages
 // come from (tools/gen-tiles.mjs, `clouds --base`), so a page arriving over
-// the sheet sharpens the cloud that was already there. Mercury, Venus and Saturn are the same Solar System Scope
-// products as their boot maps (gated: RMS 3.6 / 1.6 / 1.6 against the shipped
-// 2K); Venus and Saturn are low-frequency, so their 4K steps cost ~130 KB each
+// the sheet sharpens the cloud that was already there. Mercury's boot map and
+// both rungs are one MESSENGER mosaic (tools/gen-moonmaps.mjs). Venus and Saturn are the same Solar System Scope
+// products as their boot maps (gated: RMS 1.6 / 1.6 against the shipped
+// 2K); both are low-frequency, so their 4K steps cost ~130 KB each
 // and mainly remove texel blockiness at the wall. Uranus / Neptune stay 2K
 // (no real detail to add); Io/Europa/Ganymede/Triton already ship 4K as
 // their base map. Pluto is a real New Horizons LORRI mosaic (USGS, 300 m) registered to

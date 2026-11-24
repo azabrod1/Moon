@@ -2169,8 +2169,7 @@ export const JOBS = {
     ],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
-  // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
-  mercury: { flat: { src: () => cache('sss_8k_mercury.jpg'), out: path.join(TEX, '4k', 'mercury.webp') } },
+  // same-product gate against the shipped 2K boot maps (RMS 1.6 / 1.6).
   venus: { flat: { src: () => cache('sss_4k_venus_atmosphere.jpg'), out: path.join(TEX, '4k', 'venus.webp') } },
   saturn: { flat: { src: () => cache('sss_8k_saturn.jpg'), out: path.join(TEX, '4k', 'saturn.webp') } },
   // Earth's cloud field (the section above): NASA's 0.93 km cloud master as

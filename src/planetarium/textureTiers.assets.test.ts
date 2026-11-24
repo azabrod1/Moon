@@ -111,7 +111,10 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  * each).
  *
  * UASTC for the maps built out of slow gradients — the Moon's maria, the cloud
- * deck's soft edges, Earth's night falloff, and Jupiter's banded clouds.
+ * deck's soft edges, Earth's night falloff, and Jupiter's banded clouds — and
+ * for Pluto's 8K, a near-grey map whose ETC1S blocks hold about three shades
+ * per 4x4 cell: drawn up close, and doubling as the bump map, those cells
+ * were what the planet looked like.
  *
  * ETC1S for the photo moons, every one of which is cratered texture at every
  * scale, the codebook's best case: measured per body on a 4096x2048 candidate
@@ -144,7 +147,7 @@ const CONTAINER_COLOR_MODEL: Record<string, number> = {
   '8k/europa.v2.ktx2': DF_MODEL_ETC1S,
   '8k/ganymede.v2.ktx2': DF_MODEL_ETC1S,
   '8k/callisto.v2.ktx2': DF_MODEL_ETC1S,
-  '8k/pluto.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/pluto.v3.ktx2': DF_MODEL_UASTC,
   '8k/enceladus.v2.ktx2': DF_MODEL_ETC1S,
   '8k/dione.v2.ktx2': DF_MODEL_ETC1S,
   '8k/tethys.v2.ktx2': DF_MODEL_ETC1S,
@@ -209,8 +212,10 @@ describe('the files behind the colour ladder', () => {
     // the container is roughly the webp's size on the wire, so there is no
     // twin and nothing extra to download. What they must not do is hold an
     // uncompressed map's VRAM through a nine-body tour, and at a quarter of it
-    // they do not. Written out in the table's own order so a new container has
-    // to be argued for here too.
+    // they do not. Pluto's 8K is the one UASTC rung among them, under the 8K
+    // rule, because its near-grey ETC1S cells were the picture up close.
+    // Written out in the table's own order so a new container has to be
+    // argued for here too.
     const shipped = Object.entries(TIER_FILE_OVERRIDES).flatMap(([key, byTier]) =>
       Object.entries(byTier).map(([tier, rung]) => `${key} ${tier}: ${tier}/${rung.file}`));
     expect(shipped).toEqual([
@@ -240,7 +245,7 @@ describe('the files behind the colour ladder', () => {
       'callisto 4k: 4k/callisto.v2.ktx2',
       'callisto 8k: 8k/callisto.v2.ktx2',
       'pluto 4k: 4k/pluto.v2.ktx2',
-      'pluto 8k: 8k/pluto.v2.ktx2',
+      'pluto 8k: 8k/pluto.v3.ktx2',
     ]);
   });
 

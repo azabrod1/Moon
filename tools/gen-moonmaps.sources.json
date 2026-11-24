@@ -1056,6 +1056,22 @@
       "rmsVsSource": {
         "webp": 2.91,
         "etc1s": 2.54
+      },
+      "rung8k": {
+        "file": "8k/pluto.v3.ktx2",
+        "format": "UASTC (tools/gen-ktx2.mjs defaults: level 2, RDO lambda 1, 8K dictionary, zstd 18), container only",
+        "shippedBytes": 14932468,
+        "replaced": "8k/pluto.v2.ktx2, the same pixels as ETC1S (-q 255 -comp_level 5), 3583105 bytes, shipped; deleted, and the name not reused because the worker caches by name.",
+        "rmsVsIntermediate": { "etc1s": 4.98, "uastc": 1.34 },
+        "maxVsIntermediate": { "etc1s": 147, "uastc": 42 },
+        "meanVsIntermediate": { "etc1s": -0.53, "uastc": 0.09 },
+        "edgeOverInside": { "intermediate": 1.0, "etc1s": 1.57, "uastc": 1.113 },
+        "distinctPer4x4": { "intermediate": 5.57, "etc1s": 1.92, "uastc": 4.6 },
+        "patches": [
+          { "lonE": 239.8, "lat": 19.2, "x0": 1312, "y0": 1579, "rms": { "etc1s": 13.76, "uastc": 3.11 }, "max": { "etc1s": 89, "uastc": 25 }, "edgeOverInside": { "intermediate": 1.0, "etc1s": 1.415, "uastc": 1.012 } },
+          { "lonE": 173.7, "lat": -27.2, "x0": 8000, "y0": 2635, "rms": { "etc1s": 13.99, "uastc": 2.71 }, "max": { "etc1s": 96, "uastc": 20 }, "edgeOverInside": { "intermediate": 1.048, "etc1s": 1.487, "uastc": 1.075 } }
+        ],
+        "measured": "Level 0 unpacked with basisu -unpack (ETC1 for the ETC1S file, BC7 for the UASTC one), the baked vertical flip undone, against the gen:moonmaps pluto-8k intermediate: RMS, mean and largest 0-255 difference over all three channels of the whole map; edgeOverInside is the mean luminance step across 4x4 cell edges over the mean step inside a cell (1 = no cell grid); distinctPer4x4 is distinct green values per aligned 4x4 cell. The patches are the two 96x64 windows of highest luminance spread between 60 S and 60 N. The whole-map UASTC edge ratio stays above 1 (1.05 over 180-300 E, 1.09 over 0-180 E, 1.10 over 30-80 S) where the ground is smooth: there a cell's own steps are near zero, so the slight block edges the encode leaves weigh more in the ratio than on busy ground."
       }
     },
     "notes": "Global, mono. The encounter hemisphere (Sputnik Planitia) is genuine 300 m; the far side is 20-30 km approach imagery and will stay soft at any tier. Latitude type is PLANETOGRAPHIC.",

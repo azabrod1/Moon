@@ -487,9 +487,14 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
     '4k': { file: 'callisto.v2.ktx2', webp: false },
     '8k': { file: 'callisto.v2.ktx2', webp: false },
   },
+  // Pluto's 8K is the one photo-moon rung in UASTC: its map is one mono
+  // mosaic through one colour ramp, which ETC1S keeps as about three shades
+  // per 4x4 cell (and a tint where the cell's colour missed the ramp), and the
+  // map is also the bump map. It is .v3 because
+  // 8k/pluto.v2.ktx2 shipped as the ETC1S file; the 4K stays ETC1S.
   pluto: {
     '4k': { file: 'pluto.v2.ktx2', webp: false },
-    '8k': { file: 'pluto.v2.ktx2', webp: false },
+    '8k': { file: 'pluto.v3.ktx2', webp: false },
   },
 };
 

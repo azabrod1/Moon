@@ -236,15 +236,30 @@ const JOBS = {
   // trigger gate; only a body flown up to waits for the gate. The service
   // worker keeps what it fetched, so the bill is once per device per moon, on
   // the first visit, at the shipped size: Io 5.5 MB, Europa 6.4, Ganymede
-  // 6.5, Callisto 6.9, Pluto 3.6, Enceladus 6.8, Dione 6.7, Tethys 6.6. What
-  // one must not do is hold 170.7 MiB, which is what the uncompressed twin
-  // would be: transcoded it holds 42.7 at a byte a texel (ASTC, BC7) and 21.3
-  // at half a byte (ETC2, BC1).
+  // 6.5, Callisto 6.9, Enceladus 6.8, Dione 6.7, Tethys 6.6, and Pluto 14.9
+  // (UASTC, below). What one must not do is hold 170.7 MiB, which is what the
+  // uncompressed twin would be: transcoded it holds 42.7 at a byte a texel
+  // (ASTC, BC7) and 21.3 at half a byte (ETC2, BC1).
   io8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('io-8k'), out: '8k/io.v2.ktx2' },
   europa8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('europa-8k'), out: '8k/europa.v2.ktx2' },
   ganymede8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('ganymede-8k'), out: '8k/ganymede.v2.ktx2' },
   callisto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('callisto-8k'), out: '8k/callisto.v2.ktx2' },
-  pluto8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v2.ktx2' },
+  // Pluto's 8K is the exception in this batch, and UASTC, because up close
+  // its ETC1S cells were what the planet looked like. Its map is a mono
+  // mosaic put through one colour ramp, so ETC1S treats it as nearly grey: a block is two endpoints of one colour and a
+  // 2-bit index, and a 4x4 cell came back with about three shades (3.5 and
+  // 2.9 distinct values on the two busiest 96x64 patches, against 12.5 and
+  // 10.6 in the pluto-8k intermediate), RMS 14 on both (worst texel 89 and
+  // 96), steps across cell edges 1.4 to 1.5x those inside a cell, and a pink
+  // or green tint where a cell's one colour missed the ramp. The map is also
+  // the bump map, so the grid was lit as relief. At this table's UASTC
+  // defaults: RMS about 3 on the patches, edge steps back near the map's own,
+  // 14.9 MB on the wire against 3.6, and 42.7 MiB held against 21.3 — what
+  // the ladder already charges an 8K container. The pixels did not change, so
+  // the intermediate keeps its name and only the shipped file moved: to .v3,
+  // because 8k/pluto.v2.ktx2 shipped as the ETC1S file and the worker caches
+  // by name.
+  pluto8k: { tier: '8k', source: fromMoonmap('pluto-8k'), out: '8k/pluto.v3.ktx2' },
   // The three Saturnians whose mosaics hold real detail past 4K over nearly
   // all of the surface (Mimas' and Iapetus' are 5760 px, so an 8K of either
   // would be a blow-up; Rhea's and Charon's gain less than Callisto's). All

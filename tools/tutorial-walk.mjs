@@ -802,8 +802,12 @@ try {
             note('  acted: tapped the next-eclipse arrow, twice');
           } else if (tag === 'desktop' && state.beat.id === 'look-up') {
             await page.click('#observatory-lookup');
-            await page.click('#observatory-lookup');
-            note('  acted: tapped Look up, twice');
+            // A second press must not undo the first. The tour folds the panel
+            // away two or three seconds after it, and under software rendering
+            // a click waits seconds for its frame: by then there may be no
+            // button left to press, which is the tour moving on, not a fault.
+            const pressedAgain = await page.click('#observatory-lookup', { timeout: 5000 }).then(() => true, () => false);
+            note(pressedAgain ? '  acted: tapped Look up, twice' : '  acted: tapped Look up; the panel had folded away before a second press');
           } else {
             await proceed(page, tag, 'eclipse', state);
           }

@@ -1,7 +1,8 @@
 /**
- * The close-range surface field: one tileable map, built once at run time, that
- * carries what a body's colour map has stopped saying once it is magnified past
- * a texel a pixel.
+ * The close-range surface fields: two tileable maps, built once at run time,
+ * that carry what a body's colour map has stopped saying once it is magnified
+ * past a texel a pixel — the full field, and the ground field described under
+ * TWO FIELDS below.
  *
  * WHAT IS IN IT. A cratered, grainy height field — a size-frequency mix of
  * impact craters (many small, few large, the distribution every airless surface
@@ -36,13 +37,13 @@
  * octaves, steeper, with a few of the craters. A colour map that is a
  * photograph already carries the body's real craters down to its own texel,
  * so up close the full field's invented craters land on top of the real ones
- * and the surface wears two sets. Turning the craters down cannot be done at sample time — craters
- * and grain are summed into one map — so a body that must keep the grain
- * without most of the craters reads a second map instead. It is stored in the
- * full field's own range and gradient scale, so the one shader reads either
- * through the same uniforms and a byte means the same height in both; only its
- * mean differs. It is built only when a body asks for it; which bodies do is
- * world/PlanetFactory's rule (`wearsGroundField`).
+ * and the surface wears two sets. Turning the craters down cannot be done at
+ * sample time — craters and grain are summed into one map — so a body that
+ * must keep the grain without most of the craters reads a second map instead.
+ * It is stored in the full field's own range and gradient scale, so the one
+ * shader reads either through the same uniforms and a byte means the same
+ * height in both; only its mean differs. Both are built at boot in one pass;
+ * which bodies wear which is world/PlanetFactory's rule (`wearsGroundField`).
  */
 import * as THREE from 'three';
 import { periodicLattice, periodicValueNoise } from './periodicNoise';
@@ -272,76 +273,107 @@ export interface BuiltSurfaceField {
   mean: number;
 }
 
-/** Lay a field's craters and grain into raw height and gradient arrays. */
-function rawSurfaceField(size: number, recipe: SurfaceFieldRecipe): RawSurfaceField {
-  const craters = thinnedCraterField(recipe.craters);
-  const grain = SURFACE_DETAIL_GRAIN.map((o, i) => ({
+/**
+ * Lay fields' craters and grain into raw height and gradient arrays, one field
+ * per recipe, in one pass over the tile.
+ *
+ * Every field is the same two grain octaves at its own gain over its own
+ * craters, so the pass samples the octaves once per texel and adds them into
+ * each field: the sampling is most of what a field with few craters costs, so
+ * the ground field built beside the full one adds a fifth to the build rather
+ * than half. The arithmetic is
+ * term for term what it was when each field was built on its own, so a
+ * stored byte does not move by building two together.
+ */
+function rawSurfaceFields(size: number, recipes: readonly SurfaceFieldRecipe[]): RawSurfaceField[] {
+  const octaves = SURFACE_DETAIL_GRAIN.map((o, i) => ({
     cells: o.cells,
-    // The height that slope reaches across one cell, times the recipe's gain.
-    // A gain of exactly one leaves every product bit for bit what it was.
-    amp: (o.slope / o.cells) * recipe.grainGain,
     table: periodicLattice(o.cells, 11 + i * 7),
   }));
-  const height = new Float64Array(size * size);
-  const gradU = new Float64Array(size * size);
-  const gradV = new Float64Array(size * size);
-  let min = Infinity;
-  let max = -Infinity;
   // How far outside its own radius a crater still says anything.
   const reachOf = (radius: number) => radius * (1 + RIM_SUPPORT * SURFACE_DETAIL_RIM_WIDTH);
-  // Per crater, once: the reach, its square, and the reciprocal radius the
-  // distance is measured in.
-  const prepared = craters.map((c) => ({
-    cx: c.cx, cy: c.cy, invRadius: 1 / c.radius, radius: c.radius, reach: reachOf(c.radius),
+  const fields = recipes.map((recipe) => ({
+    // The height each octave's slope reaches across one cell, times the
+    // recipe's gain. A gain of exactly one leaves every product bit for bit
+    // what it was.
+    amp: SURFACE_DETAIL_GRAIN.map((o) => (o.slope / o.cells) * recipe.grainGain),
+    // Per crater, once: the reach and the reciprocal radius the distance is
+    // measured in.
+    craters: thinnedCraterField(recipe.craters).map((c) => ({
+      cx: c.cx, cy: c.cy, invRadius: 1 / c.radius, radius: c.radius, reach: reachOf(c.radius),
+    })),
+    rowCraters: [] as { cx: number; cy: number; invRadius: number; radius: number; reach: number }[],
+    out: {
+      height: new Float64Array(size * size),
+      gradU: new Float64Array(size * size),
+      gradV: new Float64Array(size * size),
+      min: Infinity,
+      max: -Infinity,
+    } as RawSurfaceField,
   }));
-  const rowCraters: typeof prepared = [];
   const profile: CraterHeight = { h: 0, dh: 0 };
+  // This texel's octave samples: value around its middle, then the two
+  // derivatives, three numbers an octave.
+  const sample = new Float64Array(octaves.length * 3);
   for (let py = 0; py < size; py++) {
     const v = py / size;
     // Which craters can reach this ROW at all, decided once for the row. The
     // map is built at boot, on the main thread, in front of a load screen the
     // user is watching: testing all 150 craters at all 260,000 texels is forty
     // million comparisons and a tenth of a second of it.
-    rowCraters.length = 0;
-    for (const c of prepared) {
-      if (Math.abs(wrapDelta(v, c.cy)) <= c.reach) rowCraters.push(c);
+    for (const f of fields) {
+      f.rowCraters.length = 0;
+      for (const c of f.craters) {
+        if (Math.abs(wrapDelta(v, c.cy)) <= c.reach) f.rowCraters.push(c);
+      }
     }
     for (let px = 0; px < size; px++) {
       const u = px / size;
-      let h = 0;
-      let gu = 0;
-      let gv = 0;
-      for (const c of rowCraters) {
-        const du = wrapDelta(u, c.cx);
-        if (du > c.reach || du < -c.reach) continue;
-        const dv = wrapDelta(v, c.cy);
-        const rSq = du * du + dv * dv;
-        if (rSq > c.reach * c.reach) continue;
-        const r = Math.sqrt(rSq);
-        craterProfile(r * c.invRadius, profile);
-        h += profile.h * c.radius;
-        // The centre is the one point where the direction is undefined, and it
-        // is also where a round crater's slope is zero.
-        if (r > 1e-9) {
-          gu += profile.dh * (du / r);
-          gv += profile.dh * (dv / r);
-        }
-      }
-      for (const o of grain) {
-        const n = periodicValueNoise(o.table, o.cells, u * o.cells, v * o.cells);
-        h += o.amp * (n.value - 0.5);
-        gu += o.amp * n.dx * o.cells;
-        gv += o.amp * n.dy * o.cells;
-      }
       const i = py * size + px;
-      height[i] = h;
-      gradU[i] = gu;
-      gradV[i] = gv;
-      if (h < min) min = h;
-      if (h > max) max = h;
+      for (let k = 0; k < octaves.length; k++) {
+        const o = octaves[k];
+        const n = periodicValueNoise(o.table, o.cells, u * o.cells, v * o.cells);
+        sample[k * 3] = n.value - 0.5;
+        sample[k * 3 + 1] = n.dx;
+        sample[k * 3 + 2] = n.dy;
+      }
+      for (const f of fields) {
+        let h = 0;
+        let gu = 0;
+        let gv = 0;
+        for (const c of f.rowCraters) {
+          const du = wrapDelta(u, c.cx);
+          if (du > c.reach || du < -c.reach) continue;
+          const dv = wrapDelta(v, c.cy);
+          const rSq = du * du + dv * dv;
+          if (rSq > c.reach * c.reach) continue;
+          const r = Math.sqrt(rSq);
+          craterProfile(r * c.invRadius, profile);
+          h += profile.h * c.radius;
+          // The centre is the one point where the direction is undefined, and
+          // it is also where a round crater's slope is zero.
+          if (r > 1e-9) {
+            gu += profile.dh * (du / r);
+            gv += profile.dh * (dv / r);
+          }
+        }
+        for (let k = 0; k < octaves.length; k++) {
+          const amp = f.amp[k];
+          const cells = octaves[k].cells;
+          h += amp * sample[k * 3];
+          gu += amp * sample[k * 3 + 1] * cells;
+          gv += amp * sample[k * 3 + 2] * cells;
+        }
+        const out = f.out;
+        out.height[i] = h;
+        out.gradU[i] = gu;
+        out.gradV[i] = gv;
+        if (h < out.min) out.min = h;
+        if (h > out.max) out.max = h;
+      }
     }
   }
-  return { height, gradU, gradV, min, max };
+  return fields.map((f) => f.out);
 }
 
 /**
@@ -386,6 +418,9 @@ function encodeSurfaceField(
   };
 }
 
+/** The full field's own recipe: every crater, the grain as authored. */
+const FULL_RECIPE: SurfaceFieldRecipe = { craters: SURFACE_DETAIL_CRATERS, grainGain: 1 };
+
 /**
  * Build the full field's bytes: every crater and both grain octaves, `size` on
  * a side, normalised by the range the field itself reached so the byte spends
@@ -399,7 +434,7 @@ function encodeSurfaceField(
  * range the deepest hole in the tile set.
  */
 export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): BuiltSurfaceField {
-  const raw = rawSurfaceField(size, { craters: SURFACE_DETAIL_CRATERS, grainGain: 1 });
+  const [raw] = rawSurfaceFields(size, [FULL_RECIPE]);
   return encodeSurfaceField(raw, raw);
 }
 
@@ -413,6 +448,10 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): BuiltSurfac
  * thinned craters are too small and too rare to show where the photograph
  * still has craters of its own, and they give the closest view, where the
  * photograph has nothing left to say, something to read as ground.
+ *
+ * What was judged includes this: the albedo grain reads the stored height, so
+ * with most of the craters gone it is about half as strong on these moons (the
+ * stored height's rms falls from 0.117 to 0.059 of its range).
  */
 export const SURFACE_GROUND_CRATERS = 12;
 
@@ -427,16 +466,22 @@ export const SURFACE_GROUND_GRAIN_GAIN = 1.6;
 
 /** DEV `?ground=<craters>[,<grainGain>]`: a recipe for the ground field this
  *  boot in place of the two constants above, for tuning by eye. It changes
- *  what the ground field is, not which bodies wear it. */
-export function parseGroundParam(search: string): SurfaceFieldRecipe | null {
-  if (!import.meta.env.DEV) return null;
+ *  what the ground field is, not which bodies wear it. A value it cannot read
+ *  is said so in the console and leaves the shipped recipe. */
+export function parseGroundParam(search: string, dev: boolean = import.meta.env.DEV): SurfaceFieldRecipe | null {
+  if (!dev) return null;
   const raw = new URLSearchParams(search).get('ground');
   if (raw === null) return null;
   const [cratersText, gainText] = raw.split(',');
   const craters = Number(cratersText);
   const grainGain = gainText === undefined ? SURFACE_GROUND_GRAIN_GAIN : Number(gainText);
-  if (!Number.isInteger(craters) || craters < 0 || craters > SURFACE_DETAIL_CRATERS) return null;
-  if (!Number.isFinite(grainGain) || grainGain <= 0 || grainGain > 4) return null;
+  if (
+    !Number.isInteger(craters) || craters < 0 || craters > SURFACE_DETAIL_CRATERS
+    || !Number.isFinite(grainGain) || grainGain <= 0 || grainGain > 4
+  ) {
+    console.warn(`?ground=${raw}: expected <craters 0..${SURFACE_DETAIL_CRATERS}>[,<grain gain above 0, at most 4>]; the shipped recipe stands`);
+    return null;
+  }
   return { craters, grainGain };
 }
 
@@ -471,7 +516,7 @@ export const SURFACE_GROUND_MODE: GroundFieldMode =
   typeof location === 'undefined' ? 'shipped' : parseGroundFieldMode(location.search);
 
 /**
- * Build the ground field's bytes, stored in the FULL field's own range.
+ * Build the ground field's bytes, stored in the FULL field's own `range`.
  *
  * That is what lets the shader read either field through the same uniforms:
  * the height span the relief is scaled by and the gradient scale the slope is
@@ -485,11 +530,23 @@ export const SURFACE_GROUND_MODE: GroundFieldMode =
  * many texels, and a recipe worth drawing clamps none.
  */
 export function buildSurfaceGroundNoise(
-  recipe: SurfaceFieldRecipe = SURFACE_GROUND_RECIPE,
-  size = SURFACE_DETAIL_SIZE,
-  range: { min: number; max: number } = buildSurfaceDetailNoise(size).range,
+  recipe: SurfaceFieldRecipe,
+  size: number,
+  range: { min: number; max: number },
 ): BuiltSurfaceField {
-  return encodeSurfaceField(rawSurfaceField(size, recipe), range);
+  const [raw] = rawSurfaceFields(size, [recipe]);
+  return encodeSurfaceField(raw, range);
+}
+
+/** Both fields from one pass over the tile, the ground field stored in the
+ *  full field's range: what a session that draws both builds, at boot. */
+export function buildSurfaceFields(
+  groundRecipe: SurfaceFieldRecipe,
+  size = SURFACE_DETAIL_SIZE,
+): { full: BuiltSurfaceField; ground: BuiltSurfaceField } {
+  const [fullRaw, groundRaw] = rawSurfaceFields(size, [FULL_RECIPE, groundRecipe]);
+  const full = encodeSurfaceField(fullRaw, fullRaw);
+  return { full, ground: encodeSurfaceField(groundRaw, full.range) };
 }
 
 let detailTexture: THREE.DataTexture | null = null;
@@ -567,40 +624,58 @@ function surfaceFieldTexture(data: Uint8Array): THREE.DataTexture {
   return tex;
 }
 
-/** The full field as a texture, built once per session and shared by every
- *  surface that draws it. */
-export function surfaceDetailTexture(): THREE.DataTexture {
-  if (!detailTexture) {
-    const { data, range, mean } = buildSurfaceDetailNoise(SURFACE_DETAIL_SIZE);
-    detailSpan = range.max - range.min;
-    detailMean = mean;
-    detailRange = range;
-    detailTexture = surfaceFieldTexture(data);
-  }
-  return detailTexture;
+/** Seat the full field's texture and the numbers read off it. */
+function seatDetail(built: BuiltSurfaceField): void {
+  detailSpan = built.range.max - built.range.min;
+  detailMean = built.mean;
+  detailRange = built.range;
+  detailTexture = surfaceFieldTexture(built.data);
 }
 
-/** The ground field as a texture, built on first use — a session in which no
- *  body wears it never pays for it — with the same settings as the full one. */
+/** Seat the ground field's texture; in DEV, say so if its recipe clamps. */
+function seatGround(built: BuiltSurfaceField): void {
+  if (import.meta.env.DEV && (built.clipped > 0 || built.heightClipped > 0)) {
+    console.warn(
+      `ground field ${SURFACE_GROUND_RECIPE.craters},${SURFACE_GROUND_RECIPE.grainGain} clamps `
+      + `${built.heightClipped} heights and ${built.clipped} gradients of ${SURFACE_DETAIL_SIZE ** 2} texels`,
+    );
+  }
+  groundMean = built.mean;
+  groundTexture = surfaceFieldTexture(built.data);
+}
+
+/**
+ * The full field as a texture, built once per session and shared by every
+ * surface that draws it.
+ *
+ * Built at boot, by the first surface augmented, which is in front of the
+ * loading screen: the right place for main-thread work the player would
+ * otherwise feel. Unless `?groundfield=0` says no body will wear it, the
+ * ground field is built in the same pass — the shipped rule puts it on moons
+ * every session creates at boot, and the two share their grain sampling.
+ */
+export function surfaceDetailTexture(): THREE.DataTexture {
+  if (!detailTexture) {
+    if (SURFACE_GROUND_MODE === 'off') {
+      seatDetail(buildSurfaceDetailNoise(SURFACE_DETAIL_SIZE));
+    } else {
+      const { full, ground } = buildSurfaceFields(SURFACE_GROUND_RECIPE, SURFACE_DETAIL_SIZE);
+      seatDetail(full);
+      seatGround(ground);
+    }
+  }
+  return detailTexture!;
+}
+
+/** The ground field as a texture, with the same settings as the full one —
+ *  built beside it (surfaceDetailTexture), or on its own if a session that
+ *  said no body would wear it asks after all. */
 export function surfaceGroundTexture(): THREE.DataTexture {
   if (!groundTexture) {
     surfaceDetailTexture();
-    const { data, mean } = buildSurfaceGroundNoise(SURFACE_GROUND_RECIPE, SURFACE_DETAIL_SIZE, detailRange);
-    groundMean = mean;
-    groundTexture = surfaceFieldTexture(data);
+    if (!groundTexture) {
+      seatGround(buildSurfaceGroundNoise(SURFACE_GROUND_RECIPE, SURFACE_DETAIL_SIZE, detailRange));
+    }
   }
-  return groundTexture;
-}
-
-/** Drop both shared maps — a lost context frees their uploads, and the next
- *  call builds them again rather than binding a dead name. */
-export function disposeSurfaceDetailTexture(): void {
-  detailTexture?.dispose();
-  detailTexture = null;
-  detailSpan = 0;
-  detailMean = 0;
-  detailRange = { min: 0, max: 0 };
-  groundTexture?.dispose();
-  groundTexture = null;
-  groundMean = 0;
+  return groundTexture!;
 }

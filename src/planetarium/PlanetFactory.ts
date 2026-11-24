@@ -67,7 +67,7 @@ import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
   applyColorTierTexture, applyNormalTierTexture, earnedUpgradeTier, initialColorTierRank,
-  makeNormalUpgrade, makeTextureUpgrade, PLANET_TEXTURE_FILES, resolveUpgradeTier, TEXTURE_UPGRADE_TIERS, TIER_RANK,
+  makeNormalUpgrade, makeTextureUpgrade, PLANET_TEXTURE_FILES, resolveUpgradeTier, sharpestReachableMapWidth, TIER_RANK,
   upgradeComplete, type NormalUpgrade, type TextureUpgrade,
 } from './world/textureLadder';
 
@@ -992,35 +992,44 @@ const FULL_FIELD_KEEPERS = new Set(['Ganymede']);
  * Whether a body wears the close-range GROUND field — the grain with a few
  * thinned craters (world/surfaceDetailNoise) — instead of the full field.
  *
- * All of these, read off the body's own data:
- * - its colour map is a photograph (`textureKey` names a file), which already
- *   carries the body's real craters, so the full field's invented ones land on
- *   top of them up close and the surface wears two sets;
- * - that photograph's sharpest rung is 8K (the ladder's own table): only there
- *   is the map sharp enough for its real craters to be what the eye reads;
- * - the surface draws invented relief at all: a body whose relief counts as
- *   measured (an elevation map, or a photograph read as bump) never draws the
- *   field's craters as relief, and is left exactly as it is, grain included;
+ * What was seen, body by body up close: on a 4K or 8K photograph the full
+ * field's craters sat over the photograph's own as a second set; on a 2K
+ * photograph the close view is blur either way, and the full field's craters
+ * are the only texture it has, so those bodies keep them. So, all of:
+ * - the colour map is a photograph (`textureKey` names a file);
+ * - the sharpest map THIS device can reach for it (`sharpestWidth`: its
+ *   ladder handle's ceiling — the table's top, cut by the device's texture
+ *   size and by the rungs this session has files for — or its boot map where
+ *   that is wider; textureLadder's sharpestReachableMapWidth) is at least 4K
+ *   wide. A device that can only reach a softer map draws it blurred, and
+ *   that blur wants the full field's craters as much as a 2K moon's does;
+ * - the relief is not measured: a body whose relief counts as measured (an
+ *   elevation map, or a photograph read as bump) never draws the field's
+ *   craters as relief, and is left exactly as it is, grain included;
+ * - the surface class draws the field;
  * - it is not one of FULL_FIELD_KEEPERS.
- * That is Io, Europa, Callisto, Enceladus, Tethys and Dione.
+ * On a desktop that is Io, Europa, Callisto, Enceladus, Tethys, Dione, Mimas,
+ * Rhea, Iapetus and Charon.
  *
  * `?groundfield=0` puts every body back on the full field; DEV `?groundall=1`
- * drops the 8K rule and the keepers, for judging the softer photographs.
+ * drops the resolution rule and the keepers, for judging the rest by eye.
  *
  * A body's crater share is untouched: on the ground field it only draws the
- * ground finer and fainter, which suits the resurfaced moons.
+ * ground finer and fainter, which on the resurfaced moons (Io, Europa,
+ * Enceladus) was judged unchanged from the full field.
  */
 export function wearsGroundField(
   name: string,
   textureKey: string | undefined,
   archetype: SurfaceArchetype,
   relief: SurfaceReliefKind,
+  sharpestWidth: number,
   mode: GroundFieldMode = SURFACE_GROUND_MODE,
 ): boolean {
   if (mode === 'off' || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
   if (relief === 'measured' || !surfaceDrawsDetailField(archetype)) return false;
   if (mode === 'all') return true;
-  return TEXTURE_UPGRADE_TIERS[textureKey]?.at(-1) === '8k' && !FULL_FIELD_KEEPERS.has(name);
+  return sharpestWidth >= 4096 && !FULL_FIELD_KEEPERS.has(name);
 }
 
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
@@ -1242,12 +1251,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // default of 1 did to the clouds).
   seatSurfaceAirRadius(fx.air, planet.radiusAU);
   setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
-  // A planet's photograph is its bump map, which counts as measured relief, so
-  // under today's rule no planet wears the ground field; asked all the same, so
-  // the rule lives in one place.
-  if (wearsGroundField(planet.name, planet.textureKey, planetArchetype(planet), surfaceReliefKind(mat))) {
-    setSurfaceGroundField(mat, true);
-  }
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
   // walks the ladder from there.
@@ -1297,6 +1300,21 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         });
       },
     });
+  }
+
+  // Which close-range field the globe reads, asked where its relief and its
+  // ladder's ceiling are both settled: after the measured normal's flag above
+  // and the colour ladder's handle. No planet wears the ground field under
+  // today's rule — Mercury, Mars and Pluto carry relief that counts as
+  // measured (a photograph read as bump, or Mars's elevation map), and the
+  // gas giants, Venus's cloud deck and Earth are surface classes that draw no
+  // field at all — but the question is asked here all the same, so the rule
+  // lives in one place.
+  if (wearsGroundField(
+    planet.name, planet.textureKey, planetArchetype(planet), surfaceReliefKind(mat),
+    sharpestReachableMapWidth(planet.textureKey, surfaceUpgrade),
+  )) {
+    setSurfaceGroundField(mat, true);
   }
 
   // A base map that missed the load timeout lands here rather than on the
@@ -2120,9 +2138,14 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       });
     }
 
-    // Which close-range field the moon reads. After the measured-relief flag
-    // above, which is part of the answer.
-    if (wearsGroundField(moonData.name, moonData.textureKey, archetype, surfaceReliefKind(mat))) {
+    // The colour ladder's handle, built before the question below because its
+    // ceiling — part of the sharpest map this device can reach for the body —
+    // is part of the answer, as is the measured-relief flag above.
+    const photoUpgrade = makeTextureUpgrade(moonData.textureKey, mat);
+    if (wearsGroundField(
+      moonData.name, moonData.textureKey, archetype, surfaceReliefKind(mat),
+      moonData.textureKey ? sharpestReachableMapWidth(moonData.textureKey, photoUpgrade) : 0,
+    )) {
       setSurfaceGroundField(mat, true);
     }
 
@@ -2158,7 +2181,6 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     mesh.name = moonData.name;
     mesh.visible = false; // hidden until painted and the player is close
 
-    const photoUpgrade = makeTextureUpgrade(moonData.textureKey, mat);
     result.push({
       mesh,
       data: moonData,

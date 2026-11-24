@@ -130,7 +130,10 @@
  * seeded, tileable height field fades in and tilts the normal under it, so a
  * surface that has run out of photograph reads as ground rather than as blur.
  * It composes UNDER whatever is painted: it perturbs shading and never restates
- * a body's colour.
+ * a body's colour. There are two such fields (world/surfaceDetailNoise): the
+ * full one, a crater field, and a ground field with only a few craters that
+ * the moons with a sharp photograph read instead, so their real craters are
+ * not drawn twice; which body reads which is world/PlanetFactory's rule.
  *
  * Its CPU twin does not exist and must not be written. The procedural moon
  * painter holds every LOOK term in both a GPU and a CPU path so a device that
@@ -1539,9 +1542,12 @@ export const SYNTH_CHART_CUT = 0.5;
  * The cost is at the top of the ladder: the rung ceiling arrives three rungs
  * earlier on a share-0 body, so a camera standing on Europa reaches the
  * magnifying regime sooner and its pitting grows as it comes closer instead of
- * staying put. If that is ever seen, the fix is the ground field — the grain
- * without the craters, a second map read through the same uniforms
- * (setSurfaceGroundField) — at a share of one, not a bigger ceiling.
+ * staying put. If that is ever seen, the fix is not a bigger ceiling. What
+ * ships on the photographed moons is the ground field (setSurfaceGroundField:
+ * the grain with a few thinned craters, a second map read through the same
+ * uniforms) with each body's share kept as it is — Io and Europa at 0,
+ * Enceladus at 0.3 — which up close was judged unchanged from the full field;
+ * the share then only draws that ground finer and fainter.
  */
 const SYNTH_SMOOTH_RUNGS = 3;
 
@@ -3929,7 +3935,7 @@ export function setSurfaceSynthesis(
 ): void {
   const args = augmentArgs.get(mat);
   if (!args) return;
-  const drawsNothing = SYNTH_GRAIN[args.archetype] === 0 && args.synthReliefGain === 0;
+  const drawsNothing = !surfaceDrawsDetailField(args.archetype);
   args.uSynthEnvelope.value = drawsNothing ? 0 : envelope;
   args.uSynthRelief.value = relief === 'measured' ? 0 : args.synthReliefGain;
   args.uSynthBumpFade.value = relief === 'painted' ? 1 : 0;

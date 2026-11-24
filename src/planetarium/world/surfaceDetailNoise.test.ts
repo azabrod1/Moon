@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { periodicLattice, periodicValueNoise } from './periodicNoise';
 import {
   buildSurfaceDetailNoise,
+  buildSurfaceFields,
   buildSurfaceGroundNoise,
   craterField,
   parseGroundParam,
@@ -232,10 +233,20 @@ describe('the ground field', () => {
     { craters: SURFACE_GROUND_CRATERS, grainGain: SURFACE_GROUND_GRAIN_GAIN }, size, full.range,
   );
 
-  it('ships the recipe judged by eye: twelve thinned craters, the grain 1.6 times as steep', () => {
-    expect(SURFACE_GROUND_CRATERS).toBe(12);
-    expect(SURFACE_GROUND_GRAIN_GAIN).toBe(1.6);
-    expect(SURFACE_GROUND_RECIPE).toEqual({ craters: 12, grainGain: 1.6 });
+  it('stores the bytes that were judged, built alone or beside the full field', () => {
+    // The shipped ground field was chosen by eye; a change to its bytes is a
+    // change to what was chosen, and has to be typed here too. Built beside the
+    // full field — one pass over the tile, as boot does — both fields are the
+    // bytes each makes on its own.
+    const pinned = '68db4fbd84b4ff3718c10718c19e59ab6c9a1c39bbc6f9ec9efd2a260e0fd822';
+    const hash = (d: Uint8Array) => createHash('sha256').update(d).digest('hex');
+    expect(hash(shipped.data)).toBe(pinned);
+    const both = buildSurfaceFields({ craters: SURFACE_GROUND_CRATERS, grainGain: SURFACE_GROUND_GRAIN_GAIN }, size);
+    expect(hash(both.ground.data)).toBe(pinned);
+    expect(hash(both.full.data)).toBe(hash(full.data));
+    expect(both.ground.mean).toBe(shipped.mean);
+    // And the boot's recipe is the shipped one, with nothing in the URL.
+    expect(SURFACE_GROUND_RECIPE).toEqual({ craters: SURFACE_GROUND_CRATERS, grainGain: SURFACE_GROUND_GRAIN_GAIN });
   });
 
   it('stores the shipped recipe without clamping a height or a gradient', () => {
@@ -341,13 +352,26 @@ describe('the ground field', () => {
     expect(s.wrapY).toBeLessThan(s.innerY * 1.5 + size);
   });
 
-  it('reads its recipe from the DEV switch', () => {
-    // The gain left out is the shipped one.
-    expect(parseGroundParam('?ground=0')).toEqual({ craters: 0, grainGain: SURFACE_GROUND_GRAIN_GAIN });
-    expect(parseGroundParam('?ground=12,1.6')).toEqual({ craters: 12, grainGain: 1.6 });
-    expect(parseGroundParam('?ground=-1')).toBeNull();
-    expect(parseGroundParam('?ground=2.5')).toBeNull();
-    expect(parseGroundParam('?ground=0,0')).toBeNull();
-    expect(parseGroundParam('?synth=0')).toBeNull();
+  it('reads its recipe from the DEV switch, and only in DEV', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The gain left out is the shipped one.
+      expect(parseGroundParam('?ground=0', true)).toEqual({ craters: 0, grainGain: SURFACE_GROUND_GRAIN_GAIN });
+      expect(parseGroundParam('?ground=12,1.6', true)).toEqual({ craters: 12, grainGain: 1.6 });
+      expect(parseGroundParam('?synth=0', true)).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+      // A value it cannot read says so, and leaves the shipped recipe.
+      for (const bad of ['-1', '2.5', '0,0', '0,9', 'x']) {
+        expect(parseGroundParam(`?ground=${bad}`, true)).toBeNull();
+      }
+      expect(warn).toHaveBeenCalledTimes(5);
+      // Inert in a production build, whatever the URL says.
+      warn.mockClear();
+      expect(parseGroundParam('?ground=0', false)).toBeNull();
+      expect(parseGroundParam('?ground=x', false)).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

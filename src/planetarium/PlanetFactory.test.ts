@@ -81,6 +81,7 @@ import {
   RESTORE_STANDIN_WIDTH,
   type TierAdmission,
   makeTextureUpgrade,
+  sharpestReachableMapWidth,
   materialColorMap,
   materialColorWidth,
   needsUpgradeCover,
@@ -110,8 +111,11 @@ import {
   NIGHT_LIFT_STRENGTH,
   nightLiftUniform,
   seaWindOn,
+  surfaceGroundField,
+  surfaceShadingArgsOf,
   type SurfaceArchetype,
 } from './world/surfaceShading';
+import { surfaceDetailTexture, surfaceGroundTexture } from './world/surfaceDetailNoise';
 import { PLANETS } from './planets/planetData';
 import { seaWindTexture } from './world/seaWind';
 import {
@@ -4288,38 +4292,92 @@ describe('which bodies wear the ground field', () => {
     ['Iapetus', 'iapetus', 'icy'], ['Charon', 'charon', 'icy'], ['Triton', 'triton', 'icy'],
     ['Titan', 'titan', 'icy'], ['Miranda', 'miranda', 'icy'], ['Ariel', 'ariel', 'icy'],
   ];
+  /** A desktop session: a 16K texture size and a container transcoder bound,
+   *  so every rung on disk is reachable. */
+  function onDesktop<T>(run: () => T): T {
+    withMaxTextureSize(16384);
+    bindKtx2TierLoader(() => {}, true);
+    try {
+      return run();
+    } finally {
+      bindKtx2TierLoader(null);
+      withMaxTextureSize(4096);
+    }
+  }
+  /** The width the factory asks with, from the handle built the way it builds it. */
+  const widthOf = (key: string) =>
+    sharpestReachableMapWidth(key, makeTextureUpgrade(key, trackMaterial(new THREE.MeshStandardMaterial())));
   const wearing = (mode: 'shipped' | 'off' | 'all') =>
-    moons.filter(([name, key, archetype]) => wearsGroundField(name, key, archetype, 'none', mode))
+    moons.filter(([name, key, archetype]) => wearsGroundField(name, key, archetype, 'none', widthOf(key), mode))
       .map(([name]) => name);
 
-  it('is the moons with a sharp photograph and invented relief, Ganymede kept on the full field', () => {
-    expect(wearing('shipped')).toEqual(['Io', 'Europa', 'Callisto', 'Enceladus', 'Tethys', 'Dione']);
-    // And the boot's own mode is the shipped one, with nothing in the URL.
-    expect(wearsGroundField('Dione', 'dione', 'icy', 'none')).toBe(true);
-    expect(wearsGroundField('Ganymede', 'ganymede', 'icy', 'none')).toBe(false);
+  it('is the moons whose sharpest reachable map is 4K or more and whose relief is invented, Ganymede kept', () => {
+    expect(onDesktop(() => wearing('shipped'))).toEqual([
+      'Io', 'Europa', 'Callisto', 'Enceladus', 'Tethys', 'Dione', 'Rhea', 'Mimas', 'Iapetus', 'Charon',
+    ]);
     // A painted bump is invented relief too.
-    expect(wearsGroundField('Dione', 'dione', 'icy', 'painted', 'shipped')).toBe(true);
+    expect(wearsGroundField('Dione', 'dione', 'icy', 'painted', 8192, 'shipped')).toBe(true);
+  });
+
+  it('asks the device, not the table', () => {
+    // A session with no transcoder has no rung for the Saturnians, Callisto or
+    // the 4K moons: they draw their 2K boot maps blurred, and keep the full
+    // field. Io and Europa boot on a 4096 map, so they still wear the ground.
+    expect(wearing('shipped')).toEqual(['Io', 'Europa']);
+    // A 4096-cap device reaches Dione's 4K rung and not its 8K one.
+    withMaxTextureSize(4096);
+    bindKtx2TierLoader(() => {}, true);
+    try {
+      expect(widthOf('dione')).toBe(4096);
+      expect(wearing('shipped')).toContain('Dione');
+    } finally {
+      bindKtx2TierLoader(null);
+    }
+    expect(wearsGroundField('Dione', 'dione', 'icy', 'none', 2048, 'shipped')).toBe(false);
   });
 
   it('puts every body back on the full field under ?groundfield=0', () => {
-    expect(wearing('off')).toEqual([]);
+    expect(onDesktop(() => wearing('off'))).toEqual([]);
   });
 
   it('takes every photographed moon with invented relief under DEV ?groundall=1', () => {
-    expect(wearing('all')).toEqual(moons.map(([name]) => name));
+    expect(onDesktop(() => wearing('all'))).toEqual(moons.map(([name]) => name));
   });
 
   it('never touches a body whose relief counts as measured, nor one that draws no field', () => {
     for (const mode of ['shipped', 'all'] as const) {
-      expect(wearsGroundField('Moon', 'moon', 'airless', 'measured', mode)).toBe(false);
-      expect(wearsGroundField('Mercury', 'mercury', 'airless', 'measured', mode)).toBe(false);
-      expect(wearsGroundField('Pluto', 'pluto', 'airless', 'measured', mode)).toBe(false);
-      expect(wearsGroundField('Mars', 'mars', 'rocky', 'measured', mode)).toBe(false);
-      expect(wearsGroundField('Jupiter', 'jupiter', 'gas', 'none', mode)).toBe(false);
-      expect(wearsGroundField('Earth', 'earthDay', 'earth', 'measured', mode)).toBe(false);
+      expect(wearsGroundField('Moon', 'moon', 'airless', 'measured', 8192, mode)).toBe(false);
+      expect(wearsGroundField('Mercury', 'mercury', 'airless', 'measured', 8192, mode)).toBe(false);
+      expect(wearsGroundField('Pluto', 'pluto', 'airless', 'measured', 8192, mode)).toBe(false);
+      expect(wearsGroundField('Mars', 'mars', 'rocky', 'measured', 4096, mode)).toBe(false);
+      expect(wearsGroundField('Jupiter', 'jupiter', 'gas', 'none', 8192, mode)).toBe(false);
+      expect(wearsGroundField('Earth', 'earthDay', 'earth', 'measured', 8192, mode)).toBe(false);
       // A painted moon has no real craters to clash with.
-      expect(wearsGroundField('Phobos', undefined, 'airless', 'none', mode)).toBe(false);
+      expect(wearsGroundField('Phobos', undefined, 'airless', 'none', 2048, mode)).toBe(false);
     }
+  });
+
+  it('reaches the moons the factory builds, and binds the ground field on them', () => {
+    // Through createMoonMeshes, so the order the factory asks in is what is
+    // tested: the ladder's handle and the measured-relief flag both settled
+    // before the question.
+    const worn = (planet: string) => onDesktop(() => createMoonMeshes(planet))
+      .filter((m) => surfaceGroundField(m.mesh.material as THREE.Material))
+      .map((m) => m.data.name);
+    expect(worn('Jupiter')).toEqual(['Io', 'Europa', 'Callisto']);
+    expect([...worn('Saturn')].sort()).toEqual(['Dione', 'Enceladus', 'Iapetus', 'Mimas', 'Rhea', 'Tethys']);
+    expect(worn('Uranus')).toEqual([]);
+    expect(worn('Neptune')).toEqual([]);
+    expect(worn('Pluto')).toEqual(['Charon']);
+    const dione = onDesktop(() => createMoonMeshes('Saturn')).find((m) => m.data.name === 'Dione')!;
+    expect(surfaceShadingArgsOf(dione.mesh.material as THREE.Material)?.uSynthDetail.value).toBe(surfaceGroundTexture());
+  });
+
+  it('leaves Earth\'s Moon on the full field: its measured relief is flagged before the question', () => {
+    const moon = onDesktop(() => createMoonMeshes('Earth')).find((m) => m.data.name === 'Moon')!;
+    const mat = moon.mesh.material as THREE.Material;
+    expect(surfaceGroundField(mat)).toBe(false);
+    expect(surfaceShadingArgsOf(mat)?.uSynthDetail.value).toBe(surfaceDetailTexture());
   });
 });
 

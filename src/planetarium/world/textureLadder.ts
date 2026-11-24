@@ -685,6 +685,20 @@ export function ladderDrawnMapWidth(up: TextureUpgrade): number {
 }
 
 /**
+ * Width of the sharpest colour map this session can ever draw for `key`: the
+ * ladder handle's ceiling (`up`, fixed for the device when the handle is made),
+ * or the boot map where that is wider. A body with no handle — no rungs, or
+ * none this session has files for — draws its boot map at most.
+ */
+export function sharpestReachableMapWidth(key: string, up: TextureUpgrade | undefined): number {
+  return Math.max(
+    TIER_MAP_WIDTH[BOOT_TIER],
+    BOOT_MAP_WIDTH[key] ?? 0,
+    up ? TIER_MAP_WIDTH[up.effectiveMaxTier] : 0,
+  );
+}
+
+/**
  * Width of the colour map the surface tiles measure their magnification
  * against: the finest tier the ladder can reach, never below the nominal
  * width of the rung the body is DRAWING.

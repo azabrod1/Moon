@@ -7,9 +7,14 @@
  * (the world's moon meshes and the map's), and they must agree exactly — the
  * same moon at the same instant faces the same way on the chart as it does out
  * of the window.
+ *
+ * Earth's Moon is the exception: it wears its real orientation, the IAU lunar
+ * model with its librations (astronomy/lunarOrientation.ts). Every renderer
+ * asks `moonOrientationQuaternion`, which decides.
  */
 import * as THREE from 'three';
-import { ECLIPTIC_NORTH_EQUATORIAL } from '../../astronomy/planetary';
+import { ECLIPTIC_NORTH_EQUATORIAL, ttJDFromUtcMs } from '../../astronomy/planetary';
+import { lunarOrientationQuaternion } from '../../astronomy/lunarOrientation';
 
 /**
  * The roll reference a moon's locked face is levelled against — its orbit
@@ -65,4 +70,26 @@ export function tidalLockQuaternion(
   const up = tmpUp.crossVectors(basisZ, toParent);
   out.setFromRotationMatrix(tmpBasis.makeBasis(toParent, up, basisZ));
   return true;
+}
+
+/**
+ * The orientation a moon wears at an instant: Earth's Moon its real one (the
+ * IAU lunar model, librations included), every other moon the tidal lock
+ * above. The world, the map and Look inside all ask here, so the same moon
+ * faces the same way in each. Returns false — leaving `out` untouched — only
+ * for the tidal lock's degenerate geometry.
+ */
+export function moonOrientationQuaternion(
+  moonName: string,
+  parentPlanetName: string,
+  offsetFromParent: THREE.Vector3,
+  rollNorth: THREE.Vector3,
+  utcMs: number,
+  out: THREE.Quaternion,
+): boolean {
+  if (moonName === 'Moon' && parentPlanetName === 'Earth') {
+    lunarOrientationQuaternion(ttJDFromUtcMs(utcMs), out);
+    return true;
+  }
+  return tidalLockQuaternion(offsetFromParent, rollNorth, out);
 }

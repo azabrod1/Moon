@@ -54,7 +54,7 @@ Night, lens and flight
 On the dev server, `window.__moon` drives the app from the console or a test script, so nobody clicks by hand. Each helper is commented where it is defined, in `src/main.ts`.
 
 - Camera and clock: `jumpTo`, `travelTo` (a real trip, with the loading veil), `frame` (camera only), `setTimeMs`, `setTimeRate`, `horizonView`, `pinCapture`, `readScene`.
-- Landing and flight: `land`, `openObservatory`, `setSheetPark` (the phone sheet: `'peek'`, `'full'` or a height in px), `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`, `probeLanded`, `pilotTo`, `rideState`, `traceStart`, `traceStop`, `arrivalLook` (how far the camera turned toward a teleport's destination to keep it on screen).
+- Landing and flight: `land`, `openObservatory`, `setSheetPark` (the phone sheet: `'peek'`, `'full'` or a height in px), `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`, `probeLanded`, `pilotTo`, `rideState`, `traceStart`, `traceStop`, `arrivalLook` (how far the camera turned toward a teleport's destination to keep it on screen). `standAt(lat, lon, heightM)` stands at a site on the Moon while landed there (`standAt(null)` clears it); `siteProbe(name)` reads a body's altitude and azimuth at the site off the drawn objects. With the spot picker open, `sitePickAt(x, y)` returns the latitude and longitude a canvas pixel falls on.
 - Hiding things: `setChrome`, `setShipVisible`, `setBeltVisible`, `setRoleHidden`, `atmoTier`.
 - The tools: `compare…` and `interior…`. A screenshot of Look inside waits for `interiorReady()`.
 - Look tuning: `setDither`, `glint`, `glintMeter`, `glintTwin` (the meter's prediction of the beam at given ground points), `haze`, `aerosol`, `sunLight`, `albedoGrade`, `cloudShadow`, `cloudLight`, `cloudField`, `nightSides`, `nightExposure`.

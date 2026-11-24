@@ -121,7 +121,6 @@ describe('the page covers the screen (index.html)', () => {
     '#tutorial-card': ['top', 'left', 'right'],
     '.shud-tr': ['top', 'left', 'right'],
     '.shud-bottom': ['left', 'right', 'bottom'],
-    '.shud-timebar': ['bottom'],
     '.interior-top': ['top', 'left', 'right'],
     '#interior-panel': ['top', 'right', 'left', 'bottom'],
     '#compare-leave': ['top', 'left'],

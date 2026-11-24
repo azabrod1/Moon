@@ -9,6 +9,7 @@
 - Pixel A/B captures: pin Earth's atmosphere tier first (`__moon.atmoTier(null|'analytic', true)` once Earth reaches 'lut'; the bake lands ~9 s after ready), and wait for the texture ladder's rung as well as the sector streamer, or a faster arm reaches the pose at a different rung. Before blaming a shader term for an artefact, capture the same pose with the term switched off. Judge relief under grazing light; nadir light hides a height field.
 - Playwright cannot show real full screen or what Escape does there. A real browser is the only proof.
 - After a change to glow, glare or post-processing, also look with the glow off (`__moon.setBloom(false)`) and with `?nofloat=1`. The glow hides glare bugs that those paths show.
+- The Retro look (`src/retro`) is a fun mode. A change elsewhere does not need checking under it, and a release does not wait on it; check it only when the change is to Retro itself.
 
 ## Batteries in tools/
 

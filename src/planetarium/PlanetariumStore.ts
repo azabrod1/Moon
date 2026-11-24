@@ -134,6 +134,10 @@ export interface PlanetariumState {
    *  state is not the preference, and a save never bakes a default. */
   miniChartSizePref?: number;
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
+  /** Where on the landed body the player chose to stand: part of the
+   *  landing, so it goes where the landing goes. Absent on the surface
+   *  view's own vantage, and meaningless without `landedOn`. */
+  landedSite?: LandedSite;
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
   autopilotTarget?: LandedTarget; // destination for fly-to autopilot
@@ -190,6 +194,24 @@ function sanitizeLandedOn(raw: unknown): LandedTarget {
     return { type: 'moon', name: landedRecord.name, parentPlanet: landedRecord.parentPlanet };
   }
   return null;
+}
+
+/** A spot on the landed body: east-positive degrees, and a place's name
+ *  when it came from the places list. */
+export interface LandedSite {
+  latitudeDeg: number;
+  longitudeDeg: number;
+  name?: string;
+}
+
+function sanitizeLandedSite(raw: unknown): LandedSite | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const record = raw as Record<string, unknown>;
+  if (!isFiniteNumber(record.latitudeDeg) || !isFiniteNumber(record.longitudeDeg)) return undefined;
+  if (Math.abs(record.latitudeDeg) > 90 || Math.abs(record.longitudeDeg) > 180) return undefined;
+  const site: LandedSite = { latitudeDeg: record.latitudeDeg, longitudeDeg: record.longitudeDeg };
+  if (typeof record.name === 'string' && record.name.length > 0 && record.name.length <= 80) site.name = record.name;
+  return site;
 }
 
 function sanitizeUtcMs(raw: unknown, fallback: number): number {
@@ -272,6 +294,7 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       ? clampMiniSizeScale(record.miniChartSizePref)
       : undefined,
     landedOn: sanitizeLandedOn(record.landedOn),
+    landedSite: sanitizeLandedOn(record.landedOn) ? sanitizeLandedSite(record.landedSite) : undefined,
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(SYSTEM_SPEED_MAX, record.systemSpeed))
       : defaults.systemSpeed,

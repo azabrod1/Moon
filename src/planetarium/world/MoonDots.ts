@@ -108,6 +108,12 @@ export class MoonDots {
         void main() {
           ${lensPointSpriteFragmentGLSL}
           gl_FragColor = vec4(vColor, falloff * vAlpha);
+          // Exposure + ACES + sRGB on the no-bloom route, where this layer
+          // draws straight to the screen, as the starfield does: a dot is as
+          // visible as an equally bright star there too. No-ops in the
+          // composer's linear target, so the bloom path is unchanged.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
       transparent: true,

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceSynthesis, surfaceShadingArgsOf, surfaceSynthesisOf,
+  augmentSurfaceMaterial, setSurfaceGroundField, setSurfaceSynthesis, surfaceGroundField,
+  surfaceShadingArgsOf, surfaceSynthesisOf,
 } from './surfaceShading';
+import { surfaceGroundTexture } from './surfaceDetailNoise';
 import { createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 
 /** Run a material's onBeforeCompile hook against a minimal shader stub and
@@ -88,6 +90,17 @@ describe('createSectorMaterial', () => {
     expect(sector.color.getHex()).toBe(base.color.getHex());
     expect(sector.emissive.getHex()).toBe(base.emissive.getHex());
     expect(sector.emissiveIntensity).toBe(0.4);
+  });
+
+  it('reads the field its globe reads', () => {
+    // A tile reading the full field over a globe reading the ground field would
+    // be a rectangle of invented craters on a photographed moon.
+    const base = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+    augmentSurfaceMaterial(base, 'icy', undefined, 0, undefined, undefined, 'Dione');
+    setSurfaceGroundField(base, true);
+    const sector = createSectorMaterial(base, { map: new THREE.Texture() });
+    expect(surfaceGroundField(sector)).toBe(true);
+    expect(compiledUniforms(sector).uSynthDetail.value).toBe(surfaceGroundTexture());
   });
 
   it('draws with a units-only polygon offset in its own favour', () => {

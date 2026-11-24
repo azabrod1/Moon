@@ -48,9 +48,10 @@ import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
   augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
-  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceWaterGloss,
-  type SurfaceArchetype, type SurfaceShadingFx,
+  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceWaterGloss,
+  surfaceDrawsDetailField, type SurfaceArchetype, type SurfaceShadingFx,
 } from './world/surfaceShading';
+import { SURFACE_GROUND_SWITCH, type SurfaceFieldRecipe } from './world/surfaceDetailNoise';
 import { applySeaWindSampling, installSeaWindMap } from './world/seaWind';
 import { surfaceLookOf } from './world/surfaceLook';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
@@ -977,6 +978,28 @@ export function synthCraterShare(name: string, archetype: SurfaceArchetype): num
   return archetype === 'gas' || archetype === 'earth' || archetype === 'cloud' ? 0 : 1;
 }
 
+/**
+ * Whether a body wears the close-range GROUND field — the grain with few
+ * craters or none (world/surfaceDetailNoise) — instead of the full field.
+ *
+ * The bodies it is for are the ones whose colour map is a photograph: the
+ * photograph already carries the body's real craters, and the full field's
+ * invented ones land on top of them up close, so the surface wears two sets.
+ * A body with a painted map has no real craters for the invented ones to
+ * clash with. `photoFile` is the file the body's texture key resolves to, or
+ * undefined for a body with none.
+ *
+ * Only under the DEV `?ground=` switch for now, while the recipe is judged by
+ * eye; without it every body wears the full field, as it always has.
+ */
+export function wearsGroundField(
+  photoFile: string | undefined,
+  archetype: SurfaceArchetype,
+  groundSwitch: SurfaceFieldRecipe | null = SURFACE_GROUND_SWITCH,
+): boolean {
+  return groundSwitch !== null && photoFile !== undefined && surfaceDrawsDetailField(archetype);
+}
+
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
 // so a body's night-fill + limb character match everywhere it renders.
 export function planetArchetype(planet: PlanetData): SurfaceArchetype {
@@ -1196,6 +1219,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // default of 1 did to the clouds).
   seatSurfaceAirRadius(fx.air, planet.radiusAU);
   setSurfaceCraterShare(mat, synthCraterShare(planet.name, planetArchetype(planet)));
+  if (wearsGroundField(PLANET_TEXTURE_FILES[planet.textureKey], planetArchetype(planet))) {
+    setSurfaceGroundField(mat, true);
+  }
   // Higher colour tiers on close approach, for the keys that have them (see
   // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
   // walks the ladder from there.
@@ -2039,6 +2065,8 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // first compile.
     fx.uNightLift = nightLiftUniform;
     setSurfaceCraterShare(mat, synthCraterShare(moonData.name, archetype));
+    const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
+    if (wearsGroundField(photoFile, archetype)) setSurfaceGroundField(mat, true);
 
     // Real elevation-derived normal map (linear), where one exists. The flag
     // goes up with the request, not with the arrival, so the lazy painter never
@@ -2073,7 +2101,6 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // uses, whether that arrival is at boot or minutes later. Until then the
     // painted texture is what shows — a failed fetch never puts grey on a moon.
     // photoLoaded tells the painter not to clobber a photo that already won.
-    const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
     const photoUrl = photoFile ? resolveTextureUrl(photoFile, '2k') : undefined;
     if (photoUrl) {
       fetchTextureDurably({

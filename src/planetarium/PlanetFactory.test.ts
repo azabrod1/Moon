@@ -19,6 +19,7 @@ import {
   sphereWidthSegments,
   synthCraterShare,
   upgradeGeometryOnApproach,
+  wearsGroundField,
   wantsGeometryPrebuild,
   wireEarthLateDetail,
   EARTH_CLOUD_SHELL_SCALE,
@@ -4275,6 +4276,27 @@ describe('a colour-rung swap and the body\'s air', () => {
     bindSurfaceAir(air, boundTables(), 4.26e-5, 1);
     expect(shell.uniforms.uAirDensity.value).toBe(1);
     expect(sector.uniforms.uAirDensity.value).toBe(1);
+  });
+});
+
+describe('which bodies wear the ground field', () => {
+  it('is none of them without the DEV switch', () => {
+    // The photographed moons are the bodies it is for; until its recipe is
+    // chosen by eye, a boot without `?ground=` draws exactly what it did.
+    expect(wearsGroundField('dione.v2.webp', 'icy')).toBe(false);
+    expect(wearsGroundField(undefined, 'airless')).toBe(false);
+    expect(wearsGroundField('jupiter.v2.webp', 'gas')).toBe(false);
+  });
+
+  it('is every photographed body whose surface draws the field, under the switch', () => {
+    const on = { craters: 0, grainGain: 1 };
+    expect(wearsGroundField('dione.v2.webp', 'icy', on)).toBe(true);
+    expect(wearsGroundField('mercury.v2.webp', 'airless', on)).toBe(true);
+    // A painted moon has no real craters to clash with.
+    expect(wearsGroundField(undefined, 'airless', on)).toBe(false);
+    // And a surface class that draws no field has nothing to swap.
+    expect(wearsGroundField('jupiter.v2.webp', 'gas', on)).toBe(false);
+    expect(wearsGroundField('earth-day.v2.webp', 'earth', on)).toBe(false);
   });
 });
 

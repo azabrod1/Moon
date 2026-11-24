@@ -202,6 +202,8 @@ import {
   surfaceDetailFieldMean,
   surfaceDetailHeightSpan,
   surfaceDetailTexture,
+  surfaceGroundFieldMean,
+  surfaceGroundTexture,
 } from './surfaceDetailNoise';
 import { PLANETS } from '../planets/planetData';
 import { createHazeAirUniforms, hazeCacheCompiled, hazeProbeCompiled, hazeSurfaceDeclsGlsl } from '../../app/hazeCache';
@@ -521,6 +523,12 @@ const SYNTH_RELIEF_GAIN: Record<SurfaceArchetype, number> = {
   earth: 0,
   cloud: 0,
 };
+
+/** Whether a surface class draws the close-range field at all — grain or
+ *  relief. One that does not is bound a 1x1 stand-in and never reads it. */
+export function surfaceDrawsDetailField(archetype: SurfaceArchetype): boolean {
+  return SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0;
+}
 
 // --- The ocean's gloss -------------------------------------------------------
 //
@@ -1531,8 +1539,9 @@ export const SYNTH_CHART_CUT = 0.5;
  * The cost is at the top of the ladder: the rung ceiling arrives three rungs
  * earlier on a share-0 body, so a camera standing on Europa reaches the
  * magnifying regime sooner and its pitting grows as it comes closer instead of
- * staying put. If that is ever seen, the fix is a second grain-only field
- * sampled in place of this one, not a bigger ceiling.
+ * staying put. If that is ever seen, the fix is the ground field — the grain
+ * without the craters, a second map read through the same uniforms
+ * (setSurfaceGroundField) — at a share of one, not a bigger ceiling.
  */
 const SYNTH_SMOOTH_RUNGS = 3;
 
@@ -3509,6 +3518,14 @@ export interface SurfaceShadingArgs {
    *  table). Held so a dependent material (a streamed sector) draws the same
    *  ground rather than defaulting to a cratered one. */
   uSynthCraterShare: { value: number };
+  /** The field this material reads and the mean it reads it against: the full
+   *  field, or the ground field on a body that wears it (setSurfaceGroundField).
+   *  Held so the setter can rebind the two objects the shader was given. */
+  uSynthDetail: { value: THREE.Texture };
+  uSynthMid: { value: number };
+  /** Whether this material reads the ground field. Held so a dependent
+   *  material (a streamed sector) reads the same field as the globe under it. */
+  groundField: boolean;
   /** The body this material draws, as the close-range field's seed reads it.
    *  Held so a dependent material (a streamed sector) lands on the SAME ground
    *  as the globe under it rather than on a second patch of field. */
@@ -3863,6 +3880,29 @@ export function setSurfaceCraterShare(mat: THREE.Material, share: number): void 
   if (args) args.uSynthCraterShare.value = Math.min(1, Math.max(0, share));
 }
 
+/** Whether this material reads the ground field rather than the full one. */
+export function surfaceGroundField(mat: THREE.Material): boolean {
+  return augmentArgs.get(mat)?.groundField ?? false;
+}
+
+/**
+ * Read the ground field on this material instead of the full one, or go back:
+ * the same grain with few craters or none (world/surfaceDetailNoise), for a
+ * body whose photograph already carries its real craters. The two fields share
+ * one height range and gradient scale, so only the texture and the mean it is
+ * read against change; the shader text is the same, and so is the program.
+ *
+ * Set once, from the body's own entry. Nothing to do on a surface class that
+ * never draws the field, which is bound a stand-in rather than either map.
+ */
+export function setSurfaceGroundField(mat: THREE.Material, on: boolean): void {
+  const args = augmentArgs.get(mat);
+  if (!args || !surfaceDrawsDetailField(args.archetype)) return;
+  args.uSynthDetail.value = on ? surfaceGroundTexture() : surfaceDetailTexture();
+  args.uSynthMid.value = on ? surfaceGroundFieldMean() : surfaceDetailFieldMean();
+  args.groundField = on;
+}
+
 /**
  * Set how much of the close-range detail term a material draws this frame:
  * `envelope` is the eased 0..1 the owner is holding, and `relief` is what this
@@ -4190,9 +4230,24 @@ export function augmentSurfaceMaterial(
   // Every body wears the whole field until its owner says otherwise: a moon
   // whose surface is resurfaced is the exception, not the rule.
   const uSynthCraterShare = { value: 1 };
+  // The full field, or the same 1x1 stand-in the air's samplers take on a
+  // surface class that never fades the term in — sampling it is never legal,
+  // because uSynthEnvelope is then held at zero. A body that wears the ground
+  // field is rebound to it afterwards (setSurfaceGroundField).
+  const drawsField = surfaceDrawsDetailField(archetype);
+  const uSynthDetail = {
+    value: drawsField
+      ? surfaceDetailTexture() as THREE.Texture
+      : surfaceAirDummies().map2D as THREE.Texture,
+  };
+  // The zero the grain is read against — the bound field's own mean, so the
+  // term adds no light of its own. Zero on a surface class that never draws it,
+  // where the field is not even bound.
+  const uSynthMid = { value: drawsField ? surfaceDetailFieldMean() : 0 };
   augmentArgs.set(mat, {
     archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
     uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
+    uSynthDetail, uSynthMid, groundField: false,
     relief: 'none', synthReliefGain, seedName,
   });
   receiveBeamSwitches(mat);
@@ -4222,27 +4277,11 @@ export function augmentSurfaceMaterial(
     value: archetype === 'cloud' ? CLOUD_DETAIL_RELIEF_KM / EARTH_RADIUS_KM : 0,
   };
   const uSynthGrain = { value: SYNTH_GRAIN[archetype] };
-  // The one shared field, or the same 1x1 stand-in the air's samplers take on a
-  // surface class that never fades the term in — sampling it is never legal,
-  // because uSynthEnvelope is then held at zero.
-  const uSynthDetail = {
-    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
-      ? surfaceDetailTexture() as THREE.Texture
-      : surfaceAirDummies().map2D as THREE.Texture,
-  };
   // Where this body reads the tiling field. One offset per body, so two moons
   // wear different ground; the field is periodic, so an offset costs nothing
   // and cannot break the wrap. The caller supplies it (the body's name, hashed)
   // — a body must not change face between sessions.
   const uSynthSeed = { value: synthSeedOffset(seedName) };
-  // The zero the grain is read against — the built field's own mean, so the
-  // term adds no light of its own. Zero on a surface class that never draws it,
-  // where the field is not even bound.
-  const uSynthMid = {
-    value: SYNTH_GRAIN[archetype] > 0 || SYNTH_RELIEF_GAIN[archetype] > 0
-      ? surfaceDetailFieldMean()
-      : 0,
-  };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;

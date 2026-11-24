@@ -1,9 +1,19 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { periodicLattice, periodicValueNoise } from './periodicNoise';
 import {
   buildSurfaceDetailNoise,
+  buildSurfaceGroundNoise,
   craterField,
+  parseGroundParam,
+  SURFACE_DETAIL_CRATERS,
+  SURFACE_DETAIL_GRAIN,
+  SURFACE_GROUND_CRATERS,
+  SURFACE_GROUND_GRAIN_GAIN,
+  SURFACE_GROUND_RECIPE,
+  SURFACE_GROUND_SWITCH,
   craterProfile,
   SURFACE_DETAIL_CRATER_DEPTH,
   SURFACE_DETAIL_CRATER_MAX,
@@ -13,6 +23,23 @@ import {
   SURFACE_DETAIL_RIM_WIDTH,
   SURFACE_DETAIL_SIZE,
 } from './surfaceDetailNoise';
+
+/** The summed byte step across each wrap, and across the first ordinary column
+ *  and row, of a packed field's height channel. */
+function wrapSteps(data: Uint8Array, size: number) {
+  const at = (x: number, y: number) => data[(y * size + x) * 4];
+  let wrapX = 0;
+  let innerX = 0;
+  let wrapY = 0;
+  let innerY = 0;
+  for (let i = 0; i < size; i++) {
+    wrapX += Math.abs(at(0, i) - at(size - 1, i));
+    innerX += Math.abs(at(1, i) - at(0, i));
+    wrapY += Math.abs(at(i, 0) - at(i, size - 1));
+    innerY += Math.abs(at(i, 1) - at(i, 0));
+  }
+  return { wrapX, innerX, wrapY, innerY };
+}
 
 describe('one crater of the close-range field', () => {
   it('digs a bowl that reaches the plain exactly at its rim', () => {
@@ -126,19 +153,16 @@ describe('the built field', () => {
     // shader lays this one tile over a body again and again, at every rung and
     // on each of three charts, so a step across the wrap that is bigger than an
     // ordinary step is a grid of seams across every surface in the system.
-    const at = (x: number, y: number) => built.data[(y * size + x) * 4];
-    let wrapX = 0;
-    let innerX = 0;
-    let wrapY = 0;
-    let innerY = 0;
-    for (let i = 0; i < size; i++) {
-      wrapX += Math.abs(at(0, i) - at(size - 1, i));
-      innerX += Math.abs(at(1, i) - at(0, i));
-      wrapY += Math.abs(at(i, 0) - at(i, size - 1));
-      innerY += Math.abs(at(i, 1) - at(i, 0));
-    }
-    expect(wrapX).toBeLessThan(innerX * 1.5 + size);
-    expect(wrapY).toBeLessThan(innerY * 1.5 + size);
+    const steps = wrapSteps(built.data, size);
+    expect(steps.wrapX).toBeLessThan(steps.innerX * 1.5 + size);
+    expect(steps.wrapY).toBeLessThan(steps.innerY * 1.5 + size);
+  });
+
+  it('stores the bytes it has always stored', () => {
+    // A second field was added beside this one; every body that does not ask
+    // for it must keep drawing exactly the ground it drew before.
+    expect(createHash('sha256').update(built.data).digest('hex'))
+      .toBe('09b3c9712e1a77ea9097187e176d4ce021de6e61d9c2fc8d9222af7bee434769');
   });
 
   it('packs a gradient the stored heights agree with', () => {
@@ -194,5 +218,97 @@ describe('the built field', () => {
     // knob, and a change to it should have to be typed here too.
     expect(SURFACE_DETAIL_SIZE).toBe(512);
     expect(SURFACE_DETAIL_SIZE * SURFACE_DETAIL_SIZE * 4).toBe(1024 * 1024);
+  });
+});
+
+describe('the ground field', () => {
+  const size = SURFACE_DETAIL_SIZE;
+  const full = buildSurfaceDetailNoise(size);
+  const ground = buildSurfaceGroundNoise(
+    { craters: SURFACE_GROUND_CRATERS, grainGain: SURFACE_GROUND_GRAIN_GAIN }, size, full.range,
+  );
+
+  it('ships with no craters and today\'s grain, and is off without the switch', () => {
+    expect(SURFACE_GROUND_CRATERS).toBe(0);
+    expect(SURFACE_GROUND_GRAIN_GAIN).toBe(1);
+    expect(SURFACE_GROUND_SWITCH).toBeNull();
+    expect(SURFACE_GROUND_RECIPE).toEqual({ craters: 0, grainGain: 1 });
+  });
+
+  it('is the grain alone when it has no craters, stored in the full field\'s range', () => {
+    // Recomputed here from the octaves alone and stored the way the full field
+    // is: if a crater, or the field's own smaller range, had crept in, the
+    // bytes would differ.
+    const octaves = SURFACE_DETAIL_GRAIN.map((o, i) => ({
+      cells: o.cells, amp: o.slope / o.cells, table: periodicLattice(o.cells, 11 + i * 7),
+    }));
+    const norm = 1 / (full.range.max - full.range.min);
+    let checked = 0;
+    for (let y = 0; y < size; y += 5) {
+      for (let x = 0; x < size; x += 3) {
+        let h = 0;
+        for (const o of octaves) {
+          h += o.amp * (periodicValueNoise(o.table, o.cells, (x / size) * o.cells, (y / size) * o.cells).value - 0.5);
+        }
+        expect(ground.data[(y * size + x) * 4]).toBe(Math.round((h - full.range.min) * norm * 255));
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(10000);
+    // So its own range is the grain's, a small part of the full field's.
+    const grainReach = octaves.reduce((sum, o) => sum + o.amp / 2, 0);
+    expect(ground.range.min).toBeGreaterThanOrEqual(-grainReach);
+    expect(ground.range.max).toBeLessThanOrEqual(grainReach);
+    expect(full.range.min).toBeLessThan(-4 * grainReach);
+  });
+
+  it('draws its sparse craters from the full field\'s own population', () => {
+    // A sparse ground is a subset of the craters the full field draws, so a
+    // count between the two is a thinning rather than a different surface.
+    const all = craterField(SURFACE_DETAIL_CRATERS);
+    for (const c of craterField(12)) expect(all).toContainEqual(c);
+  });
+
+  it('holds every height and gradient its default recipe stores', () => {
+    expect(ground.clipped).toBe(0);
+    expect(ground.heightClipped).toBe(0);
+    // And the gradient channels carry the grain's slope, not a flat 0.5: the
+    // field is read for its normal, and an encoding that rounded the grain
+    // away would be a smooth surface.
+    let spread = 0;
+    for (let i = 0; i < ground.data.length; i += 4) spread = Math.max(spread, Math.abs(ground.data[i + 1] - 128));
+    expect(spread).toBeGreaterThan(20);
+  });
+
+  it('reports its own mean, which is not the full field\'s', () => {
+    let sum = 0;
+    for (let i = 0; i < ground.data.length; i += 4) sum += ground.data[i] / 255;
+    expect(ground.mean).toBeCloseTo(sum / (size * size), 6);
+    // With the craters gone the plain sits higher in the shared range.
+    expect(ground.mean - full.mean).toBeGreaterThan(0.02);
+  });
+
+  it('tiles across both wraps as tightly as the full field', () => {
+    // Its grain is a small part of the stored range, so its ordinary steps are
+    // small too; the wrap must be no bigger a step, relative to them, than the
+    // full field's wrap is relative to its own.
+    const g = wrapSteps(ground.data, size);
+    const f = wrapSteps(full.data, size);
+    expect(g.wrapX / g.innerX).toBeLessThan(Math.max(1.5, (f.wrapX / f.innerX) * 1.25));
+    expect(g.wrapY / g.innerY).toBeLessThan(Math.max(1.5, (f.wrapY / f.innerY) * 1.25));
+    // With craters too: a crater laid across the wrap comes back on the far side.
+    const sparse = buildSurfaceGroundNoise({ craters: 30, grainGain: 1 }, size, full.range);
+    const s = wrapSteps(sparse.data, size);
+    expect(s.wrapX).toBeLessThan(s.innerX * 1.5 + size);
+    expect(s.wrapY).toBeLessThan(s.innerY * 1.5 + size);
+  });
+
+  it('reads its recipe from the DEV switch', () => {
+    expect(parseGroundParam('?ground=0')).toEqual({ craters: 0, grainGain: 1 });
+    expect(parseGroundParam('?ground=12,1.6')).toEqual({ craters: 12, grainGain: 1.6 });
+    expect(parseGroundParam('?ground=-1')).toBeNull();
+    expect(parseGroundParam('?ground=2.5')).toBeNull();
+    expect(parseGroundParam('?ground=0,0')).toBeNull();
+    expect(parseGroundParam('?synth=0')).toBeNull();
   });
 });

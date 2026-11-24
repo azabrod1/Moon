@@ -31,6 +31,17 @@
  * over a body again and again, at every rung and on each of three charts, so a
  * step across the wrap is not one seam somewhere — it is a grid of them across
  * every surface in the system.
+ *
+ * TWO FIELDS. The full field above, and a GROUND field: the same two grain
+ * octaves with few craters or none. A colour map that is a photograph already
+ * carries the body's real craters down to its own texel, so up close the full
+ * field's invented craters land on top of the real ones and the surface wears
+ * two sets. Turning the craters down cannot be done at sample time — craters
+ * and grain are summed into one map — so a body that must keep the grain
+ * without the craters reads a second map instead. It is stored in the full
+ * field's own range and gradient scale, so the one shader reads either through
+ * the same uniforms and a byte means the same height in both; only its mean
+ * differs. It is built only when a body asks for it.
  */
 import * as THREE from 'three';
 import { periodicLattice, periodicValueNoise } from './periodicNoise';
@@ -124,7 +135,9 @@ export const SURFACE_DETAIL_GRAIN: readonly { cells: number; slope: number }[] =
  */
 export const SURFACE_DETAIL_GRADIENT_SCALE = 70;
 
-/** Deterministic stream of values in [0, 1) — the same map on every device. */
+/** Deterministic stream of values in [0, 1) — the same map on every device.
+ *  The craters are drawn from it in order, so the first N of a population of
+ *  any size are the same N craters. */
 function mixer(seed: number): () => number {
   let state = (seed >>> 0) || 1;
   return () => {
@@ -211,31 +224,47 @@ function wrapDelta(p: number, c: number): number {
   return d - Math.round(d);
 }
 
-/**
- * Build the field's bytes: RGBA, `size` on a side, R the height field mapped to
- * [0, 1] around a mean of 0.5 and G/B its gradient with respect to the tile's
- * own uv, encoded around 0.5 through SURFACE_DETAIL_GRADIENT_SCALE. Alpha is
- * opaque and unused — the map is data, and an RGB texture is padded to four
- * bytes on upload anyway.
- *
- * Returns the bytes, how many texels clipped the gradient encoding (the one
- * number that says whether that scale is still right), the raw height range,
- * which is what the normalisation is derived from rather than guessed at, and
- * the MEAN of the stored field, which is not 0.5 and cannot be: craters are
- * deep and rare, so the plain between them sits well above the middle of a
- * range the deepest hole in the tile set.
- */
-export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
+
+/** What one field is made of: how many craters of the shared population, and
+ *  how steep its grain is against the authored octaves. */
+export interface SurfaceFieldRecipe {
+  craters: number;
+  grainGain: number;
+}
+
+/** One field before it is stored: height and gradient in raw tile units, and
+ *  the range the height reached. */
+interface RawSurfaceField {
+  height: Float64Array;
+  gradU: Float64Array;
+  gradV: Float64Array;
+  min: number;
+  max: number;
+}
+
+/** A field as it is uploaded, and what storing it cost. */
+export interface BuiltSurfaceField {
   data: Uint8Array;
+  /** Texels whose gradient was clamped to fit the encoding. */
   clipped: number;
+  /** Texels whose height fell outside the stored range and was clamped. The
+   *  first field sets that range from its own heights and never clips; the
+   *  ground field is stored in the first field's range and can. */
+  heightClipped: number;
+  /** The raw height range this field itself reached. */
   range: { min: number; max: number };
+  /** The mean of the stored height channel. */
   mean: number;
-} {
-  const craters = craterField();
+}
+
+/** Lay a field's craters and grain into raw height and gradient arrays. */
+function rawSurfaceField(size: number, recipe: SurfaceFieldRecipe): RawSurfaceField {
+  const craters = craterField(recipe.craters);
   const grain = SURFACE_DETAIL_GRAIN.map((o, i) => ({
     cells: o.cells,
-    // The height that slope reaches across one cell.
-    amp: o.slope / o.cells,
+    // The height that slope reaches across one cell, times the recipe's gain.
+    // A gain of exactly one leaves every product bit for bit what it was.
+    amp: (o.slope / o.cells) * recipe.grainGain,
     table: periodicLattice(o.cells, 11 + i * 7),
   }));
   const height = new Float64Array(size * size);
@@ -297,20 +326,37 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
       if (h > max) max = h;
     }
   }
-  // Normalised to [0, 1] by the range the field actually reached, so the byte
-  // spends its whole precision on the heights that occur. The gradient is
-  // scaled by the same factor: it has to describe the field that was stored,
-  // not the one before the normalisation.
-  const span = Math.max(max - min, 1e-9);
+  return { height, gradU, gradV, min, max };
+}
+
+/**
+ * Store a raw field as bytes: R the height mapped to [0, 1] across `range`, G/B
+ * its gradient with respect to the tile's own uv, encoded around 0.5 through
+ * SURFACE_DETAIL_GRADIENT_SCALE. Alpha is opaque and unused — the map is data,
+ * and an RGB texture is padded to four bytes on upload anyway.
+ *
+ * The gradient is scaled by the same factor as the height: it has to describe
+ * the field that was stored, not the one before the normalisation.
+ */
+function encodeSurfaceField(
+  raw: RawSurfaceField,
+  range: { min: number; max: number },
+): BuiltSurfaceField {
+  const span = Math.max(range.max - range.min, 1e-9);
   const norm = 1 / span;
-  const data = new Uint8Array(size * size * 4);
+  const data = new Uint8Array(raw.height.length * 4);
+  // A height past the range by less than half a byte rounds to the end byte
+  // it would have had anyway, so only a clamp that changes a byte counts.
+  const slack = 0.5 / 255;
   let clipped = 0;
+  let heightClipped = 0;
   let stored = 0;
-  for (let i = 0; i < height.length; i++) {
-    const value = (height[i] - min) * norm;
-    const eu = (gradU[i] * norm) / SURFACE_DETAIL_GRADIENT_SCALE;
-    const ev = (gradV[i] * norm) / SURFACE_DETAIL_GRADIENT_SCALE;
+  for (let i = 0; i < raw.height.length; i++) {
+    const value = (raw.height[i] - range.min) * norm;
+    const eu = (raw.gradU[i] * norm) / SURFACE_DETAIL_GRADIENT_SCALE;
+    const ev = (raw.gradV[i] * norm) / SURFACE_DETAIL_GRADIENT_SCALE;
     if (Math.abs(eu) > 1 || Math.abs(ev) > 1) clipped++;
+    if (value < -slack || value > 1 + slack) heightClipped++;
     const o = i * 4;
     data[o] = Math.round(Math.min(1, Math.max(0, value)) * 255);
     stored += data[o] / 255;
@@ -318,19 +364,103 @@ export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): {
     data[o + 2] = Math.round((Math.min(1, Math.max(-1, ev)) * 0.5 + 0.5) * 255);
     data[o + 3] = 255;
   }
-  return { data, clipped, range: { min, max }, mean: stored / height.length };
+  return {
+    data, clipped, heightClipped,
+    range: { min: raw.min, max: raw.max },
+    mean: stored / raw.height.length,
+  };
+}
+
+/**
+ * Build the full field's bytes: every crater and both grain octaves, `size` on
+ * a side, normalised by the range the field itself reached so the byte spends
+ * its whole precision on the heights that occur.
+ *
+ * Returns the bytes, how many texels clipped the gradient encoding (the one
+ * number that says whether that scale is still right), the raw height range,
+ * which is what the normalisation is derived from rather than guessed at, and
+ * the MEAN of the stored field, which is not 0.5 and cannot be: craters are
+ * deep and rare, so the plain between them sits well above the middle of a
+ * range the deepest hole in the tile set.
+ */
+export function buildSurfaceDetailNoise(size = SURFACE_DETAIL_SIZE): BuiltSurfaceField {
+  const raw = rawSurfaceField(size, { craters: SURFACE_DETAIL_CRATERS, grainGain: 1 });
+  return encodeSurfaceField(raw, raw);
+}
+
+/**
+ * Craters in the ground field: the first this many of the full field's own
+ * population, so a sparse ground is a subset of the craters the full field
+ * draws rather than a different set. Zero is ground with no craters at all.
+ */
+export const SURFACE_GROUND_CRATERS = 0;
+
+/** The ground field's grain, as a gain on the slopes of the full field's
+ *  octaves. One is the grain every body wears today. */
+export const SURFACE_GROUND_GRAIN_GAIN = 1.0;
+
+/** DEV `?ground=<craters>[,<grainGain>]`: the ground field's recipe this boot,
+ *  and the switch that puts it on the bodies whose colour map is a photograph
+ *  (world/PlanetFactory). Without it every body draws the full field and the
+ *  ground field is never built. */
+export function parseGroundParam(search: string): SurfaceFieldRecipe | null {
+  if (!import.meta.env.DEV) return null;
+  const raw = new URLSearchParams(search).get('ground');
+  if (raw === null) return null;
+  const [cratersText, gainText] = raw.split(',');
+  const craters = Number(cratersText);
+  const grainGain = gainText === undefined ? SURFACE_GROUND_GRAIN_GAIN : Number(gainText);
+  if (!Number.isInteger(craters) || craters < 0 || craters > SURFACE_DETAIL_CRATERS) return null;
+  if (!Number.isFinite(grainGain) || grainGain <= 0 || grainGain > 4) return null;
+  return { craters, grainGain };
+}
+
+/** This boot's DEV ground recipe, or null when the switch is absent. */
+export const SURFACE_GROUND_SWITCH =
+  typeof location === 'undefined' ? null : parseGroundParam(location.search);
+
+/** The recipe the ground field is built with this boot. */
+export const SURFACE_GROUND_RECIPE: SurfaceFieldRecipe = SURFACE_GROUND_SWITCH ?? {
+  craters: SURFACE_GROUND_CRATERS,
+  grainGain: SURFACE_GROUND_GRAIN_GAIN,
+};
+
+/**
+ * Build the ground field's bytes, stored in the FULL field's own range.
+ *
+ * That is what lets the shader read either field through the same uniforms:
+ * the height span the relief is scaled by and the gradient scale the slope is
+ * decoded with are the full field's, so a byte step in either map is the same
+ * height and a stored gradient the same slope. Normalised by its own, smaller
+ * range instead, the grain would be stretched over the whole byte and drawn
+ * several times as steep. Only the mean differs, and it is reported, because
+ * the plain sits at a different place in that range once the craters are gone.
+ *
+ * A recipe steeper or taller than the full field clamps; the counts say how
+ * many texels, and a recipe worth drawing clamps none.
+ */
+export function buildSurfaceGroundNoise(
+  recipe: SurfaceFieldRecipe = SURFACE_GROUND_RECIPE,
+  size = SURFACE_DETAIL_SIZE,
+  range: { min: number; max: number } = buildSurfaceDetailNoise(size).range,
+): BuiltSurfaceField {
+  return encodeSurfaceField(rawSurfaceField(size, recipe), range);
 }
 
 let detailTexture: THREE.DataTexture | null = null;
 let detailSpan = 0;
 let detailMean = 0;
+let detailRange = { min: 0, max: 0 };
+let groundTexture: THREE.DataTexture | null = null;
+let groundMean = 0;
 
 /**
  * The height the field's full stored range stands for, as a fraction of one
  * tile's width — the number that turns the normalised bytes back into the
  * geometry that was built. A shader drawing the field at exactly this is
  * drawing craters of the depth-to-diameter they were laid down with; anything
- * else is a deliberate exaggeration, stated as a gain on top.
+ * else is a deliberate exaggeration, stated as a gain on top. The ground field
+ * is stored in the same range, so this is its span too.
  *
  * Builds the map if it is not built yet, because the two answers have to come
  * from the same bytes.
@@ -360,44 +490,72 @@ export function surfaceDetailFieldMean(): number {
   return detailMean;
 }
 
+/** The ground field's stored mean, the zero a shader reading it subtracts.
+ *  Builds the map if it is not built yet. */
+export function surfaceGroundFieldMean(): number {
+  surfaceGroundTexture();
+  return groundMean;
+}
+
 /**
- * The field as a texture, built once per session and shared by every surface
- * that draws it. Repeat-wrapped (the map's whole point is that it tiles),
- * mip-chained and anisotropic: it is sampled at whatever scale the screen wants
- * and read at grazing incidence on a limb, and a detail map without mips is the
- * one thing in a frame that crawls.
+ * A field's bytes as a texture. Repeat-wrapped (the map's whole point is that
+ * it tiles), mip-chained: it is sampled at whatever scale the screen wants, and
+ * a detail map without mips is the one thing in a frame that crawls.
  */
+function surfaceFieldTexture(data: Uint8Array): THREE.DataTexture {
+  const tex = new THREE.DataTexture(data, SURFACE_DETAIL_SIZE, SURFACE_DETAIL_SIZE);
+  // Data, not colour: R is a height and G/B are a gradient. An sRGB decode
+  // here would bend both.
+  applyTextureDefaults(tex, 'data');
+  // No anisotropic filtering: the shader chooses the rung so that a texel of
+  // this map is about a pixel, so face-on the footprint is already a texel
+  // and anisotropy buys nothing; at a limb it multiplies every one of the
+  // reads the stochastic tiling makes, and what it would sharpen there is a
+  // detail field seen edge-on.
+  tex.anisotropy = 1;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** The full field as a texture, built once per session and shared by every
+ *  surface that draws it. */
 export function surfaceDetailTexture(): THREE.DataTexture {
   if (!detailTexture) {
     const { data, range, mean } = buildSurfaceDetailNoise(SURFACE_DETAIL_SIZE);
     detailSpan = range.max - range.min;
     detailMean = mean;
-    const tex = new THREE.DataTexture(data, SURFACE_DETAIL_SIZE, SURFACE_DETAIL_SIZE);
-    // Data, not colour: R is a height and G/B are a gradient. An sRGB decode
-    // here would bend both.
-    applyTextureDefaults(tex, 'data');
-    // No anisotropic filtering: the shader chooses the rung so that a texel of
-    // this map is about a pixel, so face-on the footprint is already a texel
-    // and anisotropy buys nothing; at a limb it multiplies every one of the
-    // reads the stochastic tiling makes, and what it would sharpen there is a
-    // detail field seen edge-on.
-    tex.anisotropy = 1;
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.generateMipmaps = true;
-    tex.needsUpdate = true;
-    detailTexture = tex;
+    detailRange = range;
+    detailTexture = surfaceFieldTexture(data);
   }
   return detailTexture;
 }
 
-/** Drop the shared map — a lost context frees its upload, and the next call
- *  builds it again rather than binding a dead name. */
+/** The ground field as a texture, built on first use — a session in which no
+ *  body wears it never pays for it — with the same settings as the full one. */
+export function surfaceGroundTexture(): THREE.DataTexture {
+  if (!groundTexture) {
+    surfaceDetailTexture();
+    const { data, mean } = buildSurfaceGroundNoise(SURFACE_GROUND_RECIPE, SURFACE_DETAIL_SIZE, detailRange);
+    groundMean = mean;
+    groundTexture = surfaceFieldTexture(data);
+  }
+  return groundTexture;
+}
+
+/** Drop both shared maps — a lost context frees their uploads, and the next
+ *  call builds them again rather than binding a dead name. */
 export function disposeSurfaceDetailTexture(): void {
   detailTexture?.dispose();
   detailTexture = null;
   detailSpan = 0;
   detailMean = 0;
+  detailRange = { min: 0, max: 0 };
+  groundTexture?.dispose();
+  groundTexture = null;
+  groundMean = 0;
 }

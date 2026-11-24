@@ -20,9 +20,9 @@
 import * as THREE from 'three';
 import { inheritAlbedoGrade } from './albedoGrade';
 import {
-  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss,
-  surfaceCraterShare, surfaceReliefKind, surfaceShadingArgsOf, surfaceSynthesisEnvelope,
-  surfaceWaterGloss,
+  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceSynthesis,
+  setSurfaceWaterGloss, surfaceCraterShare, surfaceGroundField, surfaceReliefKind,
+  surfaceShadingArgsOf, surfaceSynthesisEnvelope, surfaceWaterGloss,
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
@@ -97,8 +97,11 @@ export function createSectorMaterial(
   // the augmentation's own uniforms, and a sync run first would write it into a
   // material that has none yet. How much cratering the body wears is one of
   // them, and it is set once here rather than mirrored per frame — a surface
-  // does not become resurfaced mid-flight.
+  // does not become resurfaced mid-flight. Which field the body reads is the
+  // other: a tile reading the full field over a globe reading the ground field
+  // would be a rectangle of craters.
   setSurfaceCraterShare(mat, surfaceCraterShare(base));
+  setSurfaceGroundField(mat, surfaceGroundField(base));
   syncSectorMaterial(mat, base);
   return mat;
 }

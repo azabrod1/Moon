@@ -7,7 +7,8 @@ import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
   SEA_PAINT_COLOUR, SEA_WATER_COLOUR, parseSeaColourParam, seaColourOn, seaColourUniforms, setSeaColourEnabled,
   SEA_SKY_GRAZING_COS, parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled, SEA_WATER_IOR,
-  setSurfaceCraterShare, setSurfaceSynthesis, setSurfaceWaterGloss, surfaceChartWeights,
+  setSurfaceCraterShare, setSurfaceGroundField, setSurfaceSynthesis, setSurfaceWaterGloss,
+  surfaceChartWeights, surfaceGroundField, surfaceShadingArgsOf,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
   SYNTH_HEX_CUT,
@@ -74,7 +75,10 @@ import { CLOUD_TOP_KM, cloudCoverageAlpha } from './cloudDeck';
 import { resolveDefine } from '../testing/glslDefine';
 import { NIGHT_WEIGHT_ZERO_SIN } from './nightSources';
 import { PLANETS } from '../planets/planetData';
-import { surfaceDetailFieldMean, surfaceDetailHeightSpan } from './surfaceDetailNoise';
+import {
+  surfaceDetailFieldMean, surfaceDetailHeightSpan, surfaceDetailTexture, surfaceGroundFieldMean,
+  surfaceGroundTexture,
+} from './surfaceDetailNoise';
 import { atmosphereParams } from './atmosphereModel';
 import { smootherstep } from '../../shared/math/smoothstep';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
@@ -454,6 +458,51 @@ describe('the close-range detail term', () => {
     setSurfaceCraterShare(mat, 0);
     expect(u.uSynthCraterShare.value).toBe(0);
     expect(surfaceCraterShare(mat)).toBe(0);
+  });
+
+  it('rebinds a body to the ground field and back without touching the shader', () => {
+    // A photographed body reads the grain without the invented craters: a
+    // second map, stored in the same range, swapped into the SAME uniform
+    // objects the program was given, with the mean it is read against.
+    const mat = new THREE.MeshStandardMaterial();
+    const u = uniforms('icy', 'Dione', mat);
+    const compiled = () => {
+      const shader = {
+        uniforms: {} as Record<string, { value: unknown }>,
+        vertexShader: '#include <common>\n#include <begin_vertex>\n',
+        fragmentShader: '#include <common>\n#include <normal_fragment_maps>\n#include <opaque_fragment>\n',
+      };
+      (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+      return shader;
+    };
+    const before = compiled().fragmentShader;
+    expect(u.uSynthDetail.value).toBe(surfaceDetailTexture());
+    expect(surfaceGroundField(mat)).toBe(false);
+    setSurfaceGroundField(mat, true);
+    expect(u.uSynthDetail.value).toBe(surfaceGroundTexture());
+    expect(u.uSynthMid.value).toBeCloseTo(surfaceGroundFieldMean(), 12);
+    expect(surfaceGroundTexture()).not.toBe(surfaceDetailTexture());
+    expect(surfaceGroundField(mat)).toBe(true);
+    // The same text and the same uniform objects: the program does not change.
+    const on = compiled();
+    expect(on.fragmentShader).toBe(before);
+    expect(on.uniforms.uSynthDetail).toBe(u.uSynthDetail);
+    expect(on.uniforms.uSynthMid).toBe(u.uSynthMid);
+    // The objects the setter reaches are the ones the args record.
+    expect(surfaceShadingArgsOf(mat)?.uSynthDetail).toBe(u.uSynthDetail);
+    expect(surfaceShadingArgsOf(mat)?.uSynthMid).toBe(u.uSynthMid);
+    setSurfaceGroundField(mat, false);
+    expect(u.uSynthDetail.value).toBe(surfaceDetailTexture());
+    expect(u.uSynthMid.value).toBeCloseTo(surfaceDetailFieldMean(), 12);
+    expect(surfaceGroundField(mat)).toBe(false);
+    // A surface class that never draws the field keeps its stand-in.
+    const gas = new THREE.MeshStandardMaterial();
+    const g = uniforms('gas', 'Jupiter', gas);
+    const standIn = g.uSynthDetail.value;
+    setSurfaceGroundField(gas, true);
+    expect(g.uSynthDetail.value).toBe(standIn);
+    expect(g.uSynthMid.value).toBe(0);
+    expect(surfaceGroundField(gas)).toBe(false);
   });
 
   it('stops climbing rungs where a float stops being able to name one', () => {

@@ -20,6 +20,10 @@ import {
   synthCraterShare,
   upgradeGeometryOnApproach,
   wearsGroundField,
+  smoothsMagnifiedMap,
+  parseMapSmoothMode,
+  planetArchetype,
+  moonArchetype,
   wantsGeometryPrebuild,
   wireEarthLateDetail,
   EARTH_CLOUD_SHELL_SCALE,
@@ -116,7 +120,8 @@ import {
   type SurfaceArchetype,
 } from './world/surfaceShading';
 import { surfaceDetailTexture, surfaceGroundTexture } from './world/surfaceDetailNoise';
-import { PLANETS } from './planets/planetData';
+import { PLANETS, PLUTO } from './planets/planetData';
+import { MOONS } from './planets/moonData';
 import { seaWindTexture } from './world/seaWind';
 import {
   createEarthNightSectorMaterial,
@@ -4378,6 +4383,51 @@ describe('which bodies wear the ground field', () => {
     const mat = moon.mesh.material as THREE.Material;
     expect(surfaceGroundField(mat)).toBe(false);
     expect(surfaceShadingArgsOf(mat)?.uSynthDetail.value).toBe(surfaceDetailTexture());
+  });
+});
+
+describe('which bodies smooth their magnified colour map', () => {
+  /** Every body the catalog draws, with the class and the colour map the
+   *  factory asks with. */
+  const bodies = (): [string, string | undefined, SurfaceArchetype][] => [
+    ...[...PLANETS, PLUTO].map((p): [string, string | undefined, SurfaceArchetype] => [p.name, p.textureKey, planetArchetype(p)]),
+    ...MOONS.map((m): [string, string | undefined, SurfaceArchetype] => [m.name, m.textureKey, moonArchetype(m)]),
+  ];
+  const smoothing = (mode: Parameters<typeof smoothsMagnifiedMap>[3]) =>
+    bodies().filter(([name, key, archetype]) => smoothsMagnifiedMap(name, key, archetype, mode)).map(([name]) => name);
+
+  it('is every photographed ground, and nothing painted, gaseous or Earth\'s', () => {
+    const on = smoothing('shipped');
+    expect([...on].sort()).toEqual([
+      'Ariel', 'Callisto', 'Charon', 'Dione', 'Enceladus', 'Europa', 'Ganymede', 'Iapetus', 'Io',
+      'Mars', 'Mercury', 'Mimas', 'Miranda', 'Moon', 'Pluto', 'Rhea', 'Tethys', 'Titan', 'Triton',
+    ]);
+    for (const off of ['Earth', 'Venus', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Phobos', 'Deimos']) {
+      expect(on).not.toContain(off);
+    }
+  });
+
+  it('is none under ?mapsmooth=0, and the named bodies alone under DEV ?mapsmooth=<names>', () => {
+    expect(parseMapSmoothMode('', true)).toBe('shipped');
+    expect(parseMapSmoothMode('?mapsmooth=1', true)).toBe('shipped');
+    expect(parseMapSmoothMode('?mapsmooth=0', false)).toBe('off');
+    expect(parseMapSmoothMode('?mapsmooth=0', true)).toBe('off');
+    // A production build has no names reading: anything but 0 is the rule.
+    expect(parseMapSmoothMode('?mapsmooth=Mercury', false)).toBe('shipped');
+    const named = parseMapSmoothMode('?mapsmooth=Mercury, pluto,,Phobos', true);
+    expect(named).toEqual(new Set(['mercury', 'pluto', 'phobos']));
+    expect(smoothing('off')).toEqual([]);
+    // The names limit the rule; they do not widen it to a painted moon.
+    expect(smoothing(named)).toEqual(['Mercury', 'Pluto']);
+  });
+
+  it('reaches the moons the factory builds', () => {
+    const smoothed = (planet: string) => createMoonMeshes(planet)
+      .filter((m) => surfaceShadingArgsOf(m.mesh.material as THREE.Material)?.uMapSmooth.value === 1)
+      .map((m) => m.data.name);
+    expect(smoothed('Earth')).toEqual(['Moon']);
+    expect(smoothed('Mars')).toEqual([]);
+    expect([...smoothed('Jupiter')].sort()).toEqual(['Callisto', 'Europa', 'Ganymede', 'Io']);
   });
 });
 

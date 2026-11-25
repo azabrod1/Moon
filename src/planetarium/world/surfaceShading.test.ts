@@ -7,7 +7,8 @@ import {
   augmentSurfaceMaterial, OCEAN_ROUGHNESS, ROUGHNESS_MAP_LAND, ROUGHNESS_MAP_WATER,
   SEA_PAINT_COLOUR, SEA_WATER_COLOUR, parseSeaColourParam, seaColourOn, seaColourUniforms, setSeaColourEnabled,
   SEA_SKY_GRAZING_COS, parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled, SEA_WATER_IOR,
-  setSurfaceCraterShare, setSurfaceGroundField, setSurfaceSynthesis, setSurfaceWaterGloss,
+  setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceSynthesis, setSurfaceWaterGloss,
+  surfaceMapSmooth,
   surfaceChartWeights, surfaceGroundField, surfaceShadingArgsOf,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
@@ -503,6 +504,48 @@ describe('the close-range detail term', () => {
     expect(g.uSynthDetail.value).toBe(standIn);
     expect(g.uSynthMid.value).toBe(0);
     expect(surfaceGroundField(gas)).toBe(false);
+  });
+
+  it('smooths a ground\'s magnified colour map on its owner\'s word, without touching the shader', () => {
+    // A uniform on the material, recorded in its args, and the same text and
+    // program whichever way it is set.
+    const mat = new THREE.MeshStandardMaterial();
+    const u = uniforms('airless', 'Mercury', mat);
+    const text = () => {
+      const shader = {
+        uniforms: {} as Record<string, { value: unknown }>,
+        vertexShader: '#include <common>\n#include <begin_vertex>\n',
+        fragmentShader: '#include <common>\n#include <map_fragment>\n#include <opaque_fragment>\n',
+      };
+      (mat.onBeforeCompile as (s: typeof shader) => void)(shader);
+      return shader;
+    };
+    const before = text().fragmentShader;
+    expect(u.uMapSmooth.value).toBe(0);
+    expect(surfaceMapSmooth(mat)).toBe(false);
+    setSurfaceMapSmooth(mat, true);
+    expect(u.uMapSmooth.value).toBe(1);
+    expect(surfaceMapSmooth(mat)).toBe(true);
+    expect(surfaceShadingArgsOf(mat)?.uMapSmooth).toBe(u.uMapSmooth);
+    const on = text();
+    expect(on.fragmentShader).toBe(before);
+    expect(on.uniforms.uMapSmooth).toBe(u.uMapSmooth);
+    setSurfaceMapSmooth(mat, false);
+    expect(u.uMapSmooth.value).toBe(0);
+    // The map's fetch takes the filter on the deck or where the flag is up, the
+    // filter's taps behind its weight, the weight behind a condition that is
+    // uniform across the draw.
+    const glsl = before;
+    const cond = glsl.indexOf('|| GROUND_ON( uMapSmooth > 0.0 ) ) {');
+    expect(cond).toBeGreaterThan(0);
+    expect(cond).toBeLessThan(glsl.indexOf('float smoothW = smoothTexelWeight( vMapUv, mapTexels );'));
+    expect(glsl.indexOf('if ( smoothW > 0.0 ) {')).toBeLessThan(glsl.indexOf('textureBSpline( map, vMapUv, mapTexels )'));
+    expect(glsl).toContain('uniform float uMapSmooth;');
+    // The cloud deck draws through the filter regardless, and keeps its zero.
+    const deck = new THREE.MeshStandardMaterial();
+    const d = uniforms('cloud', 'Earth', deck);
+    setSurfaceMapSmooth(deck, true);
+    expect(d.uMapSmooth.value).toBe(0);
   });
 
   it('stops climbing rungs where a float stops being able to name one', () => {

@@ -48,7 +48,7 @@ import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import {
   augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
-  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceWaterGloss,
+  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceWaterGloss,
   surfaceDrawsDetailField, surfaceReliefKind, type SurfaceArchetype, type SurfaceReliefKind,
   type SurfaceShadingFx,
 } from './world/surfaceShading';
@@ -1032,6 +1032,60 @@ export function wearsGroundField(
   return sharpestWidth >= 4096 && !FULL_FIELD_KEEPERS.has(name);
 }
 
+/**
+ * Which bodies draw their colour map through the smooth magnification filter
+ * this boot:
+ * - 'shipped': the bodies smoothsMagnifiedMap names;
+ * - 'off': none — `?mapsmooth=0`, in any build, the maps plain bilinear up
+ *   close the way they were;
+ * - a set of names: DEV `?mapsmooth=Mercury,Pluto`, the rule limited to the
+ *   bodies named (case aside), for judging them one at a time.
+ */
+export type MapSmoothMode = 'shipped' | 'off' | ReadonlySet<string>;
+
+export function parseMapSmoothMode(search: string, dev: boolean = import.meta.env.DEV): MapSmoothMode {
+  const raw = new URLSearchParams(search).get('mapsmooth');
+  if (raw === null || raw === '' || raw === '1') return 'shipped';
+  if (raw === '0') return 'off';
+  if (!dev) return 'shipped';
+  return new Set(raw.split(',').map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0));
+}
+
+/** This boot's mode. */
+export const MAP_SMOOTH_MODE: MapSmoothMode =
+  typeof location === 'undefined' ? 'shipped' : parseMapSmoothMode(location.search);
+
+/** The surface classes that are ground: what is drawn is a solid surface's
+ *  photograph, not a cloud top (the gas giants and Venus), Earth's globe (its
+ *  sea and its streamed tiles have their own rules) or the cloud deck. */
+const MAP_SMOOTH_ARCHETYPES: ReadonlySet<SurfaceArchetype> = new Set(['airless', 'rocky', 'icy']);
+
+/**
+ * Whether a body draws its colour map through the smooth magnification filter
+ * wherever the map is magnified (world/surfaceShading SURFACE_MAP_FRAGMENT).
+ *
+ * Up close a photograph is stretched past a texel a pixel, and bilinear draws
+ * every texel of a busy map as a square with a hard edge: Mercury and Pluto at
+ * their 8K looked like a grid at the near end of the usual distance. The
+ * filter smooths that away wherever the map is magnified and costs nothing
+ * where it is not. So, all of:
+ * - the colour map is a photograph (`textureKey` names a file). A painted
+ *   moon's canvas is soft noise with no texel grid worth hiding, and the
+ *   close-range field takes it over anyway;
+ * - the surface class is ground (MAP_SMOOTH_ARCHETYPES).
+ * A streamed tile takes its globe's answer (world/sectorMaterial).
+ */
+export function smoothsMagnifiedMap(
+  name: string,
+  textureKey: string | undefined,
+  archetype: SurfaceArchetype,
+  mode: MapSmoothMode = MAP_SMOOTH_MODE,
+): boolean {
+  if (mode === 'off' || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
+  if (!MAP_SMOOTH_ARCHETYPES.has(archetype)) return false;
+  return mode === 'shipped' || mode.has(name.toLowerCase());
+}
+
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
 // so a body's night-fill + limb character match everywhere it renders.
 export function planetArchetype(planet: PlanetData): SurfaceArchetype {
@@ -1316,6 +1370,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   )) {
     setSurfaceGroundField(mat, true);
   }
+  setSurfaceMapSmooth(mat, smoothsMagnifiedMap(planet.name, planet.textureKey, planetArchetype(planet)));
 
   // A base map that missed the load timeout lands here rather than on the
   // floor. Rank 2 = the 2K tier, so an on-approach 4K that already won is not
@@ -2148,6 +2203,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     )) {
       setSurfaceGroundField(mat, true);
     }
+    setSurfaceMapSmooth(mat, smoothsMagnifiedMap(moonData.name, moonData.textureKey, archetype));
 
     // Photo-textured moons (Moon, Io, …) stream their real image; on arrival it
     // replaces the procedural colour through the same rank swap the 4K upgrade

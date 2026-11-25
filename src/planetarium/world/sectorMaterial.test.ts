@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
-  augmentSurfaceMaterial, setSurfaceGroundField, setSurfaceSynthesis, surfaceGroundField,
+  augmentSurfaceMaterial, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceSynthesis, surfaceGroundField,
+  surfaceMapSmooth,
   surfaceShadingArgsOf, surfaceSynthesisOf,
 } from './surfaceShading';
 import { surfaceGroundTexture } from './surfaceDetailNoise';
@@ -101,6 +102,23 @@ describe('createSectorMaterial', () => {
     const sector = createSectorMaterial(base, { map: new THREE.Texture() });
     expect(surfaceGroundField(sector)).toBe(true);
     expect(compiledUniforms(sector).uSynthDetail.value).toBe(surfaceGroundTexture());
+  });
+
+  it('smooths its tile where its globe smooths the map', () => {
+    // A plain-bilinear tile over a smoothed globe would be a rectangle of
+    // squares. Only the flag travels: each tile measures its own magnification
+    // against its own map in the shader.
+    for (const on of [true, false]) {
+      const base = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+      augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
+      setSurfaceMapSmooth(base, on);
+      const sector = createSectorMaterial(base, { map: new THREE.Texture() });
+      expect(surfaceMapSmooth(sector)).toBe(on);
+      const u = compiledUniforms(sector).uMapSmooth;
+      expect(u.value).toBe(on ? 1 : 0);
+      // Its own uniform, not the globe's.
+      expect(u).not.toBe(compiledUniforms(base).uMapSmooth);
+    }
   });
 
   it('draws with a units-only polygon offset in its own favour', () => {

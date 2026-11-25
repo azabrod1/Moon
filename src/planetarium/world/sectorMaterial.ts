@@ -20,8 +20,9 @@
 import * as THREE from 'three';
 import { inheritAlbedoGrade } from './albedoGrade';
 import {
-  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceSynthesis,
-  setSurfaceWaterGloss, surfaceCraterShare, surfaceGroundField, surfaceReliefKind,
+  augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceCraterShare, surfaceGroundField, surfaceMapSmooth,
+  surfaceReliefKind,
   surfaceShadingArgsOf, surfaceSynthesisEnvelope, surfaceWaterGloss,
 } from './surfaceShading';
 
@@ -99,9 +100,13 @@ export function createSectorMaterial(
   // them, and it is set once here rather than mirrored per frame — a surface
   // does not become resurfaced mid-flight. Which field the body reads is the
   // other: a tile reading the full field over a globe reading the ground field
-  // would be a rectangle of craters.
+  // would be a rectangle of craters. So is whether the colour map is smoothed
+  // where magnified: a plain-bilinear tile over a smoothed globe would be a
+  // rectangle of squares. Each tile measures its own magnification against its
+  // own map, so only the flag travels.
   setSurfaceCraterShare(mat, surfaceCraterShare(base));
   setSurfaceGroundField(mat, surfaceGroundField(base));
+  setSurfaceMapSmooth(mat, surfaceMapSmooth(base));
   syncSectorMaterial(mat, base);
   return mat;
 }

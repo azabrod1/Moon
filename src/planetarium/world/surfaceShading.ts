@@ -1442,8 +1442,8 @@ vReliefPole = normalMatrix * vec3(0.0, 1.0, 0.0);
 const SMOOTH_TEXEL_FADE = SURFACE_TEXEL_FADE;
 
 /**
- * A cubic B-spline magnification filter, for the two maps only the cloud deck
- * wears. Bilinear magnification is C0 — the interpolant's SLOPE jumps at every
+ * A cubic B-spline magnification filter, for the two maps the cloud deck
+ * wears and for a photographed ground's colour map (SURFACE_MAP_FRAGMENT). Bilinear magnification is C0 — the interpolant's SLOPE jumps at every
  * texel boundary — and any nonlinear function of the result (the deck's
  * coverage curve, a normal map through a light) turns that jump into a visible
  * crease. Stretch a texel over twenty screen pixels, as an orbital-altitude
@@ -2203,9 +2203,21 @@ const CLOUD_CLEAR_RETURN = import.meta.env.DEV
   : 'if (DECK_ON && cloudAlpha == 0.0) { gl_FragColor = vec4(0.0); return; }';
 
 /**
- * three's own <map_fragment>, with the deck's fetch put through the smooth
- * magnification filter. The ordinary bilinear tap happens for every surface;
- * the four extra ones sit behind a weight that is zero on all of them.
+ * three's own <map_fragment>, with the fetch put through the smooth
+ * magnification filter on the deck and on every ground whose owner turned it
+ * on (setSurfaceMapSmooth: the photographed ground bodies). The ordinary
+ * bilinear tap happens for every surface; the four extra ones sit behind the
+ * filter's weight, which is zero wherever the map is not magnified, so an
+ * unmagnified fragment pays for none of them. The condition in front of the
+ * weight is uniform across the draw, which is what keeps the weight's own
+ * screen derivatives defined.
+ *
+ * A photograph magnified through bilinear is a patch of flat-sloped quads in
+ * brightness: its slope jumps at every texel edge, and a busy map (Mercury's,
+ * Pluto's at their 8K) reads up close as a grid of squares with hard edges.
+ * The B-spline has no edge to draw. It is a low-pass as well as a smoother —
+ * a lone bright texel comes back at less than half its contrast — which is
+ * paid only where a texel is already wider than a pixel.
  *
  * At full smooth weight the ordinary tap is not an endpoint of anything — the
  * mix returns the B-spline — and it is taken anyway, in flow that is uniform
@@ -2225,7 +2237,7 @@ const CLOUD_CLEAR_RETURN = import.meta.env.DEV
 const SURFACE_MAP_FRAGMENT = /* glsl */ `
 #ifdef USE_MAP
 	vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-	if ( ${SMOOTH_PROBE_GUARD}DECK_ON ) {
+	if ( ( ${SMOOTH_PROBE_GUARD}DECK_ON ) || GROUND_ON( uMapSmooth > 0.0 ) ) {
 		vec2 mapTexels = vec2( textureSize( map, 0 ) );
 		float smoothW = smoothTexelWeight( vMapUv, mapTexels );
 		if ( smoothW > 0.0 ) {
@@ -2486,6 +2498,7 @@ uniform mat3 normalMatrix;
 uniform sampler2D uCloudShadowMap;
 uniform float uCloudShadowSpin;
 uniform float uCloudDeck;
+uniform float uMapSmooth;
 uniform sampler2D uCloudDetail;
 uniform float uCloudAlbedo;
 uniform float uCloudDetailErode;
@@ -3532,6 +3545,11 @@ export interface SurfaceShadingArgs {
   /** Whether this material reads the ground field. Held so a dependent
    *  material (a streamed sector) reads the same field as the globe under it. */
   groundField: boolean;
+  /** 1 while this ground's colour map is drawn through the smooth
+   *  magnification filter where it is magnified (setSurfaceMapSmooth), 0 for
+   *  plain bilinear. Held so a streamed sector draws its tile the way the
+   *  globe under it draws the map. */
+  uMapSmooth: { value: number };
   /** The body this material draws, as the close-range field's seed reads it.
    *  Held so a dependent material (a streamed sector) lands on the SAME ground
    *  as the globe under it rather than on a second patch of field. */
@@ -3909,6 +3927,29 @@ export function setSurfaceGroundField(mat: THREE.Material, on: boolean): void {
   args.groundField = on;
 }
 
+/** Whether this material draws its colour map through the smooth
+ *  magnification filter where it is magnified. */
+export function surfaceMapSmooth(mat: THREE.Material): boolean {
+  return (augmentArgs.get(mat)?.uMapSmooth.value ?? 0) > 0;
+}
+
+/**
+ * Draw this ground's colour map through the smooth magnification filter
+ * wherever the map is magnified, or go back to plain bilinear. A uniform, so
+ * the text and the program are every surface's; each fragment measures the
+ * magnification against the map actually bound on THIS material, so a
+ * streamed tile hands over on its own texels and not on the globe's.
+ *
+ * Set once, from the body's own entry (PlanetFactory's smoothsMagnifiedMap).
+ * The cloud deck draws through the filter whatever this says, and the setter
+ * leaves it alone.
+ */
+export function setSurfaceMapSmooth(mat: THREE.Material, on: boolean): void {
+  const args = augmentArgs.get(mat);
+  if (!args || args.archetype === 'cloud') return;
+  args.uMapSmooth.value = on ? 1 : 0;
+}
+
 /**
  * Set how much of the close-range detail term a material draws this frame:
  * `envelope` is the eased 0..1 the owner is holding, and `relief` is what this
@@ -4250,10 +4291,13 @@ export function augmentSurfaceMaterial(
   // term adds no light of its own. Zero on a surface class that never draws it,
   // where the field is not even bound.
   const uSynthMid = { value: drawsField ? surfaceDetailFieldMean() : 0 };
+  // Plain bilinear until the body's owner says its map is a photograph worth
+  // smoothing up close (setSurfaceMapSmooth).
+  const uMapSmooth = { value: 0 };
   augmentArgs.set(mat, {
     archetype, ringShadow, sunTan, fx, uFrameSpin, uWaterGloss,
     uSynthEnvelope, uSynthRelief, uSynthBumpFade, uSynthCraterShare,
-    uSynthDetail, uSynthMid, groundField: false,
+    uSynthDetail, uSynthMid, groundField: false, uMapSmooth,
     relief: 'none', synthReliefGain, seedName,
   });
   receiveBeamSwitches(mat);
@@ -4362,6 +4406,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSynthSeed = uSynthSeed;
     shader.uniforms.uSynthMid = uSynthMid;
     shader.uniforms.uSynthCraterShare = uSynthCraterShare;
+    shader.uniforms.uMapSmooth = uMapSmooth;
     // Cloud shadows' slots: read only by a program compiled with CLOUD_SHADOW.
     shader.uniforms.uCloudAbove = fx.uCloudAbove;
     shader.uniforms.uCloudHeightOverRadius = cloudShadowShared.uCloudHeightOverRadius;

@@ -1,6 +1,6 @@
 /**
  * Sector streaming: 16K-class surface detail for the hero bodies (Earth,
- * Moon, Mars) without a 16K texture. A body's map is split into 8×4 sectors
+ * Moon, Mars, Mercury) without a 16K texture. A body's map is split into 8×4 sectors
  * (sectorGrid); while the player is close, the sectors that face the camera
  * AND are large on screen each stream their own 2048² tile (plus crops of the
  * globe's relief / roughness maps) and draw as a sector mesh overlaid on the
@@ -292,6 +292,13 @@ export interface SectorSetSpec {
    *  nearest level at or above it that carries one: level 0 unless a level
    *  between refines the slot (SectorLevel.crops). */
   crops: Partial<Record<CropSlot, SectorTileSet>>;
+  /** The base reads its colour map as its height (a body with no relief map
+   *  of its own: the globe's bumpMap IS its map, PlanetFactory). Each sector
+   *  then reads its own colour tile the same way: no crop, no bytes, and the
+   *  same program as the globe under it, so the ground under a tile is cut and
+   *  no invented relief fills a missing slot. Never a base texture — the
+   *  sector's maps are its own (sectorMaterial). */
+  bumpFromColour?: true;
   /** The pyramid of colour tiles, coarsest first. Slots exist only for the
    *  levels declared here, so a body with one level costs exactly what it
    *  costs today. */
@@ -429,6 +436,16 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   Moon: {
     crops: { normalMap: tileSet('moon-normal', '8k') },
     levels: [sectorLevel16k('moon')],
+  },
+  // MESSENGER's 166 m basemap, levelled and capped as the boot map and rungs
+  // are (tools/gen-tiles.mjs `mercury`: one 64K resample, every level and rung
+  // averaged down from it in linear light). No relief crop: the globe reads
+  // its colour photo as its height, so each sector reads its own colour tile
+  // the same way. One level for now; the 32K and 64K are built and not cut.
+  Mercury: {
+    crops: {},
+    bumpFromColour: true,
+    levels: [sectorLevel16k('mercury.v2')],
   },
 };
 
@@ -990,13 +1007,31 @@ function realAlbedoOn(mat: THREE.Material): boolean {
   return (rank ?? 0) >= TIER_RANK['2k'];
 }
 
-/** Which crop slots the base material carries right now — sectors loaded
- *  under a different signature reload so their maps stay the base's. */
+/** The base draws its colour map as its height right now, as a body whose
+ *  set asks for that does: the bump slot holds the very texture the colour
+ *  slot does, and it is a real map. A procedural stand-in is not, and a globe
+ *  that has lost the alias is not either. */
+function colourBumpOn(mat: THREE.Material, spec: SectorSetSpec): boolean {
+  if (spec.bumpFromColour !== true) return false;
+  const std = mat as Partial<THREE.MeshStandardMaterial>;
+  return std.bumpMap != null && std.bumpMap === std.map && realMapIn(mat, 'bumpMap');
+}
+
+/** The signature character of a colour-as-height base. Not a crop slot's
+ *  initial (b, n, r), so the two can never be read for each other. */
+const COLOUR_BUMP_SIG = 'c';
+
+/** Which crop slots the base material carries right now, and whether it
+ *  reads its colour as height — sectors loaded under a different signature
+ *  reload so their maps stay the base's. A rung swap on the globe moves its
+ *  colour map and the alias together (textureLadder's setMaterialColorMap),
+ *  so the signature, and every resident under it, survives one. */
 function cropSignature(mat: THREE.Material, spec: SectorSetSpec): string {
   let sig = '';
   for (const slot of CROP_SLOTS) {
     if (spec.crops[slot] && realMapIn(mat, slot)) sig += slot[0];
   }
+  if (colourBumpOn(mat, spec)) sig += COLOUR_BUMP_SIG;
   return sig;
 }
 
@@ -2316,9 +2351,15 @@ export class SectorStreamer {
       // under the switch or for a family that cuts always.
       if (this.groundCull || body.family.cutAlways) layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
     }
+    // A colour-as-height base: the tile's own colour map is its bump too. The
+    // LOAD's signature decides, not the slot's — on a first arrival the slot
+    // still carries the signature of whatever it last drew. The alias is never
+    // entered in `loaded` or the slot's maps: the tile is charged once and
+    // disposed once, as the one texture it is.
+    const colourBump = loading.signature.includes(COLOUR_BUMP_SIG);
     const material = body.family.createMaterial({
       map,
-      bumpMap: loaded.bumpMap ?? null,
+      bumpMap: loaded.bumpMap ?? (colourBump ? map : null),
       normalMap: loaded.normalMap ?? null,
       roughnessMap: loaded.roughnessMap ?? null,
     }, slot.level);

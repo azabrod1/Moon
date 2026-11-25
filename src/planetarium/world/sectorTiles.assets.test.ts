@@ -312,6 +312,7 @@ describe('sector tile sets: what the app asks for', () => {
     expect(SECTOR_NIGHT_SETS.Earth.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.earthNight));
     expect(SECTOR_SETS.Mars.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.mars));
     expect(SECTOR_SETS.Moon.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.moon));
+    expect(SECTOR_SETS.Mercury.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.mercury));
     expect(SECTOR_SETS.Earth.crops.bumpMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthBump));
     expect(SECTOR_SETS.Earth.crops.roughnessMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthRoughness));
     expect(SECTOR_SETS.Mars.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.marsNormal));

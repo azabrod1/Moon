@@ -344,7 +344,7 @@ const SHADOW_NO_DATA = { ...DEFAULT_NO_DATA, below: 1, shadowHoles: SHADOW_HOLES
  * boot-only and the rest of their detail is the procedural blend's job. Mimas'
  * and Iapetus' are 5760, which fills a 4K and nothing above it.
  */
-const JOBS = {
+export const JOBS = {
   // --- the eight that ship as noise balls today -----------------------------
   titan: {
     src: 'Titan_ISS_P19658_Mosaic_Global_4km.tif',
@@ -1410,15 +1410,36 @@ function saturate(ras, s) {
  * row at the equator for a two-hundredth of the surface — an unweighted mean
  * of one is a measurement of its polar cap.
  */
-function applyLevel(ras, mask, spec, forceGain) {
-  const KNEE = 0.80;
-  // `shoulder: false` is a plain gain: no bend anywhere, so the brightest
-  // values keep their spacing. Only safe while the gain stays under one,
-  // which is checked below once the gain is known.
+const LEVEL_KNEE = 0.80;
+
+/** The level's tone curve on 0..1 input: the gain's shoulder above the knee,
+ *  or nothing at all for a `shoulder: false` spec. `shoulder: false` is a
+ *  plain gain: no bend anywhere, so the brightest values keep their spacing,
+ *  which is only safe while the gain stays under one (applyLevel checks). */
+function levelShoulder(spec) {
+  if (spec.shoulder === false) return (x) => x;
+  return (x) => (x <= LEVEL_KNEE ? x : LEVEL_KNEE + (1 - LEVEL_KNEE) * (1 - Math.exp(-(x - LEVEL_KNEE) / (1 - LEVEL_KNEE))));
+}
+
+/**
+ * The level as a table of 256 encoded counts: what applyLevel does to every
+ * channel value once its gain is known. Exported so a map cut by another
+ * tool from the same source (tools/gen-tiles.mjs' Mercury levels) is graded
+ * by this curve and not by a copy of it that could drift.
+ */
+export function levelLut(gain, spec) {
+  const shoulder = levelShoulder(spec);
+  const lut = new Uint8Array(256);
+  for (let v = 0; v < 256; v++) {
+    const x = Math.round(shoulder((v / 255) * gain) * 255);
+    lut[v] = x < 0 ? 0 : x > 255 ? 255 : x;
+  }
+  return lut;
+}
+
+export function applyLevel(ras, mask, spec, forceGain) {
   const plain = spec.shoulder === false;
-  const shoulder = plain
-    ? (x) => x
-    : (x) => (x <= KNEE ? x : KNEE + (1 - KNEE) * (1 - Math.exp(-(x - KNEE) / (1 - KNEE))));
+  const shoulder = levelShoulder(spec);
   const { width: W, height: H } = ras;
   const n = W * H;
   const hist = [new Float64Array(256), new Float64Array(256), new Float64Array(256)];
@@ -1457,15 +1478,11 @@ function applyLevel(ras, mask, spec, forceGain) {
   if (plain && a > 1) {
     throw new Error(`a plain level gain of ${a.toFixed(4)} would clip every count above ${Math.round(255 / a)}; this map needs the shoulder`);
   }
-  const lut = new Uint8Array(256);
-  for (let v = 0; v < 256; v++) {
-    const x = Math.round(shoulder((v / 255) * a) * 255);
-    lut[v] = x < 0 ? 0 : x > 255 ? 255 : x;
-  }
+  const lut = levelLut(a, spec);
   for (let i = 0; i < n * 3; i++) ras.data[i] = lut[ras.data[i]];
   // The count the shoulder starts bending at — inside the range whenever the
-  // gain is above KNEE, not only above one — or null for a plain gain.
-  return { before, after: meanAt(a), target, gain: a, shouldered: plain ? null : Math.min(255, Math.round((KNEE / a) * 255)) };
+  // gain is above the knee, not only above one — or null for a plain gain.
+  return { before, after: meanAt(a), target, gain: a, shouldered: plain ? null : Math.min(255, Math.round((LEVEL_KNEE / a) * 255)) };
 }
 
 /**

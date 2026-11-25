@@ -231,5 +231,15 @@
     "used_by": [
       "gen-tiles mercury (its finest level, from which the coarser levels are averaged down)"
     ]
+  },
+  "mercury-v2-8k.png": {
+    "sha256": "0ac3786c7ada1255d74a029abde7bdeb9570deefcd52b52e3a3ba55fd7a4d031",
+    "bytes": 57491895,
+    "width": 8192,
+    "height": 4096,
+    "product": "Mercury's filled 8K rung as gen-moonmaps writes it (.moon-data-cache/zoom/rungs/, the picture 8k/mercury.v2.ktx2 is encoded from): the MESSENGER 665 m reduction levelled at gain 1.849244, its caps past 80 N and 81.25 S filled with matched grain",
+    "used_by": [
+      "gen-tiles mercury (the polar caps of its 64K level, enlarged and feathered into the measured ground)"
+    ]
   }
 }

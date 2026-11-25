@@ -255,3 +255,119 @@ describe.skipIf(!sharp)('gen-tiles: a grey mosaic level and the levels derived f
     expect(Math.abs(mean(greyL0) / mean(parent) - 1)).toBeLessThan(0.002);
   });
 });
+
+describe.skipIf(!sharp)('gen-tiles: Mercury\'s levels are graded by gen-moonmaps\' own curve', () => {
+  it('levelLut is the curve applyLevel puts on every count at the logged gain', async () => {
+    const moonmaps = await import('./gen-moonmaps.mjs');
+    const spec = moonmaps.JOBS.mercury.level;
+    const gain = tool.MERCURY_LEVEL_GAIN;
+    expect(gain).toBe(1.849244);
+    // Every count on all three channels, levelled the way gen-moonmaps levels
+    // a rung once its gain is solved.
+    const data = Buffer.alloc(256 * 3);
+    for (let v = 0; v < 256; v++) data[3 * v] = data[3 * v + 1] = data[3 * v + 2] = v;
+    moonmaps.applyLevel({ data, width: 256, height: 1, channels: 3 }, null, spec, gain);
+    const lut = moonmaps.levelLut(gain, spec);
+    for (let v = 0; v < 256; v++) {
+      expect(lut[v]).toBe(data[3 * v]);
+      expect(tool.MERCURY_LEVEL_LUT[v]).toBe(data[3 * v]);
+    }
+    // The gain is logged to six decimals; anywhere in that rounding interval
+    // the table is the same, so the logged number fixes the curve.
+    const lo = moonmaps.levelLut(gain - 5e-7, spec);
+    const hi = moonmaps.levelLut(gain + 5e-7, spec);
+    expect(Buffer.from(lo).equals(Buffer.from(lut))).toBe(true);
+    expect(Buffer.from(hi).equals(Buffer.from(lut))).toBe(true);
+    // Mercury's spec has the shoulder: counts above the knee bend rather than
+    // clip, and the table never turns back.
+    expect(lut[150]).toBeLessThan(255);
+    for (let v = 1; v < 256; v++) expect(lut[v]).toBeGreaterThanOrEqual(lut[v - 1]);
+    expect(lut[100]).toBe(Math.round((100 / 255) * gain * 255));
+  });
+});
+
+describe.skipIf(!sharp)('gen-tiles: polar caps filled once, from a filled reference', () => {
+  // A filled reference at a quarter of level 1's width, as Mercury's 8K rung
+  // is to its 64K level (there 127/16, here exactly 4): its own pattern
+  // everywhere, so the cap rows can be told apart from the ground.
+  const RW = 128;
+  const RH = 64;
+  const refGrey = Buffer.alloc(RW * RH);
+  for (let y = 0; y < RH; y++) for (let x = 0; x < RW; x++) refGrey[y * RW + x] = 40 + ((x * 7 + y * 13) % 170);
+  // The test world's measured rows [20, 342) of 360 are 80 N to 81 S.
+  const caps = { north: 80, south: -81 };
+  let refPng = '';
+  let greyTif = '';
+
+  beforeAll(async () => {
+    refPng = path.join(root, 'ref.png');
+    greyTif = path.join(root, 'grey2.tif');
+    await sharp!(toRgb(refGrey), { raw: { width: RW, height: RH, channels: 3 } }).png().toFile(refPng);
+    await sharp!(syntheticGrey(), { raw: { width: SW, height: SH, channels: 1 } }).toColourspace('b-w').tiff({ compression: 'lzw' }).toFile(greyTif);
+  });
+
+  /** The reference enlarged to the whole level in one linear-light resize,
+   *  wrapped by a halo of its far edge. */
+  async function enlarged(W: number, H: number) {
+    const halo = 8;
+    const cols = RW + 2 * halo;
+    const padded = Buffer.alloc(cols * RH);
+    for (let y = 0; y < RH; y++) for (let x = 0; x < cols; x++) padded[y * cols + x] = refGrey[y * RW + (((x - halo) % RW) + RW) % RW];
+    const k = W / RW;
+    return sharp!(padded, { raw: { width: cols, height: RH, channels: 1 } })
+      .pipelineColourspace('scrgb').resize(W + 2 * halo * k, H, { fit: 'fill', kernel: 'lanczos3' }).toColourspace('srgb')
+      .extract({ left: halo * k, top: 0, width: W, height: H }).extractChannel(0).raw().toBuffer();
+  }
+
+  it('takes the caps from the reference, keeps the ground, and blends the seam in linear light', async () => {
+    // A reference texel here is four level rows, so a margin of one covers the
+    // three rows lanczos3 reaches (Mercury's half texel is four 64K rows).
+    const spec = { ref: refPng, ...caps, margin: 1, feather: 2 };
+    const filled = await readFile(await tool.levelRawFile(job('capped', 1, greyTif, { fill: tool.capFill(spec), rawToken: 'caps.v1' }), 1));
+    const bare = await readFile(await tool.levelRawFile(job('bare', 1, greyTif), 1));
+    const big = await enlarged(512, 256);
+    const w = tool.capWeights(256, { ...caps, refHeight: RH, margin: spec.margin, feather: spec.feather });
+    let capRows = 0;
+    let seamRows = 0;
+    for (let y = 0; y < 256; y++) {
+      const row = (b: Buffer) => b.subarray(y * 512, (y + 1) * 512);
+      if (w[y] === 1) { capRows++; expect(row(filled).equals(row(big))).toBe(true); continue; }
+      if (w[y] === 0) { expect(row(filled).equals(row(bare))).toBe(true); continue; }
+      seamRows++;
+      for (let x = 0; x < 512; x++) {
+        const want = w[y] * tool.LINEAR_OF(big[y * 512 + x]) + (1 - w[y]) * tool.LINEAR_OF(bare[y * 512 + x]);
+        const encoded = 255 * (want <= 0.0031308 ? 12.92 * want : 1.055 * want ** (1 / 2.4) - 0.055);
+        expect(Math.abs(filled[y * 512 + x] - encoded)).toBeLessThanOrEqual(0.5 + 1e-9);
+      }
+    }
+    expect(capRows).toBeGreaterThan(20);
+    expect(seamRows).toBeGreaterThan(4);
+    // Both caps, the north and the south one.
+    expect(w[0]).toBe(1);
+    expect(w[255]).toBe(1);
+    expect(w[128]).toBe(0);
+  });
+
+  it('stops when a texel the resample built partly from unmeasured rows is not wholly the fill\'s', async () => {
+    const tooTight = tool.capFill({ ref: refPng, ...caps, margin: -1, feather: 2 });
+    await expect(tool.levelRawFile(job('tight', 1, greyTif, { fill: tooTight, rawToken: 'tight.v1' }), 1))
+      .rejects.toThrow(/reached past the measured rows/);
+  });
+
+  it('is in every level derived from the filled one, averaged down with it', async () => {
+    const g = job('capped', 1, greyTif, { fill: tool.capFill({ ref: refPng, ...caps, margin: 1, feather: 2 }), rawToken: 'caps.v1' });
+    const l0 = await readFile(await tool.levelRawFile(g, 0));
+    const l1 = await readFile(await tool.levelRawFile(g, 1));
+    // The top cap of level 0 is the 2x2 linear average of level 1's, to a
+    // count or so (lanczos3, not a box, does the averaging).
+    let worst = 0;
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 256; x++) {
+        const box = [0, 1].flatMap((dy) => [0, 1].map((dx) => tool.LINEAR_OF(l1[(2 * y + dy) * 512 + 2 * x + dx])))
+          .reduce((a, b) => a + b, 0) / 4;
+        worst = Math.max(worst, Math.abs(tool.LINEAR_OF(l0[y * 256 + x]) - box));
+      }
+    }
+    expect(worst).toBeLessThan(0.05);
+  });
+});

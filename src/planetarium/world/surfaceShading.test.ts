@@ -8,7 +8,7 @@ import {
   SEA_PAINT_COLOUR, SEA_WATER_COLOUR, parseSeaColourParam, seaColourOn, seaColourUniforms, setSeaColourEnabled,
   SEA_SKY_GRAZING_COS, parseSeaSkyParam, seaSkyOn, setSeaSkyEnabled, SEA_WATER_IOR,
   setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceSynthesis, setSurfaceWaterGloss,
-  surfaceMapSmooth,
+  surfaceMapSmooth, surfaceMapSmoothRule,
   surfaceChartWeights, surfaceGroundField, surfaceShadingArgsOf,
   SYNTH_CHART_CUT, surfaceCraterShare, surfaceReliefKind, surfaceSynthesisOf, surfaceWaterGloss,
   waterGlossRoughness,
@@ -84,6 +84,8 @@ import { atmosphereParams } from './atmosphereModel';
 import { smootherstep } from '../../shared/math/smoothstep';
 import { earthNightFragmentShader } from '../../shared/shaders/atmosphere';
 import { setPerfSwitch } from '../../app/perfSwitches';
+import { setColorMapIsPhoto } from './mapSmooth';
+import { groundTexelFootprint, surfaceMagnifiedWeight } from './surfaceDensity';
 
 // Mimics the subset of three's onBeforeCompile shader object we mutate, so the
 // wiring can be exercised without a GL context.
@@ -506,9 +508,9 @@ describe('the close-range detail term', () => {
     expect(surfaceGroundField(gas)).toBe(false);
   });
 
-  it('smooths a ground\'s magnified colour map on its owner\'s word, without touching the shader', () => {
-    // A uniform on the material, recorded in its args, and the same text and
-    // program whichever way it is set.
+  it('smooths a ground\'s magnified colour map on its owner\'s word and a photograph, without touching the shader', () => {
+    // A uniform on the material, recorded in its args beside the rule it
+    // follows, and the same text and program whichever way it is set.
     const mat = new THREE.MeshStandardMaterial();
     const u = uniforms('airless', 'Mercury', mat);
     const text = () => {
@@ -523,29 +525,95 @@ describe('the close-range detail term', () => {
     const before = text().fragmentShader;
     expect(u.uMapSmooth.value).toBe(0);
     expect(surfaceMapSmooth(mat)).toBe(false);
+    expect(surfaceShadingArgsOf(mat)?.mapSmooth.uniform).toBe(u.uMapSmooth);
+    // The rule alone: no photograph is bound yet, so the filter stays off.
     setSurfaceMapSmooth(mat, true);
+    expect(surfaceMapSmoothRule(mat)).toBe(true);
+    expect(u.uMapSmooth.value).toBe(0);
+    // A photograph bound: on. A stand-in bound again: off, the rule kept.
+    setColorMapIsPhoto(mat, true);
     expect(u.uMapSmooth.value).toBe(1);
     expect(surfaceMapSmooth(mat)).toBe(true);
-    expect(surfaceShadingArgsOf(mat)?.uMapSmooth).toBe(u.uMapSmooth);
     const on = text();
     expect(on.fragmentShader).toBe(before);
     expect(on.uniforms.uMapSmooth).toBe(u.uMapSmooth);
+    setColorMapIsPhoto(mat, false);
+    expect(u.uMapSmooth.value).toBe(0);
+    expect(surfaceMapSmoothRule(mat)).toBe(true);
+    setColorMapIsPhoto(mat, true);
     setSurfaceMapSmooth(mat, false);
     expect(u.uMapSmooth.value).toBe(0);
     // The map's fetch takes the filter on the deck or where the flag is up, the
     // filter's taps behind its weight, the weight behind a condition that is
-    // uniform across the draw.
+    // uniform across the draw. Every marker must be there: indexOf's -1 for a
+    // missing one would pass any "comes before" below.
     const glsl = before;
-    const cond = glsl.indexOf('|| GROUND_ON( uMapSmooth > 0.0 ) ) {');
-    expect(cond).toBeGreaterThan(0);
-    expect(cond).toBeLessThan(glsl.indexOf('float smoothW = smoothTexelWeight( vMapUv, mapTexels );'));
-    expect(glsl.indexOf('if ( smoothW > 0.0 ) {')).toBeLessThan(glsl.indexOf('textureBSpline( map, vMapUv, mapTexels )'));
+    const at = (marker: string): number => {
+      const i = glsl.indexOf(marker);
+      expect(i, marker).toBeGreaterThan(0);
+      return i;
+    };
+    const cond = at('|| GROUND_ON( uMapSmooth > 0.0 ) ) {');
+    const weight = at('float smoothW = DECK_ON ? smoothTexelWeight( vMapUv, mapTexels ) : groundTexelWeight( vMapUv, mapTexels );');
+    const guard = at('if ( smoothW > 0.0 ) {');
+    const taps = at('textureBSpline( map, vMapUv, mapTexels )');
+    expect(cond).toBeLessThan(weight);
+    expect(weight).toBeLessThan(guard);
+    expect(guard).toBeLessThan(taps);
     expect(glsl).toContain('uniform float uMapSmooth;');
     // The cloud deck draws through the filter regardless, and keeps its zero.
     const deck = new THREE.MeshStandardMaterial();
     const d = uniforms('cloud', 'Earth', deck);
     setSurfaceMapSmooth(deck, true);
+    setColorMapIsPhoto(deck, true);
     expect(d.uMapSmooth.value).toBe(0);
+    expect(surfaceMapSmoothRule(deck)).toBe(false);
+  });
+
+  it('measures a ground\'s magnification by each axis\'s gradient length, which a roll leaves alone, and the deck\'s as it was', () => {
+    // The deck's weight is its approved look and must read as it always has;
+    // the ground's is the twin of groundTexelFootprint.
+    const glsl = fragment('airless');
+    expect(glsl).toContain(
+      'float perPixel = max(fwidth(uv.x) * texels.x, fwidth(uv.y) * texels.y);\n'
+      + '  return 1.0 - smoothstep(0.700000, 1.300000, perPixel);\n}',
+    );
+    expect(glsl).toContain(
+      'float groundTexelWeight(vec2 uv, vec2 texels) {\n'
+      + '  float perPixel = max(length(vec2(dFdx(uv.x), dFdy(uv.x))) * texels.x,\n'
+      + '                       length(vec2(dFdx(uv.y), dFdy(uv.y))) * texels.y);\n'
+      + '  return 1.0 - smoothstep(0.700000, 1.300000, perPixel);\n}',
+    );
+    // The reviewer's case: an isotropic footprint of 0.92 texels a pixel on a
+    // 2048 × 1024 map, rolled about the view axis.
+    const texels = [2048, 1024] as const;
+    const footprint = (roll: number) => {
+      const s = 0.92;
+      const c = Math.cos(roll), n = Math.sin(roll);
+      // u along screen x and v along screen y before the roll; the roll turns
+      // both gradients by the same angle.
+      const du = [(s / texels[0]) * c, (s / texels[0]) * n] as const;
+      const dv = [(-s / texels[1]) * n, (s / texels[1]) * c] as const;
+      const fwidthReading = Math.max(
+        (Math.abs(du[0]) + Math.abs(du[1])) * texels[0], (Math.abs(dv[0]) + Math.abs(dv[1])) * texels[1],
+      );
+      return { ground: groundTexelFootprint(du, dv, texels), fwidthReading };
+    };
+    const level = footprint(0);
+    expect(level.ground).toBeCloseTo(0.92, 12);
+    // Axis-aligned, the two readings are one: the default look at that pose
+    // does not move.
+    expect(level.fwidthReading).toBeCloseTo(level.ground, 12);
+    expect(surfaceMagnifiedWeight(level.ground)).toBeCloseTo(0.695, 3);
+    for (const deg of [10, 22.5, 45, 67.5, 90, 135, 180, 260]) {
+      const r = footprint((deg * Math.PI) / 180);
+      expect(r.ground).toBeCloseTo(0.92, 12);
+      expect(surfaceMagnifiedWeight(r.ground)).toBeCloseTo(surfaceMagnifiedWeight(level.ground), 12);
+    }
+    // What fwidth did with it: root two at 45 degrees, and the filter gone.
+    const rolled = footprint(Math.PI / 4);
+    expect(rolled.fwidthReading).toBeCloseTo(0.92 * Math.SQRT2, 12);
+    expect(surfaceMagnifiedWeight(rolled.fwidthReading)).toBe(0);
   });
 
   it('stops climbing rungs where a float stops being able to name one', () => {

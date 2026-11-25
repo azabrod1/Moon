@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceSynthesis, surfaceGroundField,
-  surfaceMapSmooth,
+  surfaceMapSmooth, surfaceMapSmoothRule,
   surfaceShadingArgsOf, surfaceSynthesisOf,
 } from './surfaceShading';
+import { setColorMapIsPhoto } from './mapSmooth';
 import { surfaceGroundTexture } from './surfaceDetailNoise';
 import { createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 
@@ -104,20 +105,27 @@ describe('createSectorMaterial', () => {
     expect(compiledUniforms(sector).uSynthDetail.value).toBe(surfaceGroundTexture());
   });
 
-  it('smooths its tile where its globe smooths the map', () => {
+  it('smooths its tile by its body\'s rule, whatever stand-in the globe wears', () => {
     // A plain-bilinear tile over a smoothed globe would be a rectangle of
-    // squares. Only the flag travels: each tile measures its own magnification
-    // against its own map in the shader.
-    for (const on of [true, false]) {
-      const base = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
-      augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
-      setSurfaceMapSmooth(base, on);
-      const sector = createSectorMaterial(base, { map: new THREE.Texture() });
-      expect(surfaceMapSmooth(sector)).toBe(on);
-      const u = compiledUniforms(sector).uMapSmooth;
-      expect(u.value).toBe(on ? 1 : 0);
-      // Its own uniform, not the globe's.
-      expect(u).not.toBe(compiledUniforms(base).uMapSmooth);
+    // squares. Only the rule travels: each tile measures its own magnification
+    // against its own map in the shader, and a tile is always a photograph, so
+    // a globe still on its stand-in (its own filter off) does not hold the
+    // tile back.
+    for (const rule of [true, false]) {
+      for (const globePhoto of [true, false]) {
+        const base = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+        augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Moon');
+        setSurfaceMapSmooth(base, rule);
+        setColorMapIsPhoto(base, globePhoto);
+        expect(surfaceMapSmooth(base)).toBe(rule && globePhoto);
+        const sector = createSectorMaterial(base, { map: new THREE.Texture() });
+        expect(surfaceMapSmoothRule(sector)).toBe(rule);
+        expect(surfaceMapSmooth(sector)).toBe(rule);
+        const u = compiledUniforms(sector).uMapSmooth;
+        expect(u.value).toBe(rule ? 1 : 0);
+        // Its own uniform, not the globe's.
+        expect(u).not.toBe(compiledUniforms(base).uMapSmooth);
+      }
     }
   });
 

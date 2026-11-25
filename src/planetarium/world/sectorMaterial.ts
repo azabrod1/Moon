@@ -19,9 +19,10 @@
  */
 import * as THREE from 'three';
 import { inheritAlbedoGrade } from './albedoGrade';
+import { setColorMapIsPhoto } from './mapSmooth';
 import {
   augmentSurfaceMaterial, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth,
-  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceCraterShare, surfaceGroundField, surfaceMapSmooth,
+  setSurfaceSynthesis, setSurfaceWaterGloss, surfaceCraterShare, surfaceGroundField, surfaceMapSmoothRule,
   surfaceReliefKind,
   surfaceShadingArgsOf, surfaceSynthesisEnvelope, surfaceWaterGloss,
 } from './surfaceShading';
@@ -103,10 +104,13 @@ export function createSectorMaterial(
   // would be a rectangle of craters. So is whether the colour map is smoothed
   // where magnified: a plain-bilinear tile over a smoothed globe would be a
   // rectangle of squares. Each tile measures its own magnification against its
-  // own map, so only the flag travels.
+  // own map, so only the flag travels — and it is the body's RULE, not the
+  // globe's state this moment: a tile is always a photograph, while the globe
+  // under it may still wear a stand-in that its own filter is off for.
   setSurfaceCraterShare(mat, surfaceCraterShare(base));
   setSurfaceGroundField(mat, surfaceGroundField(base));
-  setSurfaceMapSmooth(mat, surfaceMapSmooth(base));
+  setSurfaceMapSmooth(mat, surfaceMapSmoothRule(base));
+  setColorMapIsPhoto(mat, true);
   syncSectorMaterial(mat, base);
   return mat;
 }

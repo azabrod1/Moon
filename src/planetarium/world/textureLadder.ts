@@ -1465,14 +1465,28 @@ export function releaseOffer(up: TextureUpgrade, nowMs: number, guarded: boolean
   return releaseTargetTier(up);
 }
 
+/** GPU bytes a body's boot map holds: a webp at its real width, which for
+ *  Earth's globe and Io, Europa and Ganymede is 4096 (BOOT_MAP_WIDTH), not the
+ *  boot tier's nominal 2048. That is 42.7 MiB, as much as the 8K container
+ *  above it holds at a byte a texel (ASTC, BC7) and twice what it holds at
+ *  half a byte (ETC2, BC1), so dropping that 8K to the boot map frees nothing
+ *  and the planner must see it priced as such (releaseFits). */
+export function bootMapGpuBytes(key: string): number {
+  return equirectMapGpuBytes(
+    Math.max(TIER_MAP_WIDTH[BOOT_TIER], BOOT_MAP_WIDTH[key] ?? 0),
+    landsCompressed(key, BOOT_TIER),
+  );
+}
+
 /** The planner's candidate for an offer: what the handle holds, what the tier
- *  below will, and whether that is a compressed container (landsCompressed). */
+ *  below will (the boot map at its real size, bootMapGpuBytes), and whether
+ *  that is a compressed container (landsCompressed). */
 export function releaseCandidate(up: TextureUpgrade, low: TextureTier, id: string, distance: number): ReleaseCandidate {
   return {
     id,
     distance,
     heldBytes: appliedTierHeldBytes(up),
-    lowBytes: tierUploadBytes(up.key, low),
+    lowBytes: low === BOOT_TIER ? bootMapGpuBytes(up.key) : tierUploadBytes(up.key, low),
     lowIsContainer: landsCompressed(up.key, low),
   };
 }

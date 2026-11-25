@@ -56,6 +56,7 @@ import {
   appliedNormalHeldBytes,
   appliedTierHeldBytes,
   bindTierAdmission,
+  bootMapGpuBytes,
   cancelTierRelease,
   expireTierRelease,
   ladderMapReferenceWidth,
@@ -2337,6 +2338,77 @@ describe('the ladder against the sector memory envelope', () => {
       expect(takeable.sort()).toEqual(['callisto', 'dione', 'earthClouds', 'earthNight', 'enceladus',
         'mercury', 'moon', 'pluto', 'tethys']);
     }
+  });
+
+  it('prices a drop to the boot map at its real size, so an 8K above a 4096 boot map is never given back for nothing', () => {
+    // Earth's globe and Io, Europa and Ganymede boot on a 4096 webp, 42.7 MiB
+    // with its mips where a 2048 one is 10.7. The one rung above is an 8K
+    // container: 42.7 MiB at a byte a texel (ASTC, BC7), as much as the boot
+    // map, and 21.3 at half (ETC2, BC1), less than it. Either way the drop
+    // frees nothing, and the ladder's own pressure must not pick it.
+    bindKtx2TierLoader(() => {}, true);
+    withMaxTextureSize(16384);
+    const container = (width: number, bytesPerTexel: number): THREE.CompressedTexture => {
+      const mipmaps: Array<{ width: number; height: number; data: Uint8Array }> = [];
+      for (let w = width, h = width / 2; w >= 4; w >>= 1, h >>= 1) {
+        mipmaps.push({ width: w, height: h, data: new Uint8Array(w * h * bytesPerTexel) });
+      }
+      return new THREE.CompressedTexture(mipmaps as unknown as ImageData[], width, width / 2);
+    };
+    const at8k = (key: string, map: THREE.Texture) => {
+      const up = ladderHandle(key);
+      up.appliedTier = '8k';
+      up.material.map = map;
+      trackReleaseBand(up, 0, 0);
+      return up;
+    };
+    const roomy = { ladderBytes: 0, envelopeBytes: Number.POSITIVE_INFINITY };
+    for (const key of ['earthDay', 'io', 'europa', 'ganymede']) {
+      expect(bootMapGpuBytes(key), key).toBe(equirectMapGpuBytes(4096));
+      expect(mib(bootMapGpuBytes(key)), key).toBeCloseTo(42.67, 2);
+      for (const bytesPerTexel of [1, 0.5]) {
+        const up = at8k(key, container(8192, bytesPerTexel));
+        const low = releaseOffer(up, 60_000, false);
+        expect(low, key).toBe('2k'); // no rung between: the boot map
+        const c = releaseCandidate(up, low!, key, 1);
+        expect(mib(c.heldBytes), key).toBeCloseTo(42.67 * bytesPerTexel, 2);
+        expect(c.lowBytes, key).toBe(bootMapGpuBytes(key));
+        expect(c.heldBytes, key).toBeLessThanOrEqual(c.lowBytes);
+        expect(c.lowIsContainer, key).toBe(false);
+        // Not chosen, by the ladder's pressure or the tiles', even beside a
+        // nearer rung that does free something.
+        const dione = releaseCandidate(at8k('dione', container(8192, bytesPerTexel)), '4k', 'dione', 0);
+        expect(planRelease([c], roomy), key).toBeNull();
+        expect(planRelease([c, dione], roomy)?.id, key).toBe('dione');
+        expect(planRelease([c], { ...roomy, containersOnly: true }), key).toBeNull();
+      }
+      // Held as RGBA (no compressed format to target) the 8K is 170.7 MiB,
+      // and giving it back to the boot map frees the 128 MiB it really does.
+      bindKtx2TierLoader(() => {}, false);
+      const rgba = at8k(key, mapTexture(8192));
+      const c = releaseCandidate(rgba, releaseOffer(rgba, 60_000, false)!, key, 1);
+      expect(mib(c.heldBytes - c.lowBytes), key).toBeCloseTo(128, 1);
+      expect(planRelease([c], roomy)?.id, key).toBe(key);
+      bindKtx2TierLoader(() => {}, true);
+    }
+
+    // A body that boots on a 2048 map is priced exactly as before: Dione's 8K
+    // drops to its 4K container, and Jupiter's past its 4K webp to a 10.7 MiB
+    // boot map, and both are given back.
+    expect(bootMapGpuBytes('dione')).toBe(tierUploadBytes('dione', '2k'));
+    expect(mib(bootMapGpuBytes('dione'))).toBeCloseTo(10.67, 2);
+    const dione = at8k('dione', container(8192, 1));
+    expect(releaseOffer(dione, 60_000, false)).toBe('4k');
+    const fromDione = releaseCandidate(dione, '4k', 'dione', 1);
+    expect(fromDione.lowBytes).toBe(equirectMapGpuBytes(4096, true));
+    expect(fromDione.lowIsContainer).toBe(true);
+    expect(planRelease([fromDione], { ...roomy, containersOnly: true })?.id).toBe('dione');
+    const jupiter = at8k('jupiter', container(8192, 1));
+    expect(releaseOffer(jupiter, 60_000, false)).toBe('2k');
+    const fromJupiter = releaseCandidate(jupiter, '2k', 'jupiter', 1);
+    expect(fromJupiter.lowBytes).toBe(tierUploadBytes('jupiter', '2k'));
+    expect(fromJupiter.lowBytes).toBe(equirectMapGpuBytes(2048));
+    expect(planRelease([fromJupiter], roomy)?.id).toBe('jupiter');
   });
 
   it('never lets a phone reach its heaviest: the rung that would is refused', () => {

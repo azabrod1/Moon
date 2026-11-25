@@ -283,7 +283,8 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // and both rungs are cut from the one cloud master the deck's HD field pages
 // come from (tools/gen-tiles.mjs, `clouds --base`), so a page arriving over
 // the sheet sharpens the cloud that was already there. Mercury's boot map and
-// both rungs are one MESSENGER mosaic (tools/gen-moonmaps.mjs). Venus and Saturn are the same Solar System Scope
+// both rungs are averaged down in linear light from one 64K resample of the
+// MESSENGER mosaic its tiles come from (tools/gen-tiles.mjs), like Mars's. Venus and Saturn are the same Solar System Scope
 // products as their boot maps (gated: RMS 1.6 / 1.6 against the shipped
 // 2K); both are low-frequency, so their 4K steps cost ~130 KB each
 // and mainly remove texel blockiness at the wall. Uranus / Neptune stay 2K
@@ -405,7 +406,8 @@ export interface CompressedRung {
   webp: boolean;
 }
 export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
-  // Both rungs cut from the MESSENGER mosaic (tools/gen-moonmaps.mjs), ETC1S
+  // Both rungs averaged down from the MESSENGER mosaic's 64K level
+  // (tools/gen-tiles.mjs, encoded by tools/gen-ktx2.mjs), ETC1S
   // like the photo moons' and container-only like theirs: the SSS 4K webp the
   // 4K rung used to be transcoded from was a different product, and a ladder
   // that changes product at a rung change changes the planet's face.

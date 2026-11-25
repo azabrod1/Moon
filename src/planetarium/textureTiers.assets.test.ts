@@ -193,8 +193,8 @@ describe('the files behind the colour ladder', () => {
     // has to keep shipping beside it — which no toured map clears now: Mars
     // did while it was the grainy Viking mosaic, and its Tianwen-1 map
     // compresses so well as webp (0.78 MB at 4K) that the container would be
-    // seven times it. Mercury's rungs are cut from the MESSENGER mosaic like
-    // a photo moon's, and its map is grey, so they are ETC1S like theirs. The
+    // seven times it. Mercury's rungs are a photo of cratered ground like a
+    // photo moon's, and its map is grey, so they are ETC1S like theirs. The
     // Moon, the cloud deck and Earth's night lights are the three the boot
     // warm uploads on every session, downloaded once per device rather than
     // once per tour, and admitted on that basis. Jupiter's 8K is the one

@@ -204,7 +204,7 @@ async function fullRaw(srcPath, width, height, matchRef) {
   return data;
 }
 
-const rawOf = (buf, width, height) => sharp(buf, { raw: { width, height, channels: 3 }, limitInputPixels: false });
+const rawOf = (buf, width, height, channels = 3) => sharp(buf, { raw: { width, height, channels }, limitInputPixels: false });
 
 /**
  * A resize in linear light: libvips converts the sRGB input to scRGB (float,
@@ -732,9 +732,9 @@ async function deriveEarthRoughness(water, srcWidth, srcHeight) {
   await cutGrid(memoryRows(rough, W, H, 3), GRID_16K, W / GRID_16K.cols, 'earth-roughness.v2', '4k', DATA_WEBP);
 }
 
-async function writeDownsamples(raw, width, height, outs) {
+async function writeDownsamples(raw, width, height, outs, channels = 3) {
   for (const { w, h, out } of outs) {
-    await writeWebp(resizeLinear(rawOf(raw, width, height), w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
+    await writeWebp(resizeLinear(rawOf(raw, width, height, channels), w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
   }
 }
 
@@ -1353,20 +1353,23 @@ const PYRAMID_HALO = 16;
 async function pyramidLevelRaw(job, level, fromIndex) {
   const from = job.levels[fromIndex];
   if (!from) throw new Error(`${job.key}/${level.tier}: no level ${fromIndex} to derive from`);
-  const { width, height } = gridSize(level.grid, CONTENT);
-  const source = gridSize(from.grid, CONTENT);
+  const { width, height } = gridSize(level.grid, contentOf(job));
+  const source = gridSize(from.grid, contentOf(job));
   const factor = 2;
   if (source.width !== width * factor || source.height !== height * factor) {
     throw new Error(`${job.key}/${level.tier}: ${source.width}x${source.height} (${from.tier}) is not one octave above ${width}x${height}`);
   }
+  // One byte a texel all the way down from a grey level, and the suffix says
+  // which layout the cached file holds.
+  const ch = levelChannels(job, fromIndex);
   const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken, `of-${from.tier}`, PYRAMID_TOKEN].filter(Boolean).join('.');
-  const out = cache('levels', `${stem}.rgb`);
+  const out = cache('levels', `${stem}.${rawSuffix(ch)}`);
   await mkdir(path.dirname(out), { recursive: true });
-  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+  if ((await exists(out)) && (await stat(out)).size === width * height * ch) {
     console.log(`  derived equirect already in the cache: ${path.relative(process.cwd(), out)}`);
     return out;
   }
-  const src = await fileRowSource(await levelRawFile(job, fromIndex), source.width, source.height);
+  const src = await fileRowSource(await levelRawFile(job, fromIndex), source.width, source.height, ch);
   const haloSrc = PYRAMID_HALO * factor;
   const paddedWidth = source.width + 2 * haloSrc;
   const file = await open(`${out}.part`, 'w');
@@ -1377,19 +1380,26 @@ async function pyramidLevelRaw(job, level, fromIndex) {
       const srcRows = bandRows * factor + 2 * haloSrc;
       // The row source repeats the edge row past a pole; longitude wraps here.
       const band = await src.read(y0 * factor - haloSrc, srcRows);
-      const padded = Buffer.allocUnsafe(paddedWidth * srcRows * 3);
+      const padded = Buffer.allocUnsafe(paddedWidth * srcRows * ch);
       for (let y = 0; y < srcRows; y++) {
-        const row = y * source.width * 3;
-        const dst = y * paddedWidth * 3;
-        band.copy(padded, dst, row + (source.width - haloSrc) * 3, row + source.width * 3);
-        band.copy(padded, dst + haloSrc * 3, row, row + source.width * 3);
-        band.copy(padded, dst + (haloSrc + source.width) * 3, row, row + haloSrc * 3);
+        const row = y * source.width * ch;
+        const dst = y * paddedWidth * ch;
+        band.copy(padded, dst, row + (source.width - haloSrc) * ch, row + source.width * ch);
+        band.copy(padded, dst + haloSrc * ch, row, row + source.width * ch);
+        band.copy(padded, dst + (haloSrc + source.width) * ch, row, row + haloSrc * ch);
       }
-      const piece = await resizeLinear(
-        sharp(padded, { raw: { width: paddedWidth, height: srcRows, channels: 3 }, limitInputPixels: false }),
+      let pipe = resizeLinear(
+        sharp(padded, { raw: { width: paddedWidth, height: srcRows, channels: ch }, limitInputPixels: false }),
         width + 2 * PYRAMID_HALO, bandRows + 2 * PYRAMID_HALO, { fit: 'fill', kernel: 'lanczos3' },
-      ).extract({ left: PYRAMID_HALO, top: PYRAMID_HALO, width, height: bandRows }).raw().toBuffer();
-      await file.write(piece, 0, piece.length, y0 * width * 3);
+      ).extract({ left: PYRAMID_HALO, top: PYRAMID_HALO, width, height: bandRows });
+      // The linear round trip leaves a grey input as three equal sRGB bands
+      // (measured: the first is the three-channel resize's, value for value).
+      if (ch === 1) pipe = pipe.extractChannel(0);
+      const piece = await pipe.raw().toBuffer();
+      if (piece.length !== width * bandRows * ch) {
+        throw new Error(`${out}: a derived band is ${piece.length} bytes, not ${width}x${bandRows}x${ch}`);
+      }
+      await file.write(piece, 0, piece.length, y0 * width * ch);
       process.stdout.write(`  derive ${level.tier} from ${from.tier}: rows ${y0 + bandRows}/${height} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
     }
   } finally {
@@ -1402,12 +1412,14 @@ async function pyramidLevelRaw(job, level, fromIndex) {
   return out;
 }
 
-/** The cached raw equirect of a file-backed level — rendered from a HiPS, or
- *  derived from the level above it — built if the cache lacks it. */
-async function levelRawFile(job, index) {
+/** The cached raw equirect of a file-backed level — rendered from a HiPS,
+ *  resampled from a mosaic, or derived from the level above it — built if the
+ *  cache lacks it. */
+export async function levelRawFile(job, index) {
   const level = job.levels[index];
   const src = level.source;
   if (src.kind === 'hips') return hipsLevelRaw(job, level);
+  if (src.kind === 'mosaic') return mosaicLevelRaw(job, level);
   if (src.kind === 'pyramid') return pyramidLevelRaw(job, level, src.of);
   throw new Error(`${job.key}/${level.tier}: a ${src.kind} source has no raw file of its own`);
 }
@@ -1424,8 +1436,20 @@ const gcd = (a, b) => (b ? gcd(b, a % b) : a);
  * east and north to south). Each tile is decoded ONCE into a raw file beside
  * it in the cache: a level is read out of the mosaic thousands of times, and
  * re-decoding a 466-megapixel JPEG per read would be hours per level.
+ *
+ * `channels` is 3 for a colour product and 1 for a grey one, which is decoded,
+ * cached and read one byte a texel: Mercury's 166 m mosaic is 4.2 GB as grey
+ * and would be 12.7 GB expanded to RGB. The decoded file's suffix names its
+ * layout (`.rgb`, `.r8`), so a grey decode is never read as RGB.
+ *
+ * `validRows`, when given, maps the mosaic's height to the band of source rows
+ * [first, end) that holds measured ground; the rows outside it are read as the nearest measured row,
+ * exactly as rows past a pole are, so nothing outside the band can enter a
+ * resample of the ground beside it (see buildMosaicLevelRaw for how the
+ * level then knows which of its texels the band covered).
  */
-async function mosaicSource(files, across, down) {
+async function mosaicSource(files, across, down, { channels = 3, validRows = null, rawDir = path.join(CACHE, 'raw') } = {}) {
+  if (channels !== 1 && channels !== 3) throw new Error(`a mosaic is read as 1 or 3 channels, not ${channels}`);
   const parts = [];
   let tileWidth = 0;
   let tileHeight = 0;
@@ -1436,14 +1460,22 @@ async function mosaicSource(files, across, down) {
     if (meta.width !== tileWidth || meta.height !== tileHeight) {
       throw new Error(`${path.basename(file)}: ${meta.width}x${meta.height}, not ${tileWidth}x${tileHeight} like its siblings`);
     }
-    const rawFile = path.join(CACHE, 'raw', `${path.basename(file)}.rgb`);
-    const want = tileWidth * tileHeight * 3;
+    const rawFile = path.join(rawDir, `${path.basename(file)}.${rawSuffix(channels)}`);
+    const want = tileWidth * tileHeight * channels;
     if (!(await exists(rawFile)) || (await stat(rawFile)).size !== want) {
       await mkdir(path.dirname(rawFile), { recursive: true });
       process.stdout.write(`  decode ${path.basename(file)}\r`);
-      const { data, info } = await sharp(file, { limitInputPixels: false })
-        .removeAlpha().raw().toBuffer({ resolveWithObject: true });
-      if (info.channels !== 3 || info.width !== tileWidth || info.height !== tileHeight) {
+      let p = sharp(file, { limitInputPixels: false });
+      // A grey source has to be asked to stay grey: sharp hands even a 1-band
+      // image back as sRGB unless the output colourspace says otherwise.
+      if (channels === 1) {
+        if (meta.channels !== 1) throw new Error(`${path.basename(file)}: ${meta.channels} bands, read as a grey mosaic`);
+        p = p.toColourspace('b-w');
+      } else {
+        p = p.removeAlpha();
+      }
+      const { data, info } = await p.raw().toBuffer({ resolveWithObject: true });
+      if (info.channels !== channels || info.width !== tileWidth || info.height !== tileHeight) {
         throw new Error(`${path.basename(file)}: decoded ${info.width}x${info.height}x${info.channels}`);
       }
       await writeFile(`${rawFile}.part`, data);
@@ -1451,9 +1483,14 @@ async function mosaicSource(files, across, down) {
     }
     parts.push(await open(rawFile, 'r'));
   }
-  console.log(`  mosaic ${across}x${down} × ${tileWidth}x${tileHeight} = ${across * tileWidth}x${down * tileHeight}`);
+  console.log(`  mosaic ${across}x${down} × ${tileWidth}x${tileHeight}x${channels} = ${across * tileWidth}x${down * tileHeight}`);
   const width = across * tileWidth;
   const height = down * tileHeight;
+  // Stated as a function of the mosaic's height, which only the decode knows.
+  const [first, end] = validRows ? validRows(height) : [0, height];
+  if (!(Number.isInteger(first) && Number.isInteger(end) && first >= 0 && end <= height && first < end)) {
+    throw new Error(`measured rows [${first}, ${end}) do not lie inside the mosaic's ${height}`);
+  }
   return {
     across,
     down,
@@ -1461,13 +1498,17 @@ async function mosaicSource(files, across, down) {
     tileHeight,
     width,
     height,
+    channels,
+    validRows: validRows ? [first, end] : null,
     async close() { for (const fd of parts) await fd.close(); },
-    /** A region of the whole mosaic as packed RGB. Longitude wraps; latitude
-     *  clamps at the poles, the same padding a tile's gutter gets. */
+    /** A region of the whole mosaic, `channels` bytes a texel. Longitude
+     *  wraps; latitude clamps at the poles, the same padding a tile's gutter
+     *  gets, or at the edge of the measured rows where the mosaic has them. */
     async read(x0, y0, w, h) {
-      const out = Buffer.allocUnsafe(w * h * 3);
+      const ch = channels;
+      const out = Buffer.allocUnsafe(w * h * ch);
       for (let i = 0; i < h; i++) {
-        const y = Math.max(0, Math.min(height - 1, y0 + i));
+        const y = Math.max(first, Math.min(end - 1, y0 + i));
         const tr = Math.floor(y / tileHeight);
         const ly = y - tr * tileHeight;
         let x = ((x0 % width) + width) % width;
@@ -1477,7 +1518,7 @@ async function mosaicSource(files, across, down) {
           const lx = x - tc * tileWidth;
           const run = Math.min(w - done, tileWidth - lx);
           const fd = parts[tr * across + tc];
-          await fd.read(out, (i * w + done) * 3, run * 3, (ly * tileWidth + lx) * 3);
+          await fd.read(out, (i * w + done) * ch, run * ch, (ly * tileWidth + lx) * ch);
           done += run;
           x = (x + run) % width;
         }
@@ -1486,6 +1527,15 @@ async function mosaicSource(files, across, down) {
     },
   };
 }
+
+/** The file suffix of a cached raw raster, which names its layout: a grey
+ *  cache read as RGB would be a picture of the wrong size at the wrong
+ *  stride, so the two can never share a name. */
+const rawSuffix = (channels) => {
+  if (channels === 3) return 'rgb';
+  if (channels === 1) return 'r8';
+  throw new Error(`no raw layout for ${channels} channels`);
+};
 
 /**
  * Resample a mosaic into one equirect at a level's own resolution, on disk,
@@ -1506,9 +1556,27 @@ async function mosaicSource(files, across, down) {
  * makes a child's water match its parent's. A per-pixel MASK (the night
  * lights' no-data fill) runs a step earlier, on the source region itself,
  * because what it keys on only exists before the resample blends it.
+ *
+ * A mosaic with measured rows (mosaicSource's `validRows`) reads the rows
+ * outside them as the edge of the measured band, so no unmeasured value can
+ * be averaged into the ground. What that leaves is the texels whose kernel
+ * reached past the band at all: their value leans on the repeated edge row.
+ * Each band therefore also gets its COVERAGE, per level row, from the same
+ * resample of a column that is 255 on measured rows and 0 elsewhere (the
+ * mask is a function of the row alone, so one column is the whole of it):
+ * 255 is a texel made only of measurements. Every 0 inside the measured rows
+ * is counted and refused, because 0 is the product's no-data value and this
+ * path has no fill for a hole in the ground.
+ *
+ * `fill`, after the grade, is handed the graded band, its first row and the
+ * coverage of every row, and paints what the source never measured (see
+ * capFill). It runs on this level only: the levels derived from it inherit
+ * the filled pixels through their own resample, so a parent and a child
+ * carry the same cap.
  */
-async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) {
+async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask, fill) {
   const { width, height } = gridSize(grid, content);
+  const ch = mosaic.channels ?? 3;
   const shareW = width / mosaic.across;
   const g = gcd(width, mosaic.width);
   const p = width / g;
@@ -1532,30 +1600,60 @@ async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) 
   console.log(`  resample ${mosaic.width}x${mosaic.height} -> ${width}x${height} (scale ${p}/${q}, halo ${q} source px = ${p} target px)`);
   const out = await open(`${outFile}.part`, 'w');
   const t0 = Date.now();
+  const regionW = mosaic.tileWidth + 2 * q;
+  const regionH = srcPerBand + 2 * q;
+  // sharp hands a one-channel raw raster back as sRGB unless the output
+  // colourspace says grey, and a three-channel piece read as one is a
+  // scrambled band.
+  const resizeRaw = async (raw, channels, w, h, outW, outH, left, top, cropW, cropH) => {
+    let pipe = sharp(raw, { raw: { width: w, height: h, channels }, limitInputPixels: false })
+      .resize(outW, outH, { fit: 'fill', kernel: 'lanczos3' })
+      .extract({ left, top, width: cropW, height: cropH });
+    if (channels === 1) pipe = pipe.toColourspace('b-w');
+    const buf = await pipe.raw().toBuffer();
+    if (buf.length !== cropW * cropH * channels) {
+      throw new Error(`${outFile}: a resampled piece is ${buf.length} bytes, not ${cropW}x${cropH}x${channels}`);
+    }
+    return buf;
+  };
+  let zeros = 0;
   try {
     for (let r = 0; r < grid.rows; r++) {
-      const band = Buffer.allocUnsafe(width * content * 3);
+      const band = Buffer.allocUnsafe(width * content * ch);
       const sy0 = r * srcPerBand;
       for (let sc = 0; sc < mosaic.across; sc++) {
-        const region = await mosaic.read(
-          sc * mosaic.tileWidth - q, sy0 - q, mosaic.tileWidth + 2 * q, srcPerBand + 2 * q,
-        );
+        const region = await mosaic.read(sc * mosaic.tileWidth - q, sy0 - q, regionW, regionH);
+        if (mosaic.validRows) {
+          const [first, end] = mosaic.validRows;
+          for (let y = Math.max(first, sy0 - q); y < Math.min(end, sy0 - q + regionH); y++) {
+            const row = (y - (sy0 - q)) * regionW * ch;
+            for (let i = row; i < row + regionW * ch; i++) if (region[i] === 0) zeros++;
+          }
+        }
         // Keyed on source values, before the resample: afterwards every pixel
         // near the boundary is a blend and there is nothing exact to key on.
         if (mask) mask(region);
-        const piece = await sharp(region, {
-          raw: { width: mosaic.tileWidth + 2 * q, height: srcPerBand + 2 * q, channels: 3 },
-          limitInputPixels: false,
-        })
-          .resize(shareW + 2 * p, content + 2 * p, { fit: 'fill', kernel: 'lanczos3' })
-          .extract({ left: p, top: p, width: shareW, height: content })
-          .raw().toBuffer();
+        const piece = await resizeRaw(region, ch, regionW, regionH, shareW + 2 * p, content + 2 * p, p, p, shareW, content);
         for (let y = 0; y < content; y++) {
-          piece.copy(band, (y * width + sc * shareW) * 3, y * shareW * 3, (y + 1) * shareW * 3);
+          piece.copy(band, (y * width + sc * shareW) * ch, y * shareW * ch, (y + 1) * shareW * ch);
         }
       }
+      if (zeros > 0) {
+        throw new Error(`${outFile}: ${zeros} samples of 0 inside the measured rows — 0 is the product's no-data value, and a hole in the ground has no fill on this path`);
+      }
+      let coverage = null;
+      if (mosaic.validRows) {
+        const [first, end] = mosaic.validRows;
+        const column = Buffer.allocUnsafe(regionH);
+        for (let i = 0; i < regionH; i++) {
+          const y = sy0 - q + i;
+          column[i] = y >= first && y < end ? 255 : 0;
+        }
+        coverage = await resizeRaw(column, 1, 1, regionH, 1, content + 2 * p, 0, p, 1, content);
+      }
       if (grade) grade(band);
-      await out.write(band, 0, band.length, r * width * content * 3);
+      if (fill) await fill(band, { y0: r * content, rows: content, width, height, channels: ch, coverage });
+      await out.write(band, 0, band.length, r * width * content * ch);
       process.stdout.write(`  resample band ${r + 1}/${grid.rows} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
     }
   } finally {
@@ -2231,8 +2329,9 @@ export const JOBS = {
  *  buffer — and a finer level's is written to the source cache as a raw file
  *  first, because it is gigabytes. */
 export async function levelRowSource(job, level) {
-  const { width, height } = gridSize(level.grid, CONTENT);
+  const { width, height } = gridSize(level.grid, contentOf(job));
   const src = level.source;
+  const index = job.levels.indexOf(level);
   // A mask keys SOURCE values, and these two branches only ever see a source
   // that has already been resampled (sharp resizes inside the decode), where
   // the key would be matching blends. No job declares one; say so rather than
@@ -2240,42 +2339,66 @@ export async function levelRowSource(job, level) {
   if (job.mask && src.kind !== 'mosaic') {
     throw new Error(`${job.key}: a no-data mask needs source pixels, which a ${src.kind} source is not read at`);
   }
+  // The fill paints a mosaic level as it is resampled, and a derived level
+  // inherits it; a level read any other way would come out unfilled.
+  if (job.fill && src.kind !== 'mosaic' && src.kind !== 'pyramid') {
+    throw new Error(`${job.key}: a fill runs inside a mosaic resample, which a ${src.kind} source is not`);
+  }
   if (src.kind === 'single') {
     const raw = await fullRaw(src.file(), width, height, job.match);
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  if (src.kind === 'hips' || src.kind === 'pyramid') {
-    // Rendered, or derived, to a raw file in the cache whatever its size:
-    // level 0 would fit in memory, but one path for every level is one path
-    // to get right.
-    return { rows: await fileRowSource(await levelRawFile(job, job.levels.indexOf(level)), width, height) };
-  }
+  // Rendered, derived or resampled to a raw file in the cache whatever its
+  // size: level 0 would fit in memory, but one path for every level is one
+  // path to get right.
+  return { rows: await fileRowSource(await levelRawFile(job, index), width, height, levelChannels(job, index)) };
+}
+
+/** The cached resample of a mosaic level, built if the cache lacks it. */
+async function mosaicLevelRaw(job, level) {
+  const { width, height } = gridSize(level.grid, contentOf(job));
+  const src = level.source;
+  const ch = src.channels ?? 3;
   // The cached resample's NAME states every transform baked into it, so
   // changing one cannot be silently skipped by a machine that already holds
   // the old bytes. The per-pixel no-data mask is one of them: it keys SOURCE
   // values, so it has to run before the resample blends them away, which puts
   // it inside these cached bytes. `rawToken` is the only thing standing
   // between a stale cache and a re-published set with the mask missing from
-  // it, so it changes whenever the mask does.
+  // it, so it changes whenever the mask does — and whenever the measured
+  // rows or the fill do. The suffix names the layout, grey or RGB.
   const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
-  const out = cache('levels', `${stem}.rgb`);
+  const out = cache('levels', `${stem}.${rawSuffix(ch)}`);
   await mkdir(path.dirname(out), { recursive: true });
-  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+  if ((await exists(out)) && (await stat(out)).size === width * height * ch) {
     console.log(`  resampled equirect already in the cache: ${path.relative(process.cwd(), out)}`);
     // The cached bytes only mean anything as "these sources at this size", so
     // the digests are still checked — but the source planes are not decoded
     // for a mosaic nothing is going to read.
     for (const file of src.files()) await checkSourceDigest(file);
-    return { rows: await fileRowSource(out, width, height) };
+    return out;
   }
-  const mosaic = await mosaicSource(src.files(), src.across, src.down);
+  const mosaic = await mosaicSource(src.files(), src.across, src.down, { channels: ch, validRows: src.validRows ?? null });
   try {
-    await buildMosaicLevelRaw(mosaic, level.grid, CONTENT, out, job.grade, job.mask);
+    await buildMosaicLevelRaw(mosaic, level.grid, contentOf(job), out, job.grade, job.mask, job.fill);
   } finally {
     await mosaic.close();
   }
-  return { rows: await fileRowSource(out, width, height) };
+  return out;
+}
+
+/** Texels of the tile content a job's levels are cut at: CONTENT for every
+ *  shipped set. A test states a smaller one so its levels are small. */
+const contentOf = (job) => job.content ?? CONTENT;
+
+/** Bytes a texel in the cached raster of a job's level `index`: what its
+ *  mosaic declares, or what the level it is derived from has. */
+function levelChannels(job, index) {
+  const src = job.levels[index].source;
+  if (src.kind === 'mosaic') return src.channels ?? 3;
+  if (src.kind === 'pyramid') return levelChannels(job, src.of);
+  return 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -2383,7 +2506,7 @@ async function main() {
             // call, and this one is a third of a gigabyte.
             const whole = await rows.whole();
             if (job.mask) noDataGateRaw(whole, rows.width, rows.height, `${job.key} level 0`);
-            await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? []);
+            await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? [], rows.channels);
             if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
           }
           await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);

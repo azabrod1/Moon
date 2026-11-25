@@ -62,6 +62,7 @@ import { sphereFromArrays } from './world/fineSphereArrays';
 import { buildFineSphereOffThread, fineSphereWorkerReady } from './world/fineSpheres';
 import { smoothTraceEvent } from './smoothnessTrace';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
+import { SITE_GROUND_RENDER_ORDER } from './world/siteGround';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import {
   applyColorTierTexture, applyNormalTierTexture, earnedUpgradeTier, initialColorTierRank,
@@ -1608,7 +1609,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   // never reaches the GPU, so its bounds mean nothing to culling.
   const glare = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), glareMat);
   glare.name = 'Sun glare';
-  glare.renderOrder = 8;
+  // After every scene layer, the ground under a site included: the glare is
+  // the eye's, so a Sun on the horizon veils the ground below it too.
+  glare.renderOrder = SITE_GROUND_RENDER_ORDER + 1;
   glare.frustumCulled = false;
   // The glint floor: the glare's minimum half-size in output px, so an
   // outer-system Sun whose disc is a few pixels or less keeps an optical
@@ -1670,7 +1673,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   });
   const lensGhosts = new THREE.Mesh(ghostGeo, ghostMat);
   lensGhosts.name = 'Sun lens ghosts';
-  lensGhosts.renderOrder = 9;
+  lensGhosts.renderOrder = SITE_GROUND_RENDER_ORDER + 2;
   lensGhosts.frustumCulled = false;
   group.add(lensGhosts);
 

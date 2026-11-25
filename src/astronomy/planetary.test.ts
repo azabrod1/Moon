@@ -597,7 +597,8 @@ describe('planet rotation models against JPL Horizons', () => {
     const earth = PLANETS.find((planet) => planet.name === 'Earth')!;
     const lightSecondsPerAU = 499.004784;
     const wrap = (degrees: number) => ((degrees % 360) + 540) % 360 - 180;
-    for (const row of orientationGolden.rows) {
+    // The Moon's rows are lunarOrientation.test.ts'.
+    for (const row of orientationGolden.rows.filter((candidate) => candidate.planet !== 'Moon')) {
       const planet = PLANETS.find((candidate) => candidate.name === row.planet)!;
       const [year, month, day] = row.utc.slice(0, 11).split('-');
       const jdTT = Date.UTC(Number(year), months.indexOf(month), Number(day)) / 86_400_000 + 2440587.5;

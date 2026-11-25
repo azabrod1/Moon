@@ -783,6 +783,19 @@ export function makeSurfaceTargetChoice(
   return { target, name, discDeg, resolvable, color, magnitude };
 }
 
+/**
+ * The line under the surface HUD's headline, without the body the headline
+ * has just named: "Earth · 37% lit" under "Waxing Crescent Earth" is
+ * "37% lit", and "The Moon · 100% lit" under "Full Moon" is "100% lit". A
+ * line that leads with something the headline does not say is left whole.
+ */
+export function withoutRepeatedSubject(headline: string, line: string): string {
+  const cut = line.indexOf(' · ');
+  if (cut <= 0) return line;
+  const subject = line.slice(0, cut).replace(/^the /i, '').toLowerCase();
+  return headline.toLowerCase().includes(subject) ? line.slice(cut + 3) : line;
+}
+
 /** An apparent magnitude as the interface writes it: "mag −2.4". */
 export function formatMagnitude(magnitude: number): string {
   const text = magnitude.toFixed(1);

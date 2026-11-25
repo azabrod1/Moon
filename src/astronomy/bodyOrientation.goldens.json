@@ -379,6 +379,60 @@
    "eastPositive": false,
    "equatorialKm": 24764,
    "polarKm": 24341
+  },
+  {
+   "planet": "Moon",
+   "utc": "1950-Jan-01 00:00:00.000",
+   "lonDeg": 356.949309,
+   "latDeg": -4.96449,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
+  },
+  {
+   "planet": "Moon",
+   "utc": "2000-Jan-01 00:00:00.000",
+   "lonDeg": 5.567743,
+   "latDeg": -6.796551,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
+  },
+  {
+   "planet": "Moon",
+   "utc": "2024-Jan-01 00:00:00.000",
+   "lonDeg": 0.038528,
+   "latDeg": -4.685781,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
+  },
+  {
+   "planet": "Moon",
+   "utc": "2026-Dec-01 00:00:00.000",
+   "lonDeg": 6.669023,
+   "latDeg": 1.344743,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
+  },
+  {
+   "planet": "Moon",
+   "utc": "2051-May-31 00:00:00.000",
+   "lonDeg": 354.606209,
+   "latDeg": -6.592174,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
+  },
+  {
+   "planet": "Moon",
+   "utc": "2078-Feb-03 00:00:00.000",
+   "lonDeg": 359.523784,
+   "latDeg": -3.636312,
+   "eastPositive": true,
+   "equatorialKm": 1737.4,
+   "polarKm": 1737.4
   }
  ]
 }

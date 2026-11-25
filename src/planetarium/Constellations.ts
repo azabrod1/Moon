@@ -70,7 +70,15 @@ export class Constellations {
   }
 
   /** Update label screen positions. Call each frame when visible. */
-  updateLabels(camera: THREE.PerspectiveCamera, canvasWidth: number, canvasHeight: number): void {
+  /** `belowHorizon`, when given, hides a label whose sky direction it says
+   *  is under a site's horizon: the lines are scene geometry the ground
+   *  covers, the names are DOM it cannot. */
+  updateLabels(
+    camera: THREE.PerspectiveCamera,
+    canvasWidth: number,
+    canvasHeight: number,
+    belowHorizon?: (direction: THREE.Vector3) => boolean,
+  ): void {
     if (!this.lines.visible) return;
 
     for (const label of this.labels) {
@@ -79,6 +87,7 @@ export class Constellations {
       const screenY = proj.y;
 
       if (
+        !(belowHorizon && belowHorizon(label.pos)) &&
         proj.ndcZ < 1 &&
         screenX > -20 &&
         screenX < canvasWidth + 20 &&

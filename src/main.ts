@@ -4139,6 +4139,13 @@ function installDevHooks() {
     surfaceDensity: () => planetariumMode?.devSurfaceDensity() ?? [],
     lookUp: () => planetariumMode?.devLookUp() ?? false,
     lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
+    // Stand at a site on the Moon (latitude, east longitude, eye metres) and
+    // look up; standAt(null) clears it. siteProbe reads a body's altitude and
+    // azimuth there off the drawn objects (the camera, the Moon's drawn
+    // orientation, the body's drawn place).
+    standAt: (latitudeDeg: number | null, longitudeDeg?: number, heightM?: number) =>
+      planetariumMode?.devStandAt(latitudeDeg, longitudeDeg, heightM) ?? false,
+    siteProbe: (name: string) => planetariumMode?.devSiteProbe(name) ?? null,
     exitSurface: () => planetariumMode?.devExitSurface(),
     openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
     setSheetPark: (park: string) => planetariumMode?.devSetSheetPark(park as never),
@@ -4222,6 +4229,9 @@ function installDevHooks() {
     setMapLayers: (partial: Record<string, boolean> | null) =>
       planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    // The latitude and longitude a displayed canvas pixel falls on while the
+    // spot picker is open, through its own hit test; null off the globe.
+    sitePickAt: (xPx: number, yPx: number) => planetariumMode?.devSitePickAt(xPx, yPx) ?? null,
     setBeltVisible: (visible: boolean) => planetariumMode?.devSetBeltVisible(visible),
     /** The "Orbit lines" setting on its own — setChrome(false) turns it off with the rest. */
     setOrbitLines: (on: boolean) => planetariumMode?.devSetOrbitLines(on),

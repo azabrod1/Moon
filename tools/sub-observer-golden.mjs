@@ -1,5 +1,6 @@
 // The golden for the planets' rotation models (planetData's poles and prime
-// meridians, computeBodyOrientationQuaternion): JPL Horizons' sub-observer
+// meridians, computeBodyOrientationQuaternion) and the Moon's
+// (lunarOrientation.ts): JPL Horizons' sub-observer
 // longitude and latitude (ObsSub-LON/LAT, planetodetic, light-time corrected)
 // of each planet from Earth's centre on dates across the fitted window, with
 // the longitude convention and the radii Horizons states for each body. The
@@ -14,7 +15,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PLANETS = { Mercury: '199', Venus: '299', Mars: '499', Jupiter: '599', Saturn: '699', Uranus: '799', Neptune: '899' };
+// The Moon's rows are in Horizons' MOON_ME frame (lunarOrientation.test.ts).
+const PLANETS = { Mercury: '199', Venus: '299', Mars: '499', Jupiter: '599', Saturn: '699', Uranus: '799', Neptune: '899', Moon: '301' };
 // 1950, 2000, 2024, 2026-12, 2051-05, 2078-02 (TT): the rates are tested decades out.
 const DATES = [2433282.5, 2451544.5, 2460310.5, 2461375.5, 2470322.5, 2480067.5];
 

@@ -3,11 +3,11 @@ import * as THREE from 'three';
 import {
   augmentSurfaceMaterial, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceSynthesis, surfaceGroundField,
   surfaceMapSmooth, surfaceMapSmoothRule,
-  surfaceShadingArgsOf, surfaceSynthesisOf,
+  surfaceReliefKind, surfaceShadingArgsOf, surfaceSynthesisOf,
 } from './surfaceShading';
 import { setColorMapIsPhoto } from './mapSmooth';
 import { surfaceGroundTexture } from './surfaceDetailNoise';
-import { createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
+import { createSectorMaterial, sharesSectorProgram, syncSectorMaterial } from './sectorMaterial';
 
 /** Run a material's onBeforeCompile hook against a minimal shader stub and
  *  return the uniforms it bound. */
@@ -161,6 +161,32 @@ describe('createSectorMaterial', () => {
     expect(!!sector.normalMap).toBe(!!base.normalMap);
     expect(!!sector.bumpMap).toBe(!!base.bumpMap);
     expect(!!sector.roughnessMap).toBe(!!base.roughnessMap);
+  });
+
+  it('shares a colour-as-height globe\'s program when it reads its own tile as height', () => {
+    // Mercury's globe binds its colour map as its bump map too, the same
+    // texture in both slots; its tiles do the same with their own tile. Both
+    // then draw measured relief, so no invented relief fills a missing slot,
+    // and the two compile to one program, so the ground under a tile is cut.
+    const globeMap = new THREE.Texture();
+    const base = new THREE.MeshStandardMaterial({ map: globeMap, bumpMap: globeMap });
+    augmentSurfaceMaterial(base, 'airless', undefined, 0, undefined, undefined, 'Mercury');
+    setSurfaceSynthesis(base, 1, surfaceReliefKind(base));
+    const tile = new THREE.Texture();
+    const sector = createSectorMaterial(base, { map: tile, bumpMap: tile });
+    expect(sector.bumpMap).toBe(tile);
+    expect(sector.bumpMap).not.toBe(globeMap);
+    expect(surfaceReliefKind(base)).toBe('measured');
+    expect(surfaceReliefKind(sector)).toBe('measured');
+    expect(sharesSectorProgram(sector, base)).toBe(true);
+    expect(compiledUniforms(sector).uSynthRelief.value).toBe(0);
+    expect(compiledUniforms(base).uSynthRelief.value).toBe(0);
+    // Without the alias the same tile is another program over that globe, and
+    // the invented relief comes on in the rectangle.
+    const bare = createSectorMaterial(base, { map: tile });
+    expect(surfaceReliefKind(bare)).toBe('none');
+    expect(sharesSectorProgram(bare, base)).toBe(false);
+    expect(compiledUniforms(bare).uSynthRelief.value).toBeGreaterThan(0);
   });
 
   it('is a plain standard material for an un-augmented base (no hook, no throw)', () => {

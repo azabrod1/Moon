@@ -12,7 +12,7 @@
  *
  * Why 1/64: close approach is asset-bound, not engine-bound, and the assets
  * moved. The close band comes from streamed sector tiles now rather than the
- * globe's own map — 16K at level 0 on Earth, the Moon and Mars, 32K under it
+ * globe's own map — 16K at level 0 on Earth, the Moon, Mars and Mercury, 32K under it
  * on Earth: four and eight times the linear detail of the 4K map the earlier
  * 1/32 was measured against, which read crisp to a ~49° disc and acceptable
  * to ~98°. On a desktop this parks the camera 195 km over Earth (1.031

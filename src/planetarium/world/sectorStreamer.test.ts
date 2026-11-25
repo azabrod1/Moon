@@ -32,6 +32,7 @@ import {
   APPLE_PHONE_PROFILE,
   LIMITED_PROFILE,
   MemoryEnvelope,
+  planRelease,
   UNMEASURED_DESKTOP_PROFILE,
   UNMEASURED_TOUCH_PROFILE,
   type SectorStreamerLimits,
@@ -42,8 +43,14 @@ import {
   ladderMapReferenceWidth,
   makeTextureUpgrade,
   RESTORE_STANDIN_WIDTH,
+  appliedTierGpuBytes,
+  bindKtx2TierLoader,
+  releaseCandidate,
+  releaseOffer,
+  resolveTierFile,
   setUpgradeTextureLoader,
   startTierRelease,
+  trackReleaseBand,
   TIER_RANK,
 } from './textureLadder';
 import { equirectMapGpuBytes } from './textureBytes';
@@ -55,7 +62,7 @@ import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosph
 import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorNearestDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
-import { mapTexture, recordWarmUploads, settleRungUpload } from '../testing/upgradeHarness';
+import { mapTexture, recordWarmUploads, settleRungUpload, withMaxTextureSize } from '../testing/upgradeHarness';
 import { planLadderPressure, RELEASE_PRESSURE_DWELL_MS, tilesShortCovered } from './ladderPressure';
 
 /** A scripted loader: records every URL, and lets a test resolve or fail
@@ -3120,5 +3127,268 @@ describe('SectorStreamer: ground a finer drawn tile covers is left out of the dr
     plain.setGroundCut(true);
     plain.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
     expect(drawn(h.mesh.geometry)).toEqual({ start: 0, count: hostIndex(h).full });
+  });
+});
+
+describe('SectorStreamer: a body that reads its colour as height (Mercury)', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  let streamer: SectorStreamer;
+  let mercury: TestHandle;
+  const TILE_BYTES = sectorSetGpuBytes(SECTOR_SETS.Mercury);
+
+  /** Mercury's globe as PlanetFactory builds it: one photo map bound as its
+   *  colour and as its bump, on the fine lattice the app builds on approach. */
+  function mercuryHandle(): TestHandle {
+    const photo = new THREE.Texture();
+    const material = new THREE.MeshStandardMaterial({ map: photo, bumpMap: photo });
+    augmentSurfaceMaterial(material, 'airless');
+    material.userData.colorTierRank = 2;
+    const geometry = new THREE.SphereGeometry(R, 256, 128);
+    layGroundIndex(geometry, GROUND_LEAF_SEGMENTS);
+    const handle: TestHandle = {
+      name: 'Mercury', spec: SECTOR_SETS.Mercury, mesh: new THREE.Mesh(geometry, material), material,
+      radiusAU: R, fineCalls: 0, ensureFineGeometry: () => { handle.fineCalls++; },
+    };
+    return handle;
+  }
+  const tileMesh = () => mercury.mesh.children[0] as THREE.Mesh;
+  const tileMat = () => tileMesh().material as THREE.MeshStandardMaterial;
+  const drawn = () => ({ ...mercury.mesh.geometry.drawRange });
+  const gi = () => groundIndexOf(mercury.mesh.geometry)!;
+  function footprint(c: number, r: number): number {
+    const span = 1 << SECTOR_MAX_LEVEL;
+    const from = quadtreeOrdinal(c * span, r * span, gi().cols, gi().rows);
+    return gi().start[from + span * span] - gi().start[from];
+  }
+  const cutUnder = (c: number, r: number) => ({ start: gi().full, count: gi().full - footprint(c, r) });
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+    streamer = makeStreamer(NO_FLOOR, { load: loader.load, warm: warm.warm });
+    mercury = mercuryHandle();
+    streamer.register(mercury);
+  });
+
+  it('fetches the colour tile alone and charges it once', () => {
+    expect(SECTOR_SETS.Mercury.bumpFromColour).toBe(true);
+    expect(SECTOR_SETS.Mercury.crops).toEqual({});
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(loader.requests.map((r) => r.url)).toEqual([
+      expect.stringMatching(/textures\/tiles\/mercury\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/),
+    ]);
+    expect(streamer.stats().reserved).toBe(TILE_BYTES);
+    loader.resolveAll();
+    const stats = streamer.stats();
+    expect(stats.bodies.Mercury.resident).toEqual(['2_1']);
+    expect(stats.budgetedBytes).toBe(TILE_BYTES);
+    expect(stats.reserved).toBe(0);
+    // One 2048² RGBA8 colour tile with its mips (21.33 MiB), and nothing for
+    // the alias.
+    expect(TILE_BYTES).toBe(Math.floor((2048 * 2048 * 4 * 4) / 3));
+  });
+
+  it('binds the tile as its own bump on the first arrival, never the globe\'s map', () => {
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    loader.resolveAll();
+    const mat = tileMat();
+    expect(mat.bumpMap).toBe(mat.map);
+    expect(mat.map).not.toBe(mercury.material.map);
+    expect(mat.bumpMap).not.toBe(mercury.material.bumpMap);
+  });
+
+  it('covers the globe under the tile, which is drawing the globe\'s program', () => {
+    expect(drawn()).toEqual({ start: 0, count: gi().full });
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    loader.resolveAll();
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(drawn()).toEqual(cutUnder(2, 1));
+    expect(streamer.stats().groundCut.unbacked).toBe(0);
+  });
+
+  it('keeps a resident\'s texture, signature and cut through a rung swap on the globe, with no refetch', () => {
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    loader.resolveAll();
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    const mesh = tileMesh();
+    const mat = tileMat();
+    const tex = mat.map;
+    let disposed = 0;
+    tex!.addEventListener('dispose', () => disposed++);
+    expect(drawn()).toEqual(cutUnder(2, 1));
+    // The ladder's swap: the colour map and the alias move together, in one
+    // call (textureLadder's setMaterialColorMap).
+    const rung = new THREE.Texture();
+    mercury.material.map = rung;
+    mercury.material.bumpMap = rung;
+    for (let f = 2; f < 6; f++) streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), f * 16);
+    expect(loader.requests.length).toBe(0);
+    expect(streamer.stats().bodies.Mercury.reloading).toEqual([]);
+    expect(tileMesh()).toBe(mesh);
+    expect(tileMat()).toBe(mat);
+    expect(mat.map).toBe(tex);
+    expect(mat.bumpMap).toBe(tex);
+    expect(disposed).toBe(0);
+    expect(drawn()).toEqual(cutUnder(2, 1));
+  });
+
+  it('reloads in place without a fetch when the globe loses the alias, and again when it regains it', () => {
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    loader.resolveAll();
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    const tex = tileMat().map;
+    let disposed = 0;
+    tex!.addEventListener('dispose', () => disposed++);
+    // The globe stops reading its colour as height: the tile follows, keeping
+    // its colour tile, and covers ground again only once it matches.
+    mercury.material.bumpMap = null;
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 48);
+    expect(loader.requests.length).toBe(0);
+    expect(tileMat().map).toBe(tex);
+    expect(tileMat().bumpMap).toBeNull();
+    expect(drawn()).toEqual(cutUnder(2, 1));
+    // A procedural stand-in is not a real height map: no alias.
+    const stand = new THREE.Texture();
+    stand.userData.proceduralFallback = true;
+    mercury.material.map = stand;
+    mercury.material.bumpMap = stand;
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 64);
+    expect(tileMat().bumpMap).toBeNull();
+    // The real map back, aliased: the tile reads itself as height again.
+    const photo = new THREE.Texture();
+    mercury.material.map = photo;
+    mercury.material.bumpMap = photo;
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 80);
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 96);
+    expect(loader.requests.length).toBe(0);
+    expect(tileMat().map).toBe(tex);
+    expect(tileMat().bumpMap).toBe(tex);
+    expect(drawn()).toEqual(cutUnder(2, 1));
+    expect(disposed).toBe(0);
+    expect(streamer.stats().budgetedBytes).toBe(TILE_BYTES);
+  });
+
+  it('disposes the tile once when it is released', () => {
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    loader.resolveAll();
+    const tex = tileMat().map!;
+    let disposed = 0;
+    tex.addEventListener('dispose', () => disposed++);
+    streamer.update('Mercury', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.releaseTexelPx - 0.01 }), 16);
+    expect(streamer.stats().resident).toBe(0);
+    expect(disposed).toBe(1);
+    expect(streamer.stats().budgetedBytes).toBe(0);
+    expect(drawn()).toEqual({ start: 0, count: gi().full });
+  });
+});
+
+describe('Mercury on the touch row, where its 8K lands as RGBA', () => {
+  // The real 320 MiB row (Android and everything that is neither Apple nor
+  // Android), with a transcoder but no compressed format to target: every
+  // container lands as RGBA. Mercury's 8K is then 170.7 MiB, six of its tiles
+  // are 128 MiB, and the tiles' pressure has no container to give back. This
+  // pins what the streamer does there; it changes no policy.
+  const MiB = 1024 * 1024;
+  const TILE = sectorSetGpuBytes(SECTOR_SETS.Mercury);
+  afterEach(() => bindKtx2TierLoader(null));
+
+  function mercuryOnTouch(): TestHandle {
+    const photo = new THREE.Texture();
+    const material = new THREE.MeshStandardMaterial({ map: photo, bumpMap: photo });
+    augmentSurfaceMaterial(material, 'airless');
+    material.userData.colorTierRank = 2;
+    const handle: TestHandle = {
+      name: 'Mercury', spec: SECTOR_SETS.Mercury, mesh: new THREE.Mesh(new THREE.SphereGeometry(R, 16, 8), material),
+      material, radiusAU: R, fineCalls: 0, ensureFineGeometry: () => { handle.fineCalls++; },
+    };
+    return handle;
+  }
+
+  it('holds six tiles on the 4K, three through the swap to the 8K, five on it, and nothing may be given back for them', () => {
+    bindKtx2TierLoader(() => {}, false);
+    withMaxTextureSize(16384, true);
+    // The ladder as this device climbs it: Mercury tops out at its 8K
+    // container, which lands as RGBA; Venus' 4K webp is held from earlier in
+    // the tour, far away now.
+    const mercuryMat = new THREE.MeshStandardMaterial();
+    const mercuryUp = makeTextureUpgrade('mercury', mercuryMat)!;
+    expect(mercuryUp.effectiveMaxTier).toBe('8k');
+    expect(resolveTierFile('mercury', '8k')).toBe('mercury.v2.ktx2');
+    const venusMat = new THREE.MeshStandardMaterial();
+    const venusUp = makeTextureUpgrade('venus', venusMat)!;
+    venusUp.appliedTier = '4k';
+    venusMat.map = mapTexture(4096);
+    const VENUS = appliedTierGpuBytes(venusUp);
+    mercuryUp.appliedTier = '8k';
+    mercuryMat.map = mapTexture(8192);
+    const M8K = appliedTierGpuBytes(mercuryUp);
+    expect(M8K).toBe(equirectMapGpuBytes(8192));
+    expect(M8K / MiB).toBeCloseTo(170.7, 1);
+    const M4K = equirectMapGpuBytes(4096);
+    expect(VENUS).toBe(M4K);
+
+    // Arrival: every sector dropped, Mercury's 4K on the globe, then the
+    // tiles admitted over the hemisphere in view.
+    const loader = new FakeLoader();
+    loader.auto = true;
+    const warm = new FakeWarm();
+    const envelope = new MemoryEnvelope(TOUCH);
+    const streamer = new SectorStreamer({ limits: TOUCH, envelope, load: loader.load, warm: warm.warm });
+    const mercury = mercuryOnTouch();
+    streamer.register(mercury);
+    streamer.dropAll();
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 3 + 0.01 * c; sizes[`${c}_2`] = 3.1 + 0.01 * c; }
+    const inside = new THREE.Vector3(0, 0, 0);
+    let t = 0;
+    const frames = (n: number) => { for (let f = 0; f < n; f++) streamer.update('Mercury', inside, measureOf(sizes), (t += 16)); };
+    streamer.setGlobalMapBytes(M4K + VENUS);
+    frames(20);
+    const onFourK = streamer.stats();
+    // The ceiling binds (144 MiB): six tiles of 21.33.
+    expect(onFourK.budget).toBe(TOUCH.ceilingBytes);
+    expect(onFourK.resident).toBe(6);
+    expect(onFourK.budgetedBytes / MiB).toBeCloseTo(128, 0);
+
+    // The 8K lands: while the swap holds both maps the tiles are trimmed to
+    // what is left beside 256 MiB of globe maps...
+    streamer.setGlobalMapBytes(M4K + M8K + VENUS);
+    frames(2);
+    const during = streamer.stats();
+    expect(during.budget).toBe(TOUCH.envelopeBytes - (M4K + M8K + VENUS));
+    expect(during.resident).toBe(Math.floor(during.budget / TILE));
+    expect(during.resident).toBe(3);
+    // ...and on the 8K alone the budget is the envelope less 213.3 MiB, five
+    // tiles with one byte to spare.
+    streamer.setGlobalMapBytes(M8K + VENUS);
+    frames(30);
+    const onEightK = streamer.stats();
+    expect(onEightK.budget).toBe(TOUCH.envelopeBytes - (M8K + VENUS));
+    expect(onEightK.budget - 5 * TILE).toBe(1);
+    expect(onEightK.resident).toBe(5);
+    expect(streamer.tilesShort()).toBe(true);
+
+    // Nothing may go for them: Mercury's own 8K is in its band, and Venus'
+    // far 4K drops to its boot webp, not a container.
+    trackReleaseBand(mercuryUp, 1, 0);
+    trackReleaseBand(venusUp, 0, 0);
+    const candidates = [[mercuryUp, 0], [venusUp, 1]].flatMap(([up, i]) => {
+      const low = releaseOffer(up as typeof mercuryUp, 60_000, false);
+      return low ? [releaseCandidate(up as typeof mercuryUp, low, String(i), 1)] : [];
+    });
+    expect(candidates.map((c) => c.id)).toEqual(['1']);
+    expect(candidates[0].lowIsContainer).toBe(false);
+    expect(planRelease(candidates, {
+      ladderBytes: M8K + VENUS, envelopeBytes: TOUCH.envelopeBytes, containersOnly: true,
+    })).toBeNull();
+    // Without Venus held, the ceiling binds again: six.
+    streamer.setGlobalMapBytes(M8K);
+    frames(30);
+    expect(streamer.stats().budget).toBe(TOUCH.ceilingBytes);
+    expect(streamer.stats().resident).toBe(6);
+    mercuryMat.dispose();
+    venusMat.dispose();
   });
 });

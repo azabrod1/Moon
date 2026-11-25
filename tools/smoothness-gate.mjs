@@ -530,6 +530,24 @@ async function flyEarthNear(page, note, extra) {
   await sleep(20_000);
 }
 
+/** Travel to Mercury, fly down from 8 radii to 1.5 — through the distance
+ *  its tiles are first admitted at, about 2.2 radii on a desktop — and hover.
+ *  Mercury's tiles are a colour tile alone (it reads its colour as height),
+ *  over a globe that reads its 8K container the same way. */
+async function flyMercuryNear(page, note, extra) {
+  await bootTo(page, extra, 230);
+  await sleep(2_000);
+  note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
+  note(await travelAndSettle(page, 'Mercury'));
+  note(`posed at ${await jumpToRadii(page, 'Mercury', 8)} radii`);
+  await sleep(2_500);
+  await mark(page, 'descent');
+  note(`descent ended at ${await descendTo(page, 'Mercury', 1.5, 60_000)} radii`);
+  await mark(page, 'hover');
+  await sleep(20_000);
+  note(`sectors: ${JSON.stringify(await page.evaluate(() => window.__moon.sectors()?.bodies?.Mercury ?? null))}`);
+}
+
 /** The same descent, then a slow yaw across the day/night terminator. */
 async function flyTerminator(page, note, extra) {
   await bootTo(page, extra, 280);
@@ -1400,6 +1418,14 @@ const SCENARIOS = [
     },
   },
   {
+    id: 'mercury-near',
+    title: 'travelTo Mercury → arrival → governed descent through tile admission → 20 s hover',
+    device: DESKTOP,
+    async run(page, note) {
+      await flyMercuryNear(page, note, '');
+    },
+  },
+  {
     id: 'terminator',
     title: 'Slow pan across the terminator in the near band (day/night families swap)',
     device: DESKTOP,
@@ -1587,6 +1613,11 @@ const SCENARIOS = [
     'phone-earth-near',
     'travel to Earth, governed descent from 8 radii, 20 s hover',
     flyEarthNear,
+  ),
+  ...phonePair(
+    'phone-mercury-near',
+    'travel to Mercury, governed descent from 8 radii through tile admission, 20 s hover',
+    flyMercuryNear,
   ),
   ...phonePair(
     'phone-terminator',

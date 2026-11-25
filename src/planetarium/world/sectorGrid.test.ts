@@ -390,6 +390,7 @@ describe('every sector triangle is a globe triangle, bit for bit', () => {
   const earth = PLANETS.find((p) => p.name === 'Earth')!;
   const mars = PLANETS.find((p) => p.name === 'Mars')!;
   const moon = MOONS.find((m) => m.name === 'Moon')!;
+  const mercury = PLANETS.find((p) => p.name === 'Mercury')!;
   // Earth's night tiles are built at the globe's radius too, not the night
   // shell's (PlanetariumMode registers the family and says why), so the one
   // Earth radius covers both families.
@@ -397,6 +398,7 @@ describe('every sector triangle is a globe triangle, bit for bit', () => {
     ['Earth', earth.radiusAU],
     ['the Moon', moon.radiusAU],
     ['Mars', mars.radiusAU],
+    ['Mercury', mercury.radiusAU],
   ];
 
   it('the levels share the fine globe\'s lattice', () => {

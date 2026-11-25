@@ -274,6 +274,20 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 512
   },
+  "mercury.v2/16k": {
+    "setHash8": "6bb23745",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
   "moon/16k": {
     "setHash8": "51b7c463",
     "grid": {

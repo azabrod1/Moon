@@ -283,9 +283,11 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // Earth's cloud deck is NASA's Blue Marble cloud composite: the 2K boot map
 // and both rungs are cut from the one cloud master the deck's HD field pages
 // come from (tools/gen-tiles.mjs, `clouds --base`), so a page arriving over
-// the sheet sharpens the cloud that was already there. Mercury, Venus and Saturn are the same Solar System Scope
-// products as their boot maps (gated: RMS 3.6 / 1.6 / 1.6 against the shipped
-// 2K); Venus and Saturn are low-frequency, so their 4K steps cost ~130 KB each
+// the sheet sharpens the cloud that was already there. Mercury's boot map and
+// both rungs are averaged down in linear light from one 64K resample of the
+// MESSENGER mosaic its tiles come from (tools/gen-tiles.mjs), like Mars's. Venus and Saturn are the same Solar System Scope
+// products as their boot maps (gated: RMS 1.6 / 1.6 against the shipped
+// 2K); both are low-frequency, so their 4K steps cost ~130 KB each
 // and mainly remove texel blockiness at the wall. Uranus / Neptune stay 2K
 // (no real detail to add); Io/Europa/Ganymede/Triton already ship 4K as
 // their base map. Pluto is a real New Horizons LORRI mosaic (USGS, 300 m) registered to
@@ -405,7 +407,14 @@ export interface CompressedRung {
   webp: boolean;
 }
 export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
-  // Both rungs cut from the MESSENGER mosaic (tools/gen-moonmaps.mjs), ETC1S
+  // Both rungs averaged down from the MESSENGER mosaic's 64K level
+  // (tools/gen-tiles.mjs, encoded by tools/gen-ktx2.mjs). The 8K is UASTC: it
+  // is the map Mercury's 16K tiles land on, and in ETC1S it was up to 3 %
+  // darker than its own picture over cratered ground, so a tile landed as a
+  // brighter square (gen-ktx2.mjs's job table has the measurement). It costs
+  // 34 MB on the wire once per device and 42.7 MiB held on an ASTC or BC7
+  // GPU, which is what tierUploadBytes charges any 8K container before it is
+  // fetched. The 4K is ETC1S
   // like the photo moons' and container-only like theirs: the SSS 4K webp the
   // 4K rung used to be transcoded from was a different product, and a ladder
   // that changes product at a rung change changes the planet's face.
@@ -487,10 +496,10 @@ export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, Com
     '4k': { file: 'callisto.v2.ktx2', webp: false },
     '8k': { file: 'callisto.v2.ktx2', webp: false },
   },
-  // Pluto's 8K is the one photo-moon rung in UASTC: its map is one mono
-  // mosaic through one colour ramp, which ETC1S keeps as about three shades
-  // per 4x4 cell (and a tint where the cell's colour missed the ramp), and the
-  // map is also the bump map. It is .v3 because
+  // Pluto's 8K is the one photo-moon rung in UASTC, like Mercury's 8K: its
+  // map is one mono mosaic through one colour ramp, which ETC1S keeps as
+  // about three shades per 4x4 cell (and a tint where the cell's colour
+  // missed the ramp), and the map is also the bump map. It is .v3 because
   // 8k/pluto.v2.ktx2 shipped as the ETC1S file; the 4K stays ETC1S.
   pluto: {
     '4k': { file: 'pluto.v2.ktx2', webp: false },

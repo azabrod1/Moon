@@ -23,12 +23,18 @@
 //   node tools/pixel-gate.mjs --reload=fused-final --report    # numbers, not a verdict
 //   node tools/pixel-gate.mjs --reload=fused-final --report --extra='&quality=medium'
 //   node tools/pixel-gate.mjs --engine=webkit --keys=night-early,cloud-clear,cloud-taps,glint-gate
+//   node tools/pixel-gate.mjs --reloadq=sectors=0 --report --poses=mercury-p6,mercury-p20 \
+//     --prove-tiles=Mercury:mercury.v2/16k --linear --w=1200 --h=822 --ratio=2
+//                     # a body's tiles against none, the "on" capture proven to draw them
+//   ... --route-tiles=mercury.v2/16k=<dir of tiles>
+//                     # the same set's URLs answered from a local folder (a control set)
 import { chromium, webkit } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { decodePng } from './pngDecode.mjs';
 import { encodePng } from './pngEncode.mjs';
 import { takeBrowserLock } from './browserLock.mjs';
+import { parseSectorTable } from './sectorTable.mjs';
 
 function arg(name, def) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -71,6 +77,38 @@ const urlB = arg('urlb', '');
 // `--extra='&nofloat=1'` goes on every boot, both halves alike.
 const extraQuery = arg('extra', '');
 const keepAll = flag('keep');
+// `--prove-tiles=<Body>:<key>/<tier>` makes a tiles-on capture prove it drew
+// that body's tiles, at the hash the app's table names: the set's URLs
+// answered 200, the body holds at least one resident tile, and the body's
+// globe is cut under them. A capture that cannot prove it is a FAILURE, never
+// a pass — a body that never streamed would otherwise compare its globe with
+// its globe and report nothing to see. The other half (the reload carrying
+// `--reloadq`, sectors off) has to hold none.
+const proveTiles = (() => {
+  const v = arg('prove-tiles', '');
+  if (!v) return null;
+  const [body, set] = v.split(':');
+  const table = parseSectorTable(readFileSync(new URL('../src/planetarium/world/sectorSets.generated.ts', import.meta.url), 'utf8'));
+  const row = table[set];
+  if (!row) throw new Error(`--prove-tiles: the app's table has no set ${set}`);
+  const [key, tier] = set.split('/');
+  return { body, set, prefix: `/textures/tiles/${key}/${tier}.${row.setHash8}/` };
+})();
+// `--route-tiles=<key>/<tier>=<dir>` answers that set's tile URLs (at the
+// hash the table names) from the files in <dir> instead, on every boot: how a
+// control set is shown in the app without a file of the app's moving.
+const routeTiles = (() => {
+  const v = arg('route-tiles', '');
+  if (!v) return null;
+  const [set, dir] = v.split('=');
+  const table = parseSectorTable(readFileSync(new URL('../src/planetarium/world/sectorSets.generated.ts', import.meta.url), 'utf8'));
+  const [key, tier] = set.split('/');
+  return { prefix: `/textures/tiles/${key}/${tier}.${table[set].setHash8}/`, dir };
+})();
+// `--linear` adds, per pose, the frame's mean in linear light (on over off)
+// and the RMS of the encoded difference, and writes the difference three
+// times over as an image beside the captures.
+const linearReport = flag('linear');
 // The clock the whole run is frozen at. A pose is a camera and a date; nothing
 // else may move between the two halves of a comparison.
 const TIME_ISO = arg('time', '2026-03-21T09:20:00Z');
@@ -144,6 +182,27 @@ const POSES = {
     time: '2026-02-01T17:20:00Z', hold: 4000, optional: true,
   },
   'moon-close': { call: ['frame', 'Moon', 1.7, 30, 1.08], time: '2026-03-21T09:20:00Z', hold: 4000, optional: true },
+  // Mercury close in, sunlit and cratered at 17.7 N 99.4 E: about 6, 20 and
+  // 68 device px per texel of its 8K map at 1200x822 and ratio 2. The
+  // `-corner` pair sits over the corner of four sectors (0.2 N 90.9 E), its
+  // tile budget held to the floor so some of that ground stays on the globe
+  // and a tile's edge against it is in frame. `mercury-graze` is the disc and
+  // its limb from about where Mercury's tiles are first admitted (2.2 radii);
+  // `mercury-horizon` looks along the ground from 1.05 radii, where the far
+  // tiles are drawn at the magnification they are admitted at.
+  'mercury-p6': { call: ['frame', 'Mercury', 4.5, 60, 2, 0, 0, 278], time: '2026-12-02T10:56:00Z', hold: 6000, optional: true },
+  'mercury-p20': { call: ['frame', 'Mercury', 6.3, 60, 1.3, 0, 0, 278], time: '2026-12-02T10:56:00Z', hold: 6000, optional: true },
+  'mercury-p68': { call: ['frame', 'Mercury', 8, 60, 1.1, 0, 0, 278], time: '2026-12-02T10:56:00Z', hold: 6000, optional: true },
+  'mercury-p6-corner': {
+    call: ['frame', 'Mercury', 4.5, 60, 2, 0, 0, 298], time: '2026-12-05T03:00:00Z', hold: 6000, optional: true,
+    also: [['sectorSqueeze', 4096]], undo: [['sectorSqueeze', 0]],
+  },
+  'mercury-p20-corner': {
+    call: ['frame', 'Mercury', 6.3, 60, 1.3, 0, 0, 298], time: '2026-12-05T03:00:00Z', hold: 6000, optional: true,
+    also: [['sectorSqueeze', 4096]], undo: [['sectorSqueeze', 0]],
+  },
+  'mercury-graze': { call: ['limbView', 'Mercury', 2.2, 50, 40, 1], time: '2026-12-02T10:56:00Z', hold: 6000, optional: true },
+  'mercury-horizon': { call: ['limbView', 'Mercury', 1.05, 50, 40, 0.35], time: '2026-12-02T10:56:00Z', hold: 6000, optional: true },
   'mars-close': { call: ['frame', 'Mars', 1.7, 25, 1.08], time: '2026-03-21T09:20:00Z', hold: 4000, optional: true },
   // The two things that draw straight onto the canvas: the System Map and the
   // corner chart. Not switch poses, so only a `--poses=` that names them runs
@@ -262,6 +321,31 @@ function verdictOf(d) {
     + ` mean ${d.meanAbs.toFixed(2)} at ${d.worst.x},${d.worst.y}`;
 }
 
+const LINEAR = Float64Array.from({ length: 256 }, (_, v) => { const u = v / 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4; });
+/** On against off over the lit pixels of both (luminance over 8 counts in
+ *  each): the mean of Rec. 709 luminance in linear light as a ratio, the RMS
+ *  of the encoded difference over all channels, and |on - off| times three
+ *  as an image. */
+function linearDiff(offPng, onPng) {
+  const a = decodePng(offPng);
+  const b = decodePng(onPng);
+  const ch = a.channels;
+  const luma = (px, i) => 0.2126 * LINEAR[px[i]] + 0.7152 * LINEAR[px[i + 1]] + 0.0722 * LINEAR[px[i + 2]];
+  const enc = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+  let sa = 0, sb = 0, lit = 0, sq = 0, n = 0;
+  const img = Buffer.alloc(a.width * a.height * 3);
+  for (let p = 0; p < a.width * a.height; p++) {
+    const i = p * ch;
+    for (let c = 0; c < 3; c++) {
+      const d = b.pixels[i + c] - a.pixels[i + c];
+      sq += d * d; n++;
+      img[p * 3 + c] = Math.min(255, Math.abs(d) * 3);
+    }
+    if (enc(a.pixels, i) > 8 && enc(b.pixels, i) > 8) { sa += luma(a.pixels, i); sb += luma(b.pixels, i); lit++; }
+  }
+  return { ratio: sb / sa, lit, rms: Math.sqrt(sq / n), image: encodePng(a.width, a.height, 3, img) };
+}
+
 /** The worst region at 6×, so a difference can be looked at rather than
  *  believed from a count. Nearest-neighbour on purpose: a resampled crop hides
  *  a one-pixel artefact, which is the thing being looked for. */
@@ -313,8 +397,22 @@ try {
       localStorage.setItem('planetarium-surface-hint-seen', '1');
     } catch { /* storage blocked — harmless */ }
   });
+  if (routeTiles) {
+    await context.route((u) => u.pathname.startsWith(routeTiles.prefix), (route) => {
+      const name = new URL(route.request().url()).pathname.slice(routeTiles.prefix.length);
+      route.fulfill({ status: 200, contentType: 'image/webp', body: readFileSync(path.join(routeTiles.dir, name)) });
+    });
+    console.log(`[gate] ${routeTiles.prefix}* answered from ${routeTiles.dir}`);
+  }
   const page = await context.newPage();
   const errors = [];
+  const tileResponses = [];
+  if (proveTiles) {
+    page.on('response', (r) => {
+      const u = new URL(r.url());
+      if (u.pathname.startsWith(proveTiles.prefix)) tileResponses.push({ path: u.pathname, status: r.status() });
+    });
+  }
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
@@ -433,6 +531,33 @@ try {
     return last;
   };
 
+  /** What the page says about the body's tiles right now, and the set's
+   *  responses since the boot. */
+  const tileProof = async () => {
+    const page_ = await page.evaluate((body) => {
+      const st = window.__moon.sectors?.();
+      const b = st?.bodies?.[body];
+      let globe = null;
+      window.__moon.scene().traverse((o) => {
+        if (globe || !o.isMesh || (o.name !== body && o.name !== `${body} surface`)) return;
+        const r = o.geometry.drawRange;
+        const full = o.geometry.index?.count ?? 0;
+        globe = { name: o.name, drawStart: r.start, drawCount: r.count, indexCount: full };
+      });
+      const resident = b?.resident ?? [];
+      const program = (name) => window.__moon.programOf?.(name) ?? null;
+      const globeProgram = globe ? program(globe.name) : null;
+      const tilePrograms = resident.slice(0, 4).map((id) => ({ id, program: program(`${body} sector ${id}`) }));
+      return { resident, groundCut: st?.groundCut ?? null, globe, globeProgram, tilePrograms };
+    }, proveTiles.body);
+    const ok200 = tileResponses.filter((r) => r.status === 200).length;
+    const bad = tileResponses.filter((r) => r.status !== 200).length;
+    // The globe's list is cut when its draw starts past the full list and
+    // submits fewer entries than that.
+    const cut = !!page_.globe && page_.globe.drawStart > 0 && page_.globe.drawCount < page_.globe.drawStart;
+    return { ...page_, responses200: ok200, responsesOther: bad, cut };
+  };
+
   const reloadTag = reloadQuery || reloadKey || (urlB ? 'server-b' : '');
   if (reloadTag) {
     // Both halves of the A/B, pose by pose, out of two boots of the same page.
@@ -459,6 +584,7 @@ try {
         if (!warmedBoot) { warmedBoot = true; await page.waitForTimeout(WARM_MS); }
         half[poseName] = await settleUntilStill(poseName);
         halfState[poseName] = await armState();
+        if (proveTiles) halfState[poseName] = { ...halfState[poseName], tiles: await tileProof() };
         await undoPose(page, pose);
       }
       shots.push(half);
@@ -478,7 +604,33 @@ try {
       }
       if (bad && !reportOnly) failures++;
       const arm = { on: states[0][poseName] ?? null, off: states[1][poseName] ?? null };
-      rows.push({ key: reloadTag, pose: poseName, diff: d, arm });
+      let proof = null;
+      if (proveTiles) {
+        const on_ = arm.on?.tiles;
+        const off_ = arm.off?.tiles;
+        const drew = !!on_ && on_.responses200 > 0 && on_.responsesOther === 0 && on_.resident.length > 0 && on_.cut;
+        const none = !!off_ && off_.resident.length === 0;
+        proof = { drew, none, on: on_, off: off_ ? { resident: off_.resident } : null };
+        if (!drew || !none) failures++;
+        console.log(`[gate] tiles @ ${poseName}: on ${drew ? 'DREW' : 'DID NOT DRAW'} ${proveTiles.body} `
+          + `(${on_?.resident.length ?? 0} resident ${JSON.stringify(on_?.resident ?? [])}, ${on_?.responses200 ?? 0} x 200 and ${on_?.responsesOther ?? 0} other from ${proveTiles.prefix}, `
+          + `globe cut ${on_?.cut ? `${on_.globe.drawCount}/${on_.globe.drawStart}` : 'no'}); off ${none ? 'held none' : `held ${JSON.stringify(off_?.resident)}`}`
+          + `${drew && none ? '' : ' -> FAIL'}`);
+        if (on_?.globeProgram && on_.tilePrograms.length > 0) {
+          const same = on_.tilePrograms.every((t) => t.program && t.program.id === on_.globeProgram.id);
+          console.log(`[gate] programs @ ${poseName}: globe ${on_.globeProgram.id}, tiles ${on_.tilePrograms.map((t) => `${t.id}=${t.program?.id ?? 'none'}`).join(' ')} -> ${same ? 'SAME' : 'DIFFERENT'}`);
+        }
+      }
+      let linear = null;
+      if (linearReport) {
+        linear = linearDiff(off, on);
+        writeFileSync(path.join(outDir, `${tag}.diff3x.png`), linear.image);
+        writeFileSync(path.join(outDir, `${tag}.off.png`), off);
+        writeFileSync(path.join(outDir, `${tag}.on.png`), on);
+        console.log(`[gate] linear @ ${poseName}: on/off mean in linear light ${(100 * (linear.ratio - 1)).toFixed(3)} % over ${linear.lit} lit px, RMS ${linear.rms.toFixed(2)} counts`);
+        delete linear.image;
+      }
+      rows.push({ key: reloadTag, pose: poseName, diff: d, arm, proof, linear });
       const uv = arm.on?.uvScale ? ` [uvScale ${arm.on.uvScale.map((n) => n.toFixed(4)).join(',')}]` : '';
       console.log(`[gate] ${engine} ${reloadTag} @ ${poseName}: ${verdictOf(d)}${uv}`);
     }

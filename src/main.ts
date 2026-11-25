@@ -3732,6 +3732,15 @@ function installDevHooks() {
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
+    /** The program a named mesh's material last drew with: three's id for it and its cache key, or null before its first draw. A tile and the globe it covers must report the same program (world/sectorMaterial's sharesSectorProgram); a program COUNT cannot show that, since the shader warm-up links both the map-only and the map-plus-bump variants. */
+    programOf: (meshName: string) => {
+      let mesh: THREE.Mesh | null = null;
+      scene.traverse((o) => { if (!mesh && o.name === meshName && (o as THREE.Mesh).isMesh) mesh = o as THREE.Mesh; });
+      const material = (mesh as THREE.Mesh | null)?.material;
+      if (!material || Array.isArray(material)) return null;
+      const program = (renderer.properties.get(material) as { currentProgram?: { id: number; cacheKey: string } }).currentProgram;
+      return program ? { id: program.id, cacheKey: program.cacheKey } : null;
+    },
     // The cut's capture hooks (tools/ground-cull-probe.mjs): a sector budget
     // squeezed through the globe maps' ledger, now or at the end of the next
     // sector pass, and one sector released and held out.

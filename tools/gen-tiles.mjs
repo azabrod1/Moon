@@ -26,7 +26,8 @@
 // Tianwen-1 HiPS, in blocks of the level's own pixel grid (see hipsBlock), so
 // no source file is ever held whole, and its coarser levels are derived from
 // that render one octave at a time (pyramidLevelRaw), since the HiPS's own
-// orders are averaged on encoded values too.
+// orders are averaged on encoded values too. Mercury's ladder is cut the same
+// way from one resample of a grey mosaic (see the Mercury section).
 //
 // A tile's gutter is always its NEIGHBOUR's pixels — wrapping across the ±180°
 // seam, clamped at the poles — never a repeat of its own edge: that is what
@@ -74,6 +75,15 @@
 //   node tools/gen-tiles.mjs earth --verify     # reassemble + gate only
 //   node tools/gen-tiles.mjs earth --grey       # the mask sets only: every texel r = g = b
 //   node tools/gen-tiles.mjs --index            # re-hash the sets on disk only
+//   node tools/gen-tiles.mjs mercury --root=<dir> --root-only
+//                                               # cut into a private root and index only it:
+//                                               # the app's table is not written
+//   node tools/gen-tiles.mjs mercury --control --root=<dir> --root-only
+//                                               # the control set: the job's rung enlarged onto
+//                                               # each cut level's grid, as tier <tier>-control
+//   node tools/gen-tiles.mjs mercury --solve-gain
+//                                               # print the level gain that holds the globe's
+//                                               # brightness (a capped grey job)
 //   node tools/gen-tiles.mjs clouds --cache=<main checkout>/.moon-data-cache --root=<staging root>
 //                                               # the cloud field (needs the cloud master)
 //   node tools/gen-tiles.mjs clouds --base --cache=<main checkout>/.moon-data-cache
@@ -101,6 +111,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fileDigest, setHash8, tileNames } from './tileSetHash.mjs';
 import { TABLE_BEGIN, TABLE_END, mergeSectorTable, parseSectorTable } from './sectorTable.mjs';
+import { levelLut } from './gen-moonmaps.mjs';
 
 sharp.cache(false);
 sharp.concurrency(0);
@@ -204,7 +215,7 @@ async function fullRaw(srcPath, width, height, matchRef) {
   return data;
 }
 
-const rawOf = (buf, width, height) => sharp(buf, { raw: { width, height, channels: 3 }, limitInputPixels: false });
+const rawOf = (buf, width, height, channels = 3) => sharp(buf, { raw: { width, height, channels }, limitInputPixels: false });
 
 /**
  * A resize in linear light: libvips converts the sRGB input to scRGB (float,
@@ -500,7 +511,7 @@ async function writeWebp(pipeline, out) {
  * Longitude wrapping is the cutter's job, because only it knows where a tile's
  * columns fall.
  */
-function memoryRows(raw, width, height, channels) {
+export function memoryRows(raw, width, height, channels) {
   const stride = width * channels;
   return {
     width,
@@ -592,7 +603,7 @@ async function readAt(fd, position, length) {
  * premultiplied brightness interleaved, and each is a set of its own, with
  * its own tier and its own encoder options, cut from the same read.
  */
-async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1, plane = null) {
+export async function cutGrid(rows, grid, content, key, tier, webpOpts, spanU = 1, plane = null) {
   const { width, height } = gridSize(grid, content);
   if (rows.width !== width || rows.height !== height) {
     throw new Error(`${key}/${tier}: rows are ${rows.width}x${rows.height}, not ${grid.cols}x${grid.rows} sectors of ${content}`);
@@ -732,9 +743,66 @@ async function deriveEarthRoughness(water, srcWidth, srcHeight) {
   await cutGrid(memoryRows(rough, W, H, 3), GRID_16K, W / GRID_16K.cols, 'earth-roughness.v2', '4k', DATA_WEBP);
 }
 
-async function writeDownsamples(raw, width, height, outs) {
-  for (const { w, h, out } of outs) {
-    await writeWebp(resizeLinear(rawOf(raw, width, height), w, h, { fit: 'fill', kernel: 'lanczos3' }), out);
+/**
+ * A whole equirect resized in linear light (lanczos3), padded first with a
+ * halo of its own far edge so the kernel wraps across ±180° instead of
+ * clamping there. The halo is a whole number of texels at both sizes, so the
+ * resize lands on the sample grid of the bare map's. For reductions: an
+ * enlargement goes through enlargeLinear (sharp enlarges half a texel off).
+ */
+function wrappedResizeLinear(raw, width, height, channels, w, h) {
+  const step = width / gcd(width, w);
+  const halo = step * Math.ceil(16 / step);
+  const haloOut = (halo * w) / width;
+  const padW = width + 2 * halo;
+  const stride = width * channels;
+  const padded = Buffer.allocUnsafe(padW * height * channels);
+  for (let y = 0; y < height; y++) {
+    const row = y * stride;
+    const dst = y * padW * channels;
+    raw.copy(padded, dst, row + (width - halo) * channels, row + stride);
+    raw.copy(padded, dst + halo * channels, row, row + stride);
+    raw.copy(padded, dst + (halo + width) * channels, row, row + halo * channels);
+  }
+  return resizeLinear(rawOf(padded, padW, height, channels), w + 2 * haloOut, h, { fit: 'fill', kernel: 'lanczos3' })
+    .extract({ left: haloOut, top: 0, width: w, height: h });
+}
+
+/**
+ * The rungs a job declares, resampled in linear light from its level-0
+ * equirect: a webp into public/ (`out`), or a lossless PNG into the cache
+ * (`png`) for gen-ktx2 to encode where the rung ships as a container alone.
+ * `wrap` pads the map with a halo of its far edge first, a whole number of
+ * texels at both sizes so the rung lands on the whole map's sample grid,
+ * instead of letting the kernel clamp at ±180°.
+ */
+async function writeDownsamples(raw, width, height, outs, channels = 3) {
+  for (const { w, h, out, png, wrap } of outs) {
+    const pipe = wrap
+      ? wrappedResizeLinear(raw, width, height, channels, w, h)
+      : resizeLinear(rawOf(raw, width, height, channels), w, h, { fit: 'fill', kernel: 'lanczos3' });
+    if (png) {
+      await mkdir(path.dirname(png), { recursive: true });
+      await pipe.png({ compressionLevel: 1 }).toFile(png);
+      console.log(`  ${path.relative(CACHE, png).padEnd(34)} ${w}x${h} ${((await stat(png)).size / 1e6).toFixed(1)} MB (for gen-ktx2)`);
+    } else {
+      await writeWebp(pipe, out);
+    }
+  }
+}
+
+/**
+ * A boot map against the brightness its job promises the globe: the
+ * cos-latitude mean of its luminance in linear light, read back from the
+ * written file, within `tolerance` of `linear`.
+ */
+async function levelTargetGate(target) {
+  const { linear, encoded } = await cosLatLinearMean(target.file);
+  const off = linear / target.linear - 1;
+  const ok = Math.abs(off) <= target.tolerance;
+  console.log(`  globe ${path.relative(TEX, target.file)}: cos-latitude linear mean ${linear.toFixed(6)} against ${target.linear} (${(100 * off).toFixed(3)} %), encoded ${encoded.toFixed(2)} -> ${ok ? 'PASS' : 'FAIL'}`);
+  if (!ok) {
+    throw new Error(`${target.file}: the globe is ${(100 * off).toFixed(3)} % off its brightness in linear light (limit ${(100 * target.tolerance).toFixed(2)} %) — re-solve the level gain`);
   }
 }
 
@@ -895,7 +963,7 @@ async function heldSectorTable() {
  * the app has retired is deleted from the table on purpose, never carried
  * along unnoticed.
  */
-async function indexSets() {
+async function indexSets({ appTable = true } = {}) {
   // Every folder is hashed before any of them is moved. A rename is a
   // destructive operation on a sibling's name, so the two folders of one
   // <key>/<tier> have to be caught while both are still on disk — renaming
@@ -946,6 +1014,13 @@ async function indexSets() {
   // host that no root here holds (tools/sectorTable.mjs).
   const staged = new Set(Object.values(JOBS).filter((j) => j.appTable === false).map((j) => j.key));
   const app = Object.fromEntries(Object.entries(sets).filter(([id]) => !staged.has(id.split('/')[0])));
+  // A run into a private root (`--root-only`) indexes that root and leaves
+  // the app's table alone: the sets in it are for looking at, not for the
+  // app to name yet.
+  if (!appTable) {
+    console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}; the app's table is left as it is (--root-only)`);
+    return;
+  }
   const { table, kept } = mergeSectorTable(app, await heldSectorTable());
   await writeFile(GENERATED_TS, generatedSource(table));
   const held = Object.keys(sets).length - Object.keys(app).length;
@@ -1043,7 +1118,7 @@ async function verify(key, tier, grid, content, refPath) {
  * 3-px band; this is not. Longitude wraps, so the seam at ±180° is checked
  * like any other; the poles have no neighbour and are skipped.
  */
-async function seamGate(key, tier, grid, content) {
+async function seamGate(key, tier, grid, content, limit = 3) {
   const dir = await setDir(key, tier);
   const tileW = content + 2 * GUTTER;
   const raw = async (c, r) => sharp(path.join(dir, `${c}_${r}.webp`)).removeAlpha().raw().toBuffer();
@@ -1086,7 +1161,6 @@ async function seamGate(key, tier, grid, content) {
       }
     }
   }
-  const limit = 3;
   const ok = worstV <= limit && worstH <= limit;
   console.log(`  seams ${key}/${tier}: worst mean |Δ| vertical ${worstV.toFixed(2)} horizontal ${worstH.toFixed(2)} (${worstAt}) -> ${ok ? 'PASS' : 'FAIL'}`);
   if (!ok) {
@@ -1101,6 +1175,110 @@ async function seamGate(key, tier, grid, content) {
  * check is per GROUP, because a whole-level mean hides one bad quadrant
  * completely. Thresholds are texdiff's: mean <= 2, RMS <= 6.
  */
+/**
+ * Every tile's brightness against the ground it lands on. A tile's content
+ * (the gutter left out) and each window an eighth of a tile across, averaged
+ * in linear light, against the same footprint of its PARENT — the rung the
+ * globe draws under it (`{ png }`) or the level below it (`{ tier }`) —
+ * averaged the same way. No resample on either side: the footprint is a
+ * whole number of parent texels, so the two means cover the same ground.
+ *
+ * It is the gate for the step a reader sees when a tile lands. The texel
+ * gates above pass a 2 % step (a mean of 2 counts is inside their limit),
+ * and a whole-level mean hides two opposite errors. A tile off by more than
+ * `limit` fails; the windows are reported, not gated, because the average
+ * a level is made by (lanczos3) moves a little brightness across a window's
+ * edge wherever the ground has an edge of its own.
+ */
+export async function brightnessGate(key, tier, grid, content, parent, limit = 0.003) {
+  const dir = await setDir(key, tier);
+  const width = grid.cols * content;
+  const WIN = 8;
+  if (content % WIN !== 0) throw new Error(`${key}/${tier}: ${content} px of content is not ${WIN} whole windows`);
+  const win = content / WIN;
+  let parentWidth;
+  let parentLuma;
+  if (parent.png) {
+    const { data, info } = await sharp(parent.png, { limitInputPixels: false }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    parentWidth = info.width;
+    const luma = new Float32Array(info.width * info.height);
+    for (let p = 0; p < luma.length; p++) luma[p] = linearLuma(data, p * info.channels, info.channels);
+    parentLuma = (x, y) => luma[y * info.width + x];
+  } else {
+    const pgrid = { cols: grid.cols / 2, rows: grid.rows / 2 };
+    parentWidth = pgrid.cols * content;
+    const pdir = await setDir(key, parent.tier);
+    const held = new Map();
+    const tileW = content + 2 * GUTTER;
+    parentLuma = async (x, y) => {
+      const c = Math.floor(x / content);
+      const r = Math.floor(y / content);
+      const id = `${c}_${r}`;
+      if (!held.has(id)) {
+        if (held.size > 2 * pgrid.cols) held.delete(held.keys().next().value);
+        const { data, info } = await sharp(path.join(pdir, `${id}.webp`)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        const luma = new Float32Array(tileW * tileW);
+        for (let p = 0; p < luma.length; p++) luma[p] = linearLuma(data, p * info.channels, info.channels);
+        held.set(id, luma);
+      }
+      return held.get(id)[(GUTTER + y - r * content) * tileW + GUTTER + x - c * content];
+    };
+  }
+  const f = parentWidth / width;
+  const footprint = content * f;
+  const winFoot = win * f;
+  if (!Number.isInteger(footprint) || !Number.isInteger(winFoot)) {
+    throw new Error(`${key}/${tier}: a tile's ${content} px fall on ${footprint} parent texels, not a whole number`);
+  }
+  const tileW = content + 2 * GUTTER;
+  let worstTile = null;
+  let worstWin = null;
+  let failed = 0;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const { data, info } = await sharp(path.join(dir, `${c}_${r}.webp`)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      const tw = new Float64Array(WIN * WIN);
+      for (let y = 0; y < content; y++) {
+        for (let x = 0; x < content; x++) {
+          tw[Math.floor(y / win) * WIN + Math.floor(x / win)] += linearLuma(data, ((GUTTER + y) * tileW + GUTTER + x) * info.channels, info.channels);
+        }
+      }
+      const pw = new Float64Array(WIN * WIN);
+      const px0 = c * footprint;
+      const py0 = r * footprint;
+      for (let y = 0; y < footprint; y++) {
+        for (let x = 0; x < footprint; x++) {
+          pw[Math.floor(y / winFoot) * WIN + Math.floor(x / winFoot)] += await parentLuma(px0 + x, py0 + y);
+        }
+      }
+      let ts = 0;
+      let ps = 0;
+      for (let i = 0; i < WIN * WIN; i++) {
+        ts += tw[i];
+        ps += pw[i];
+        // Per-texel means on each side: the window holds win² tile texels
+        // and winFoot² parent texels.
+        const ratio = (tw[i] / (win * win)) / (pw[i] / (winFoot * winFoot));
+        if (!worstWin || Math.abs(ratio - 1) > Math.abs(worstWin.ratio - 1)) {
+          worstWin = { ratio, at: `${c}_${r} window ${i % WIN},${Math.floor(i / WIN)}` };
+        }
+      }
+      const ratio = (ts / (content * content)) / (ps / (footprint * footprint));
+      if (!worstTile || Math.abs(ratio - 1) > Math.abs(worstTile.ratio - 1)) worstTile = { ratio, at: `${c}_${r}` };
+      if (Math.abs(ratio - 1) > limit) {
+        failed++;
+        console.log(`    tile ${c}_${r}: ${(100 * (ratio - 1)).toFixed(3)} % in linear light against ${parent.png ? path.basename(parent.png) : parent.tier} FAIL`);
+      }
+    }
+  }
+  const pct = (x) => `${x >= 1 ? '+' : ''}${(100 * (x - 1)).toFixed(3)} %`;
+  console.log(`  brightness ${key}/${tier} vs ${parent.png ? path.basename(parent.png) : parent.tier}: worst tile ${worstTile.at} ${pct(worstTile.ratio)}, worst ${win}-px window ${worstWin.at} ${pct(worstWin.ratio)} -> ${failed ? 'FAIL' : 'PASS'}`);
+  if (failed) {
+    throw new Error(`${key}/${tier}: ${failed} tiles are more than ${(100 * limit).toFixed(1)} % off the ground they land on, in linear light — a reader would see each one step as it lands`);
+  }
+  return { worstTile, worstWin };
+}
+
 async function childGroupGate(key, parentTier, parentGrid, parentContent, childTier, childContent) {
   const parentDir = await setDir(key, parentTier);
   const childDir = await setDir(key, childTier);
@@ -1353,20 +1531,23 @@ const PYRAMID_HALO = 16;
 async function pyramidLevelRaw(job, level, fromIndex) {
   const from = job.levels[fromIndex];
   if (!from) throw new Error(`${job.key}/${level.tier}: no level ${fromIndex} to derive from`);
-  const { width, height } = gridSize(level.grid, CONTENT);
-  const source = gridSize(from.grid, CONTENT);
+  const { width, height } = gridSize(level.grid, contentOf(job));
+  const source = gridSize(from.grid, contentOf(job));
   const factor = 2;
   if (source.width !== width * factor || source.height !== height * factor) {
     throw new Error(`${job.key}/${level.tier}: ${source.width}x${source.height} (${from.tier}) is not one octave above ${width}x${height}`);
   }
+  // One byte a texel all the way down from a grey level, and the suffix says
+  // which layout the cached file holds.
+  const ch = levelChannels(job, fromIndex);
   const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken, `of-${from.tier}`, PYRAMID_TOKEN].filter(Boolean).join('.');
-  const out = cache('levels', `${stem}.rgb`);
+  const out = cache('levels', `${stem}.${rawSuffix(ch)}`);
   await mkdir(path.dirname(out), { recursive: true });
-  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+  if ((await exists(out)) && (await stat(out)).size === width * height * ch) {
     console.log(`  derived equirect already in the cache: ${path.relative(process.cwd(), out)}`);
     return out;
   }
-  const src = await fileRowSource(await levelRawFile(job, fromIndex), source.width, source.height);
+  const src = await fileRowSource(await levelRawFile(job, fromIndex), source.width, source.height, ch);
   const haloSrc = PYRAMID_HALO * factor;
   const paddedWidth = source.width + 2 * haloSrc;
   const file = await open(`${out}.part`, 'w');
@@ -1377,19 +1558,26 @@ async function pyramidLevelRaw(job, level, fromIndex) {
       const srcRows = bandRows * factor + 2 * haloSrc;
       // The row source repeats the edge row past a pole; longitude wraps here.
       const band = await src.read(y0 * factor - haloSrc, srcRows);
-      const padded = Buffer.allocUnsafe(paddedWidth * srcRows * 3);
+      const padded = Buffer.allocUnsafe(paddedWidth * srcRows * ch);
       for (let y = 0; y < srcRows; y++) {
-        const row = y * source.width * 3;
-        const dst = y * paddedWidth * 3;
-        band.copy(padded, dst, row + (source.width - haloSrc) * 3, row + source.width * 3);
-        band.copy(padded, dst + haloSrc * 3, row, row + source.width * 3);
-        band.copy(padded, dst + (haloSrc + source.width) * 3, row, row + haloSrc * 3);
+        const row = y * source.width * ch;
+        const dst = y * paddedWidth * ch;
+        band.copy(padded, dst, row + (source.width - haloSrc) * ch, row + source.width * ch);
+        band.copy(padded, dst + haloSrc * ch, row, row + source.width * ch);
+        band.copy(padded, dst + (haloSrc + source.width) * ch, row, row + haloSrc * ch);
       }
-      const piece = await resizeLinear(
-        sharp(padded, { raw: { width: paddedWidth, height: srcRows, channels: 3 }, limitInputPixels: false }),
+      let pipe = resizeLinear(
+        sharp(padded, { raw: { width: paddedWidth, height: srcRows, channels: ch }, limitInputPixels: false }),
         width + 2 * PYRAMID_HALO, bandRows + 2 * PYRAMID_HALO, { fit: 'fill', kernel: 'lanczos3' },
-      ).extract({ left: PYRAMID_HALO, top: PYRAMID_HALO, width, height: bandRows }).raw().toBuffer();
-      await file.write(piece, 0, piece.length, y0 * width * 3);
+      ).extract({ left: PYRAMID_HALO, top: PYRAMID_HALO, width, height: bandRows });
+      // The linear round trip leaves a grey input as three equal sRGB bands
+      // (measured: the first is the three-channel resize's, value for value).
+      if (ch === 1) pipe = pipe.extractChannel(0);
+      const piece = await pipe.raw().toBuffer();
+      if (piece.length !== width * bandRows * ch) {
+        throw new Error(`${out}: a derived band is ${piece.length} bytes, not ${width}x${bandRows}x${ch}`);
+      }
+      await file.write(piece, 0, piece.length, y0 * width * ch);
       process.stdout.write(`  derive ${level.tier} from ${from.tier}: rows ${y0 + bandRows}/${height} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
     }
   } finally {
@@ -1402,12 +1590,14 @@ async function pyramidLevelRaw(job, level, fromIndex) {
   return out;
 }
 
-/** The cached raw equirect of a file-backed level — rendered from a HiPS, or
- *  derived from the level above it — built if the cache lacks it. */
-async function levelRawFile(job, index) {
+/** The cached raw equirect of a file-backed level — rendered from a HiPS,
+ *  resampled from a mosaic, or derived from the level above it — built if the
+ *  cache lacks it. */
+export async function levelRawFile(job, index) {
   const level = job.levels[index];
   const src = level.source;
   if (src.kind === 'hips') return hipsLevelRaw(job, level);
+  if (src.kind === 'mosaic') return mosaicLevelRaw(job, level);
   if (src.kind === 'pyramid') return pyramidLevelRaw(job, level, src.of);
   throw new Error(`${job.key}/${level.tier}: a ${src.kind} source has no raw file of its own`);
 }
@@ -1424,8 +1614,20 @@ const gcd = (a, b) => (b ? gcd(b, a % b) : a);
  * east and north to south). Each tile is decoded ONCE into a raw file beside
  * it in the cache: a level is read out of the mosaic thousands of times, and
  * re-decoding a 466-megapixel JPEG per read would be hours per level.
+ *
+ * `channels` is 3 for a colour product and 1 for a grey one, which is decoded,
+ * cached and read one byte a texel: Mercury's 166 m mosaic is 4.2 GB as grey
+ * and would be 12.7 GB expanded to RGB. The decoded file's suffix names its
+ * layout (`.rgb`, `.r8`), so a grey decode is never read as RGB.
+ *
+ * `validRows`, when given, maps the mosaic's height to the band of source rows
+ * [first, end) that holds measured ground; the rows outside it are read as the nearest measured row,
+ * exactly as rows past a pole are, so nothing outside the band can enter a
+ * resample of the ground beside it (see buildMosaicLevelRaw for how the
+ * level then knows which of its texels the band covered).
  */
-async function mosaicSource(files, across, down) {
+async function mosaicSource(files, across, down, { channels = 3, validRows = null, rawDir = path.join(CACHE, 'raw') } = {}) {
+  if (channels !== 1 && channels !== 3) throw new Error(`a mosaic is read as 1 or 3 channels, not ${channels}`);
   const parts = [];
   let tileWidth = 0;
   let tileHeight = 0;
@@ -1436,14 +1638,22 @@ async function mosaicSource(files, across, down) {
     if (meta.width !== tileWidth || meta.height !== tileHeight) {
       throw new Error(`${path.basename(file)}: ${meta.width}x${meta.height}, not ${tileWidth}x${tileHeight} like its siblings`);
     }
-    const rawFile = path.join(CACHE, 'raw', `${path.basename(file)}.rgb`);
-    const want = tileWidth * tileHeight * 3;
+    const rawFile = path.join(rawDir, `${path.basename(file)}.${rawSuffix(channels)}`);
+    const want = tileWidth * tileHeight * channels;
     if (!(await exists(rawFile)) || (await stat(rawFile)).size !== want) {
       await mkdir(path.dirname(rawFile), { recursive: true });
       process.stdout.write(`  decode ${path.basename(file)}\r`);
-      const { data, info } = await sharp(file, { limitInputPixels: false })
-        .removeAlpha().raw().toBuffer({ resolveWithObject: true });
-      if (info.channels !== 3 || info.width !== tileWidth || info.height !== tileHeight) {
+      let p = sharp(file, { limitInputPixels: false });
+      // A grey source has to be asked to stay grey: sharp hands even a 1-band
+      // image back as sRGB unless the output colourspace says otherwise.
+      if (channels === 1) {
+        if (meta.channels !== 1) throw new Error(`${path.basename(file)}: ${meta.channels} bands, read as a grey mosaic`);
+        p = p.toColourspace('b-w');
+      } else {
+        p = p.removeAlpha();
+      }
+      const { data, info } = await p.raw().toBuffer({ resolveWithObject: true });
+      if (info.channels !== channels || info.width !== tileWidth || info.height !== tileHeight) {
         throw new Error(`${path.basename(file)}: decoded ${info.width}x${info.height}x${info.channels}`);
       }
       await writeFile(`${rawFile}.part`, data);
@@ -1451,9 +1661,14 @@ async function mosaicSource(files, across, down) {
     }
     parts.push(await open(rawFile, 'r'));
   }
-  console.log(`  mosaic ${across}x${down} × ${tileWidth}x${tileHeight} = ${across * tileWidth}x${down * tileHeight}`);
+  console.log(`  mosaic ${across}x${down} × ${tileWidth}x${tileHeight}x${channels} = ${across * tileWidth}x${down * tileHeight}`);
   const width = across * tileWidth;
   const height = down * tileHeight;
+  // Stated as a function of the mosaic's height, which only the decode knows.
+  const [first, end] = validRows ? validRows(height) : [0, height];
+  if (!(Number.isInteger(first) && Number.isInteger(end) && first >= 0 && end <= height && first < end)) {
+    throw new Error(`measured rows [${first}, ${end}) do not lie inside the mosaic's ${height}`);
+  }
   return {
     across,
     down,
@@ -1461,13 +1676,17 @@ async function mosaicSource(files, across, down) {
     tileHeight,
     width,
     height,
+    channels,
+    validRows: validRows ? [first, end] : null,
     async close() { for (const fd of parts) await fd.close(); },
-    /** A region of the whole mosaic as packed RGB. Longitude wraps; latitude
-     *  clamps at the poles, the same padding a tile's gutter gets. */
+    /** A region of the whole mosaic, `channels` bytes a texel. Longitude
+     *  wraps; latitude clamps at the poles, the same padding a tile's gutter
+     *  gets, or at the edge of the measured rows where the mosaic has them. */
     async read(x0, y0, w, h) {
-      const out = Buffer.allocUnsafe(w * h * 3);
+      const ch = channels;
+      const out = Buffer.allocUnsafe(w * h * ch);
       for (let i = 0; i < h; i++) {
-        const y = Math.max(0, Math.min(height - 1, y0 + i));
+        const y = Math.max(first, Math.min(end - 1, y0 + i));
         const tr = Math.floor(y / tileHeight);
         const ly = y - tr * tileHeight;
         let x = ((x0 % width) + width) % width;
@@ -1477,7 +1696,7 @@ async function mosaicSource(files, across, down) {
           const lx = x - tc * tileWidth;
           const run = Math.min(w - done, tileWidth - lx);
           const fd = parts[tr * across + tc];
-          await fd.read(out, (i * w + done) * 3, run * 3, (ly * tileWidth + lx) * 3);
+          await fd.read(out, (i * w + done) * ch, run * ch, (ly * tileWidth + lx) * ch);
           done += run;
           x = (x + run) % width;
         }
@@ -1486,6 +1705,15 @@ async function mosaicSource(files, across, down) {
     },
   };
 }
+
+/** The file suffix of a cached raw raster, which names its layout: a grey
+ *  cache read as RGB would be a picture of the wrong size at the wrong
+ *  stride, so the two can never share a name. */
+const rawSuffix = (channels) => {
+  if (channels === 3) return 'rgb';
+  if (channels === 1) return 'r8';
+  throw new Error(`no raw layout for ${channels} channels`);
+};
 
 /**
  * Resample a mosaic into one equirect at a level's own resolution, on disk,
@@ -1506,9 +1734,27 @@ async function mosaicSource(files, across, down) {
  * makes a child's water match its parent's. A per-pixel MASK (the night
  * lights' no-data fill) runs a step earlier, on the source region itself,
  * because what it keys on only exists before the resample blends it.
+ *
+ * A mosaic with measured rows (mosaicSource's `validRows`) reads the rows
+ * outside them as the edge of the measured band, so no unmeasured value can
+ * be averaged into the ground. What that leaves is the texels whose kernel
+ * reached past the band at all: their value leans on the repeated edge row.
+ * Each band therefore also gets its COVERAGE, per level row, from the same
+ * resample of a column that is 255 on measured rows and 0 elsewhere (the
+ * mask is a function of the row alone, so one column is the whole of it):
+ * 255 is a texel made only of measurements. Every 0 inside the measured rows
+ * is counted and refused, because 0 is the product's no-data value and this
+ * path has no fill for a hole in the ground.
+ *
+ * `fill`, after the grade, is handed the graded band, its first row and the
+ * coverage of every row, and paints what the source never measured (see
+ * capFill). It runs on this level only: the levels derived from it inherit
+ * the filled pixels through their own resample, so a parent and a child
+ * carry the same cap.
  */
-async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) {
+async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask, fill) {
   const { width, height } = gridSize(grid, content);
+  const ch = mosaic.channels ?? 3;
   const shareW = width / mosaic.across;
   const g = gcd(width, mosaic.width);
   const p = width / g;
@@ -1532,30 +1778,60 @@ async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) 
   console.log(`  resample ${mosaic.width}x${mosaic.height} -> ${width}x${height} (scale ${p}/${q}, halo ${q} source px = ${p} target px)`);
   const out = await open(`${outFile}.part`, 'w');
   const t0 = Date.now();
+  const regionW = mosaic.tileWidth + 2 * q;
+  const regionH = srcPerBand + 2 * q;
+  // sharp hands a one-channel raw raster back as sRGB unless the output
+  // colourspace says grey, and a three-channel piece read as one is a
+  // scrambled band.
+  const resizeRaw = async (raw, channels, w, h, outW, outH, left, top, cropW, cropH) => {
+    let pipe = sharp(raw, { raw: { width: w, height: h, channels }, limitInputPixels: false })
+      .resize(outW, outH, { fit: 'fill', kernel: 'lanczos3' })
+      .extract({ left, top, width: cropW, height: cropH });
+    if (channels === 1) pipe = pipe.toColourspace('b-w');
+    const buf = await pipe.raw().toBuffer();
+    if (buf.length !== cropW * cropH * channels) {
+      throw new Error(`${outFile}: a resampled piece is ${buf.length} bytes, not ${cropW}x${cropH}x${channels}`);
+    }
+    return buf;
+  };
+  let zeros = 0;
   try {
     for (let r = 0; r < grid.rows; r++) {
-      const band = Buffer.allocUnsafe(width * content * 3);
+      const band = Buffer.allocUnsafe(width * content * ch);
       const sy0 = r * srcPerBand;
       for (let sc = 0; sc < mosaic.across; sc++) {
-        const region = await mosaic.read(
-          sc * mosaic.tileWidth - q, sy0 - q, mosaic.tileWidth + 2 * q, srcPerBand + 2 * q,
-        );
+        const region = await mosaic.read(sc * mosaic.tileWidth - q, sy0 - q, regionW, regionH);
+        if (mosaic.validRows) {
+          const [first, end] = mosaic.validRows;
+          for (let y = Math.max(first, sy0 - q); y < Math.min(end, sy0 - q + regionH); y++) {
+            const row = (y - (sy0 - q)) * regionW * ch;
+            for (let i = row; i < row + regionW * ch; i++) if (region[i] === 0) zeros++;
+          }
+        }
         // Keyed on source values, before the resample: afterwards every pixel
         // near the boundary is a blend and there is nothing exact to key on.
         if (mask) mask(region);
-        const piece = await sharp(region, {
-          raw: { width: mosaic.tileWidth + 2 * q, height: srcPerBand + 2 * q, channels: 3 },
-          limitInputPixels: false,
-        })
-          .resize(shareW + 2 * p, content + 2 * p, { fit: 'fill', kernel: 'lanczos3' })
-          .extract({ left: p, top: p, width: shareW, height: content })
-          .raw().toBuffer();
+        const piece = await resizeRaw(region, ch, regionW, regionH, shareW + 2 * p, content + 2 * p, p, p, shareW, content);
         for (let y = 0; y < content; y++) {
-          piece.copy(band, (y * width + sc * shareW) * 3, y * shareW * 3, (y + 1) * shareW * 3);
+          piece.copy(band, (y * width + sc * shareW) * ch, y * shareW * ch, (y + 1) * shareW * ch);
         }
       }
+      if (zeros > 0) {
+        throw new Error(`${outFile}: ${zeros} samples of 0 inside the measured rows — 0 is the product's no-data value, and a hole in the ground has no fill on this path`);
+      }
+      let coverage = null;
+      if (mosaic.validRows) {
+        const [first, end] = mosaic.validRows;
+        const column = Buffer.allocUnsafe(regionH);
+        for (let i = 0; i < regionH; i++) {
+          const y = sy0 - q + i;
+          column[i] = y >= first && y < end ? 255 : 0;
+        }
+        coverage = await resizeRaw(column, 1, 1, regionH, 1, content + 2 * p, 0, p, 1, content);
+      }
       if (grade) grade(band);
-      await out.write(band, 0, band.length, r * width * content * 3);
+      if (fill) await fill(band, { y0: r * content, rows: content, width, height, channels: ch, coverage });
+      await out.write(band, 0, band.length, r * width * content * ch);
       process.stdout.write(`  resample band ${r + 1}/${grid.rows} (${((Date.now() - t0) / 1000).toFixed(0)} s)\r`);
     }
   } finally {
@@ -1997,6 +2273,407 @@ async function cutCloudBase(job, { write }) {
 }
 
 // ---------------------------------------------------------------------------
+// Mercury: one grey mosaic, levelled to the globe it always drew, capped
+// ---------------------------------------------------------------------------
+//
+// Mercury's every map comes from one 64K resample of MESSENGER's 166 m
+// basemap: its tile levels, and its boot map and two rungs, averaged down
+// from it in linear light like Mars's. Before this its boot map and rungs
+// were cut by gen-moonmaps from a 4x reduction of the same file, each
+// averaged on encoded values, and the ladder disagreed with itself: the 8K
+// rung was 5 % brighter in linear light than the boot map, and the disc
+// brightened by about that much when it swapped in.
+//   The level: gen-moonmaps' curve (levelLut, imported rather than restated;
+//   a gain, then the shoulder above its knee), on the encoded values after
+//   the resample to the level's width, at a gain solved so the whole globe
+//   keeps the brightness it was drawn at from far away — the shipped boot
+//   map's cos-latitude mean in linear light (solveCappedGain, MERCURY_GLOBE).
+//   The caps: both ends of the mosaic are low-sun junk from the pole to 80 N
+//   and 81.25 S. They were filled once, with matched grain, in the 8K rung
+//   gen-moonmaps cut, and that rung stays the caps' reference: enlarged in
+//   linear light, scaled to the ground beside each cap, feathered in at the
+//   edge, once, into the 64K, so every coarser level averages that one fill
+//   down with the ground around it. A fresh random fill per level would swap
+//   texture at every landing.
+
+/** The globe's brightness from far away: the cos-latitude mean, in linear
+ *  light, of the boot map Mercury shipped before its maps were re-based here
+ *  (Rec. 709 luminance of mercury.v2.webp as gen-moonmaps cut it, decoded;
+ *  its encoded mean is 129.74). The exposure, the night side and the glow
+ *  were tuned on that globe, so the re-based ladder keeps it, and the boot
+ *  map this job writes is checked against it. */
+export const MERCURY_GLOBE = 0.23616115;
+
+/** How much brighter, in linear light, the boot map comes out than the 64K
+ *  it is averaged down from: lanczos3's negative lobes undershoot black
+ *  beside Mercury's deep shadows and are clipped there, so every average adds
+ *  a little light (measured on this chain: 32K +0.03 %, 16K +0.12 %, 8K
+ *  +0.21 %, the boot map +0.29 % after its webp encode). The gain is solved
+ *  for MERCURY_GLOBE over this on the 64K, and the boot map itself is gated
+ *  against MERCURY_GLOBE. */
+const MERCURY_CHAIN_DRIFT = 1.002858;
+
+/** The level curve's shape: gen-moonmaps' default, a gain with the shoulder
+ *  above its knee, which is what Mercury's maps have always been levelled
+ *  with. */
+const MERCURY_LEVEL_SPEC = {};
+
+/** The gain solveCappedGain finds for the 64K's share of MERCURY_GLOBE on
+ *  this source and these caps (`node tools/gen-tiles.mjs mercury
+ *  --solve-gain` prints it). The level table is a step function of the gain;
+ *  the solve lands on the first step to reach its target (0.009 % over it),
+ *  whose table is the same from 1.786586 to 1.786764, and this is the middle
+ *  of that. gen-moonmaps levelled the old maps at 1.849244, solved against a
+ *  mean of encoded counts on a map averaged on encoded values. */
+export const MERCURY_LEVEL_GAIN = 1.786675;
+export const MERCURY_LEVEL_LUT = levelLut(MERCURY_LEVEL_GAIN, MERCURY_LEVEL_SPEC);
+export const mercuryLevelOf = (gain) => levelLut(gain, MERCURY_LEVEL_SPEC);
+
+/** A per-count table applied to every byte of a band, whatever its channels. */
+const lutGrade = (lut) => (raw) => {
+  for (let i = 0; i < raw.length; i++) raw[i] = lut[raw[i]];
+};
+
+/** The latitudes Mercury's mosaic is measured between: past these, to each
+ *  pole, the basemap is low-sun shadow streaks rather than ground. */
+const MERCURY_CAPS = { north: 80, south: -81.25 };
+
+/** The source rows [first, end) between two latitudes of a full-sphere
+ *  equirect `height` rows tall, which must fall on whole rows. */
+const measuredRows = (height, north, south) => {
+  const first = (height * (90 - north)) / 180;
+  const end = (height * (90 - south)) / 180;
+  if (!Number.isInteger(first) || !Number.isInteger(end)) {
+    throw new Error(`${north} N and ${-south} S do not fall on whole rows of a ${height}-row mosaic`);
+  }
+  return [first, end];
+};
+
+const srgbToLinear = (v) => { const u = v / 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4; };
+const linearToSrgb = (u) => 255 * (u <= 0.0031308 ? 12.92 * u : 1.055 * u ** (1 / 2.4) - 0.055);
+const LINEAR = Float64Array.from({ length: 256 }, (_, v) => srgbToLinear(v));
+/** A count's linear-light value, for the tests that check a blend. */
+export const LINEAR_OF = (v) => LINEAR[v];
+
+/**
+ * The weight a cap fill has on each row of a level: 1 inside the caps and
+ * for `margin` reference texels past their edges, easing (smoothstep) to 0
+ * over the next `feather` reference texels into the measured ground. In
+ * reference texels, not level ones, so the seam has one width on the ground
+ * at every level a fill could ever be made at.
+ */
+export function capWeights(height, { north, south, refHeight, margin, feather }) {
+  const texel = 180 / refHeight;
+  const w = new Float64Array(height);
+  for (let y = 0; y < height; y++) {
+    const lat = 90 - ((y + 0.5) * 180) / height;
+    const d = Math.min(north - lat, lat - south) / texel;
+    const t = Math.min(1, Math.max(0, (d - margin) / feather));
+    w[y] = 1 - t * t * (3 - 2 * t);
+  }
+  return w;
+}
+
+/**
+ * A grey equirect ENLARGED in linear light, lanczos3, by its own arithmetic
+ * rather than sharp's: libvips enlarges onto a grid half an output texel off
+ * the one it reduces onto (measured: a bright column at x of a 64-px row,
+ * enlarged to 128, lands its centroid at 65.0, not the 64.5 a centre-aligned
+ * resample puts it at, and at 64.49 for 127 rather than 63.99), so an
+ * enlarged rung would sit half a texel of the finer level away from the
+ * ground it fills or stands in for. Output texel X samples the source at
+ * (X + ½)·w/W − ½, longitude wraps, latitude clamps at the poles. Only the
+ * output rows [top, top + rows) are made.
+ */
+export function enlargeLinear(grey, w, h, W, H, top = 0, rows = H, kernel = 'lanczos3') {
+  if (W < w || H < h) throw new Error(`enlargeLinear makes a map larger, not ${w}x${h} -> ${W}x${H}`);
+  const KERNELS = {
+    lanczos3: { r: 3, k: (x) => {
+      const a = Math.abs(x);
+      if (a < 1e-9) return 1;
+      if (a >= 3) return 0;
+      const p = Math.PI * a;
+      return (3 * Math.sin(p) * Math.sin(p / 3)) / (p * p);
+    } },
+    // What a GPU's bilinear filter draws between texels: no lobes, so no
+    // light added where a lobe would undershoot black and be clipped.
+    linear: { r: 1, k: (x) => Math.max(0, 1 - Math.abs(x)) },
+  };
+  const { r, k: kern } = KERNELS[kernel];
+  const n2 = 2 * r;
+  const taps = (n, N, at, wrap) => {
+    const c = ((at + 0.5) * n) / N - 0.5;
+    const first = Math.floor(c) - r + 1;
+    const idx = new Int32Array(n2);
+    const wt = new Float64Array(n2);
+    let sum = 0;
+    for (let k = 0; k < n2; k++) {
+      const j = first + k;
+      wt[k] = kern(j - c);
+      idx[k] = wrap ? ((j % n) + n) % n : Math.max(0, Math.min(n - 1, j));
+      sum += wt[k];
+    }
+    for (let k = 0; k < n2; k++) wt[k] /= sum;
+    return { idx, wt };
+  };
+  const xTaps = Array.from({ length: W }, (_, X) => taps(w, W, X, true));
+  const across = new Map();
+  const rowAcross = (y) => {
+    let r = across.get(y);
+    if (r) return r;
+    r = new Float32Array(W);
+    const src = y * w;
+    for (let X = 0; X < W; X++) {
+      const { idx, wt } = xTaps[X];
+      let v = 0;
+      for (let k = 0; k < n2; k++) v += wt[k] * LINEAR[grey[src + idx[k]]];
+      r[X] = v;
+    }
+    across.set(y, r);
+    return r;
+  };
+  const out = Buffer.allocUnsafe(W * rows);
+  for (let i = 0; i < rows; i++) {
+    const { idx, wt } = taps(h, H, top + i, false);
+    const rs = Array.from(idx, (y) => rowAcross(y));
+    // Source rows above the ones this output row reads are done with.
+    for (const y of across.keys()) if (y < idx[0]) across.delete(y);
+    const at = i * W;
+    for (let X = 0; X < W; X++) {
+      let u = 0;
+      for (let k = 0; k < n2; k++) u += wt[k] * rs[k][X];
+      const v = Math.round(linearToSrgb(u < 0 ? 0 : u > 1 ? 1 : u));
+      out[at + X] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * The filled reference enlarged onto a level's grid, for the rows a cap fill
+ * touches, and what the fill and the gain solve both need of it: the weight
+ * of every row (capWeights), and for each cap its MATCH band — the `match`
+ * reference texels of measured ground just past the seam — with the
+ * reference's own linear mean over that band.
+ *
+ * The enlargement is in linear light, wrapped in longitude and centre-aligned
+ * (enlargeLinear). The reference must be grey in every channel.
+ */
+async function capReference(ref, width, height, { north, south, margin, feather, match }) {
+  await checkSourceDigest(ref);
+  const { data: rgb, info } = await sharp(ref, { limitInputPixels: false }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (info.width !== 2 * info.height) throw new Error(`${ref}: ${info.width}x${info.height} is not a full-sphere 2:1 equirect`);
+  const grey = Buffer.allocUnsafe(info.width * info.height);
+  for (let i = 0, p = 0; p < grey.length; i += info.channels, p++) {
+    if (info.channels >= 3 && (rgb[i] !== rgb[i + 1] || rgb[i] !== rgb[i + 2])) {
+      throw new Error(`${ref}: texel ${p} is (${rgb[i]}, ${rgb[i + 1]}, ${rgb[i + 2]}), not grey — a grey level's caps cannot come from a colour map`);
+    }
+    grey[p] = rgb[i];
+  }
+  const weights = capWeights(height, { north, south, refHeight: info.height, margin, feather });
+  // The match bands: rows whose centres lie `margin + feather` to
+  // `margin + feather + match` reference texels past each cap edge.
+  const texel = 180 / info.height;
+  const bandRows = (side) => {
+    const rows = [];
+    for (let y = 0; y < height; y++) {
+      const lat = 90 - ((y + 0.5) * 180) / height;
+      const d = (side === 'north' ? north - lat : lat - south) / texel;
+      if (d >= margin + feather && d < margin + feather + match) rows.push(y);
+    }
+    if (!rows.length) throw new Error(`${ref}: no level row falls in the ${side} cap's match band`);
+    return [rows[0], rows.at(-1) + 1];
+  };
+  let northEnd = 0;
+  while (northEnd < height && weights[northEnd] > 0) northEnd++;
+  let southStart = height;
+  while (southStart > 0 && weights[southStart - 1] > 0) southStart--;
+  const bands = { north: bandRows('north'), south: bandRows('south') };
+  const rowsOf = async (top, rows) => (rows <= 0 ? Buffer.alloc(0) : enlargeLinear(grey, info.width, info.height, width, height, top, rows));
+  // Each cap's zone runs from the pole through its match band, so one
+  // enlargement serves both the fill and the reference's band mean.
+  const northRows = Math.max(northEnd, bands.north[1]);
+  const southTop = Math.min(southStart, bands.south[0]);
+  const zones = { north: { top: 0, data: await rowsOf(0, northRows) }, south: { top: southTop, data: await rowsOf(southTop, height - southTop) } };
+  const refBandMean = {};
+  for (const side of ['north', 'south']) {
+    const [b0, b1] = bands[side];
+    const z = zones[side];
+    let sum = 0;
+    for (let i = (b0 - z.top) * width; i < (b1 - z.top) * width; i++) sum += LINEAR[z.data[i]];
+    refBandMean[side] = sum / ((b1 - b0) * width);
+  }
+  return { width, height, weights, northEnd, southStart, bands, zones, refBandMean };
+}
+
+/** The enlarged reference's row `y` on a level's grid. */
+const refRowOf = (made, y) => {
+  const z = y < made.height / 2 ? made.zones.north : made.zones.south;
+  return z.data.subarray((y - z.top) * made.width, (y - z.top + 1) * made.width);
+};
+
+/**
+ * The post-grade fill of a grey mosaic level's polar caps, from a filled
+ * reference map of the same body (`ref`, a full-sphere equirect, grey in
+ * every channel), blended with the level's own graded ground in linear light
+ * by capWeights. Rows of weight 1 are the reference alone.
+ *
+ * The reference was graded at its own level, and the level here may be
+ * graded at another, so each cap's reference is first scaled by one number
+ * in linear light: the level's own mean over the cap's match band (measured
+ * ground, already graded, just past the seam) over the reference's mean over
+ * the same band. The cap then carries the reference's texture at the
+ * brightness of the ground it borders. That band has to arrive in the same
+ * build band as the cap rows, which is checked.
+ *
+ * It is the one place unmeasured texels leave the level, so it is also the
+ * caps' check: a texel whose resample reached past the measured rows (its
+ * coverage under 255, see buildMosaicLevelRaw) must lie where the fill owns
+ * it outright, or the run stops — that is a margin too narrow for the
+ * resample's reach, and the texel would carry the edge row's repeat.
+ */
+export function capFill(spec) {
+  const { ref } = spec;
+  let made = null;
+  return async (band, { y0, rows, width, height, channels, coverage }) => {
+    if (channels !== 1) throw new Error('a cap fill paints a grey level');
+    if (!made || made.width !== width || made.height !== height) {
+      made = await capReference(ref, width, height, spec);
+      made.scale = {};
+      made.lut = {};
+      console.log(`  cap fill from ${path.basename(ref)}: rows 0-${made.northEnd - 1} and ${made.southStart}-${height - 1} of ${height}`);
+    }
+    // A cap's scale, from its match band, before any row of this band moves.
+    for (const side of ['north', 'south']) {
+      const [b0, b1] = made.bands[side];
+      if (made.scale[side] !== undefined || b0 < y0 || b1 > y0 + rows) continue;
+      let sum = 0;
+      for (let i = (b0 - y0) * width; i < (b1 - y0) * width; i++) sum += LINEAR[band[i]];
+      const s = sum / ((b1 - b0) * width) / made.refBandMean[side];
+      made.scale[side] = s;
+      made.lut[side] = Uint8Array.from({ length: 256 }, (_, u) => Math.round(linearToSrgb(Math.min(1, s * LINEAR[u]))));
+      console.log(`  ${side} cap scaled by ${s.toFixed(5)} in linear light to the ground at rows ${b0}-${b1 - 1}`);
+    }
+    for (let i = 0; i < rows; i++) {
+      const y = y0 + i;
+      const w = made.weights[y];
+      if (coverage && coverage[i] < 255 && w < 1) {
+        throw new Error(`level row ${y} of ${height}: its resample reached past the measured rows (coverage ${coverage[i]}) where the cap fill weighs only ${w.toFixed(3)} — the margin is narrower than the resample's reach`);
+      }
+      if (w === 0) continue;
+      const side = y < height / 2 ? 'north' : 'south';
+      const s = made.scale[side];
+      if (s === undefined) {
+        throw new Error(`level row ${y}: the ${side} cap's match band (rows ${made.bands[side].join('-')}) is not in the build band this row is (rows ${y0}-${y0 + rows - 1})`);
+      }
+      const refRow = refRowOf(made, y);
+      const at = i * width;
+      if (w === 1) {
+        const lut = made.lut[side];
+        for (let x = 0; x < width; x++) band[at + x] = lut[refRow[x]];
+        continue;
+      }
+      for (let x = 0; x < width; x++) {
+        const u = w * Math.min(1, s * LINEAR[refRow[x]]) + (1 - w) * LINEAR[band[at + x]];
+        const v = Math.round(linearToSrgb(u));
+        band[at + x] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
+    }
+  };
+}
+
+/** Rec. 709 luminance in linear light of one texel of a decoded raster. */
+const linearLuma = (data, i, channels) => (channels >= 3
+  ? 0.2126 * LINEAR[data[i]] + 0.7152 * LINEAR[data[i + 1]] + 0.0722 * LINEAR[data[i + 2]]
+  : LINEAR[data[i]]);
+
+/** The cos-latitude-weighted mean of a full-sphere equirect's luminance in
+ *  linear light: the brightness a whole globe drawn from it has. */
+export async function cosLatLinearMean(file) {
+  const { data, info } = await sharp(file, { limitInputPixels: false }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let sum = 0;
+  let encoded = 0;
+  let weight = 0;
+  for (let y = 0; y < info.height; y++) {
+    const cw = Math.cos(((90 - ((y + 0.5) * 180) / info.height) * Math.PI) / 180);
+    for (let x = 0; x < info.width; x++) {
+      const i = (y * info.width + x) * info.channels;
+      sum += cw * linearLuma(data, i, info.channels);
+      encoded += cw * (info.channels >= 3 ? 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2] : data[i]);
+      weight += cw;
+    }
+  }
+  return { linear: sum / weight, encoded: encoded / weight };
+}
+
+/**
+ * The level gain that puts a capped grey job's globe at a stated brightness:
+ * the cos-latitude mean, in linear light, of the whole map, caps included.
+ *
+ * Solved on the finest level before its grade: an average in linear light
+ * keeps a mean, so every level derived from it, and every rung, carries the
+ * mean the finest one has. The ungraded level is cached under its own name.
+ * The caps enter as capFill paints them — each scaled to the graded ground of
+ * its match band, so their share moves with the gain — and the seam rows as
+ * the same blend. Bisection on the job's level curve (`levelOf(gain)`).
+ */
+export async function solveCappedGain(job, target, levelOf) {
+  const index = job.levels.findIndex((l) => l.source.kind === 'mosaic');
+  const level = job.levels[index];
+  const bare = { ...job, grade: undefined, fill: undefined, rawToken: 'ungraded.v1' };
+  const file = await levelRawFile(bare, index);
+  const { width, height } = gridSize(level.grid, contentOf(job));
+  const made = await capReference(job.capSpec.ref, width, height, job.capSpec);
+  const ground = new Float64Array(256);
+  const bandHist = { north: new Float64Array(256), south: new Float64Array(256) };
+  const capHist = { north: new Float64Array(256), south: new Float64Array(256) };
+  const bandCount = { north: 0, south: 0 };
+  let total = 0;
+  const rows = await fileRowSource(file, width, height, 1);
+  try {
+    const step = 512;
+    for (let y0 = 0; y0 < height; y0 += step) {
+      const n = Math.min(step, height - y0);
+      const buf = await rows.read(y0, n);
+      for (let i = 0; i < n; i++) {
+        const y = y0 + i;
+        const cw = Math.cos(((90 - ((y + 0.5) * 180) / height) * Math.PI) / 180);
+        const w = made.weights[y];
+        total += cw * width;
+        const side = y < height / 2 ? 'north' : 'south';
+        const row = buf.subarray(i * width, (i + 1) * width);
+        if (w < 1) for (const v of row) ground[v] += cw * (1 - w);
+        if (w > 0) for (const u of refRowOf(made, y)) capHist[side][u] += cw * w;
+        const [b0, b1] = made.bands[side];
+        if (y >= b0 && y < b1) { for (const v of row) bandHist[side][v] += 1; bandCount[side] += width; }
+      }
+    }
+  } finally {
+    await rows.close();
+  }
+  const meanAt = (gain) => {
+    const lut = levelOf(gain);
+    let sum = 0;
+    for (let v = 0; v < 256; v++) sum += ground[v] * LINEAR[lut[v]];
+    for (const side of ['north', 'south']) {
+      let b = 0;
+      for (let v = 0; v < 256; v++) b += bandHist[side][v] * LINEAR[lut[v]];
+      const s = b / bandCount[side] / made.refBandMean[side];
+      for (let u = 0; u < 256; u++) sum += capHist[side][u] * Math.min(1, s * LINEAR[u]);
+    }
+    return sum / total;
+  };
+  let lo = 0.2;
+  let hi = 8;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (meanAt(mid) < target) lo = mid; else hi = mid;
+  }
+  const gain = (lo + hi) / 2;
+  return { gain, mean: meanAt(gain), file };
+}
+
+// ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
 
@@ -2004,6 +2681,19 @@ const cache = (...p) => path.join(CACHE, ...p);
 /** NASA's 500 m products ship as 4 columns A–D (west to east) × 2 rows 1–2
  *  (north to south) of 21600² tiles — the whole equirect is 86400x43200. */
 const NASA_500M_TILES = (name) => ['A1', 'B1', 'C1', 'D1', 'A2', 'B2', 'C2', 'D2'].map((t) => cache(name(t)));
+
+/** Mercury's caps: the 8K rung gen-moonmaps cut and filled, pinned as a
+ *  source (gen-tiles.sources.json). Half a reference texel of outright fill
+ *  past each edge covers the 64K resample's reach (3 level px, 0.38 of an 8K
+ *  texel), which capFill checks texel by texel; then 8 texels of seam; then
+ *  16 texels of measured ground that each cap's brightness is matched to. */
+const MERCURY_CAP_SPEC = {
+  ref: cache('zoom', 'rungs', 'mercury-v2-8k.png'),
+  ...MERCURY_CAPS,
+  margin: 0.5,
+  feather: 8,
+  match: 16,
+};
 
 export const JOBS = {
   // Blue Marble Next Generation, August 2004, plain (flat ocean) — the NASA
@@ -2168,9 +2858,65 @@ export const JOBS = {
       { src: cache('mars-normal.v3-16384.png'), key: 'mars-normal.v3', tier: '16k', level: 1 },
     ],
   },
+  // MESSENGER MDIS 166 m basemap (NASA / JHUAPL / Carnegie Institution of
+  // Washington, published by the USGS Astrogeology Science Center), levelled
+  // and capped as the Mercury section above says. Grey, so its levels are one
+  // byte a texel from the decode to the cut. One resample, the 64K; the 32K
+  // and 16K are averaged down from it, and the boot map and both rungs from
+  // the 16K, so a level added later sits on the ones already shipped without
+  // a re-cut. The two finer levels are built (the 16K needs them) and not cut
+  // yet. The rungs ship as containers alone, so their pictures go to the
+  // cache for gen-ktx2 (mercury4k, mercury8k) and only the boot map is
+  // written to public/.
+  mercury: {
+    key: 'mercury.v2',
+    grade: lutGrade(MERCURY_LEVEL_LUT),
+    capSpec: MERCURY_CAP_SPEC,
+    fill: capFill(MERCURY_CAP_SPEC),
+    // States what the cached 64K holds besides the source: the level curve at
+    // MERCURY_LEVEL_GAIN (named, so a new gain is a new file), the measured
+    // rows, and the scaled caps from the pinned rung.
+    rawToken: `level-caps.v3.g${MERCURY_LEVEL_GAIN}`,
+    levelTarget: { file: path.join(TEX, 'mercury.v2.webp'), linear: MERCURY_GLOBE, drift: MERCURY_CHAIN_DRIFT, tolerance: 0.001 },
+    levelOf: mercuryLevelOf,
+    // Each cut level held to its parent's brightness, tile by tile
+    // (brightnessGate): level 0 against the 8K rung.
+    brightness: true,
+    // The gutter gate's limit, raised from 3: a gutter and the neighbour it
+    // copies are two separate lossy encodes of the same pixels, and on this
+    // ground (crater rims and shadows at every scale) those differ by 3.0 to
+    // 3.6 counts in mean |Δ| with every texel in place — each tile is 2.1 to
+    // 2.8 off the uncompressed level — while a gutter one texel out of place
+    // is 19.5. Six still catches that three times over.
+    seamLimit: 6,
+    levels: [
+      { tier: '16k', grid: GRID_16K, source: { kind: 'pyramid', of: 1 } },
+      { tier: '32k', grid: doubled(GRID_16K, 1), source: { kind: 'pyramid', of: 2 }, cut: false },
+      {
+        tier: '64k',
+        grid: doubled(GRID_16K, 2),
+        cut: false,
+        source: {
+          kind: 'mosaic',
+          channels: 1,
+          files: () => [cache('zoom', 'Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m.tif')],
+          across: 1,
+          down: 1,
+          validRows: (height) => measuredRows(height, MERCURY_CAPS.north, MERCURY_CAPS.south),
+        },
+      },
+    ],
+    // Wrapped in longitude: a resize of the bare map clamps its kernel at
+    // ±180°, and these three are drawn across that meridian.
+    downsamples: [
+      { w: 8192, h: 4096, png: cache('zoom', 'rungs', 'mercury-v2-chain-8k.png'), wrap: true },
+      { w: 4096, h: 2048, png: cache('zoom', 'rungs', 'mercury-v2-chain-4k.png'), wrap: true },
+      { w: 2048, h: 1024, out: path.join(TEX, 'mercury.v2.webp'), wrap: true },
+    ],
+    ref: cache('zoom', 'rungs', 'mercury-v2-chain-8k.png'),
+  },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
-  // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
-  mercury: { flat: { src: () => cache('sss_8k_mercury.jpg'), out: path.join(TEX, '4k', 'mercury.webp') } },
+  // same-product gate against the shipped 2K boot maps (RMS 1.6 / 1.6).
   venus: { flat: { src: () => cache('sss_4k_venus_atmosphere.jpg'), out: path.join(TEX, '4k', 'venus.webp') } },
   saturn: { flat: { src: () => cache('sss_8k_saturn.jpg'), out: path.join(TEX, '4k', 'saturn.webp') } },
   // Earth's cloud field (the section above): NASA's 0.93 km cloud master as
@@ -2232,8 +2978,9 @@ export const JOBS = {
  *  buffer — and a finer level's is written to the source cache as a raw file
  *  first, because it is gigabytes. */
 export async function levelRowSource(job, level) {
-  const { width, height } = gridSize(level.grid, CONTENT);
+  const { width, height } = gridSize(level.grid, contentOf(job));
   const src = level.source;
+  const index = job.levels.indexOf(level);
   // A mask keys SOURCE values, and these two branches only ever see a source
   // that has already been resampled (sharp resizes inside the decode), where
   // the key would be matching blends. No job declares one; say so rather than
@@ -2241,42 +2988,66 @@ export async function levelRowSource(job, level) {
   if (job.mask && src.kind !== 'mosaic') {
     throw new Error(`${job.key}: a no-data mask needs source pixels, which a ${src.kind} source is not read at`);
   }
+  // The fill paints a mosaic level as it is resampled, and a derived level
+  // inherits it; a level read any other way would come out unfilled.
+  if (job.fill && src.kind !== 'mosaic' && src.kind !== 'pyramid') {
+    throw new Error(`${job.key}: a fill runs inside a mosaic resample, which a ${src.kind} source is not`);
+  }
   if (src.kind === 'single') {
     const raw = await fullRaw(src.file(), width, height, job.match);
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  if (src.kind === 'hips' || src.kind === 'pyramid') {
-    // Rendered, or derived, to a raw file in the cache whatever its size:
-    // level 0 would fit in memory, but one path for every level is one path
-    // to get right.
-    return { rows: await fileRowSource(await levelRawFile(job, job.levels.indexOf(level)), width, height) };
-  }
+  // Rendered, derived or resampled to a raw file in the cache whatever its
+  // size: level 0 would fit in memory, but one path for every level is one
+  // path to get right.
+  return { rows: await fileRowSource(await levelRawFile(job, index), width, height, levelChannels(job, index)) };
+}
+
+/** The cached resample of a mosaic level, built if the cache lacks it. */
+async function mosaicLevelRaw(job, level) {
+  const { width, height } = gridSize(level.grid, contentOf(job));
+  const src = level.source;
+  const ch = src.channels ?? 3;
   // The cached resample's NAME states every transform baked into it, so
   // changing one cannot be silently skipped by a machine that already holds
   // the old bytes. The per-pixel no-data mask is one of them: it keys SOURCE
   // values, so it has to run before the resample blends them away, which puts
   // it inside these cached bytes. `rawToken` is the only thing standing
   // between a stale cache and a re-published set with the mask missing from
-  // it, so it changes whenever the mask does.
+  // it, so it changes whenever the mask does — and whenever the measured
+  // rows or the fill do. The suffix names the layout, grey or RGB.
   const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
-  const out = cache('levels', `${stem}.rgb`);
+  const out = cache('levels', `${stem}.${rawSuffix(ch)}`);
   await mkdir(path.dirname(out), { recursive: true });
-  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+  if ((await exists(out)) && (await stat(out)).size === width * height * ch) {
     console.log(`  resampled equirect already in the cache: ${path.relative(process.cwd(), out)}`);
     // The cached bytes only mean anything as "these sources at this size", so
     // the digests are still checked — but the source planes are not decoded
     // for a mosaic nothing is going to read.
     for (const file of src.files()) await checkSourceDigest(file);
-    return { rows: await fileRowSource(out, width, height) };
+    return out;
   }
-  const mosaic = await mosaicSource(src.files(), src.across, src.down);
+  const mosaic = await mosaicSource(src.files(), src.across, src.down, { channels: ch, validRows: src.validRows ?? null });
   try {
-    await buildMosaicLevelRaw(mosaic, level.grid, CONTENT, out, job.grade, job.mask);
+    await buildMosaicLevelRaw(mosaic, level.grid, contentOf(job), out, job.grade, job.mask, job.fill);
   } finally {
     await mosaic.close();
   }
-  return { rows: await fileRowSource(out, width, height) };
+  return out;
+}
+
+/** Texels of the tile content a job's levels are cut at: CONTENT for every
+ *  shipped set. A test states a smaller one so its levels are small. */
+const contentOf = (job) => job.content ?? CONTENT;
+
+/** Bytes a texel in the cached raster of a job's level `index`: what its
+ *  mosaic declares, or what the level it is derived from has. */
+function levelChannels(job, index) {
+  const src = job.levels[index].source;
+  if (src.kind === 'mosaic') return src.channels ?? 3;
+  if (src.kind === 'pyramid') return levelChannels(job, src.of);
+  return 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -2284,7 +3055,16 @@ export async function levelRowSource(job, level) {
 // ---------------------------------------------------------------------------
 
 const wantedLevel = opt('level', null);
-const levelsOf = (job) => (job.levels ?? []).filter((_, i) => wantedLevel === null || Number(wantedLevel) === i);
+/** A level marked `cut: false` is built — a level derived from it needs its
+ *  raster — but has no tile set yet, so nothing cuts or gates it. */
+const isCut = (level) => level.cut !== false;
+/** What brightnessGate holds a cut level to: level 0 to the job's rung, a
+ *  finer level to the level below it. */
+const brightnessParent = (job, level) => {
+  const index = job.levels.indexOf(level);
+  return index === 0 ? { png: job.ref } : { tier: job.levels[index - 1].tier };
+};
+const levelsOf = (job) => (job.levels ?? []).filter((l, i) => isCut(l) && (wantedLevel === null || Number(wantedLevel) === i));
 /** The data crops a run cuts: every one the job declares, or under --level=n
  *  those cut for that level's sectors — level 0's unless the entry says
  *  otherwise (Mars's 16K relief is level 1's) — on that level's grid. */
@@ -2311,7 +3091,41 @@ async function main() {
     if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
     const t0 = Date.now();
     console.log(`== ${name}`);
-    if (flag('grey')) {
+    if (flag('solve-gain')) {
+      // Prints the gain; writes nothing but the ungraded level's cache.
+      if (!job.capSpec || !job.levelTarget || !job.levelOf) { console.log('  no capped grey level to solve'); continue; }
+      const finest = job.levelTarget.linear / (job.levelTarget.drift ?? 1);
+      const { gain, mean, file } = await solveCappedGain(job, finest, job.levelOf);
+      const same = (g) => Buffer.from(job.levelOf(g)).equals(Buffer.from(job.levelOf(Number(gain.toFixed(6)))));
+      console.log(`  ungraded level ${path.relative(process.cwd(), file)}`);
+      console.log(`  gain ${gain.toFixed(9)} -> finest level ${mean.toFixed(8)} against ${finest.toFixed(8)} (the globe's ${job.levelTarget.linear} over the chain's drift ${job.levelTarget.drift ?? 1}); to six decimals ${gain.toFixed(6)}, whose table is the same at ±5e-7: ${same(gain - 5e-7) && same(gain + 5e-7)}`);
+      continue;
+    } else if (flag('control')) {
+      // The control set: the job's rung enlarged in linear light onto each
+      // cut level's grid, cut as `<tier>-control` and gated like the real
+      // set. Drawn in place of the real set, it has to look like no tiles at
+      // all, which separates what the material does from what the new
+      // detail does.
+      for (const [index, level] of (job.levels ?? []).entries()) {
+        if (!isCut(level) || (wantedLevel !== null && Number(wantedLevel) !== index)) continue;
+        const tier = `${level.tier}-control`;
+        const { width, height } = gridSize(level.grid, CONTENT);
+        const ch = levelChannels(job, index);
+        if (!flag('verify')) {
+          console.log(`-- level ${index} control (${tier}) from ${path.basename(job.ref)}`);
+          if (ch !== 1) throw new Error(`${job.key}: a control set is enlarged from a grey rung (enlargeLinear)`);
+          const { data, info } = await sharp(job.ref, { limitInputPixels: false }).extractChannel(0).raw().toBuffer({ resolveWithObject: true });
+          // Bilinear in linear light: what the GPU draws the rung with when
+          // it is magnified, which is the picture the control has to match.
+          const raw = enlargeLinear(data, info.width, info.height, width, height, 0, height, 'linear');
+          if (raw.length !== width * height * ch) throw new Error(`${job.key}/${tier}: the enlarged rung is ${raw.length} bytes, not ${width}x${height}x${ch}`);
+          await cutGrid(memoryRows(raw, width, height, ch), level.grid, CONTENT, job.key, tier, job.webp ?? PHOTO_WEBP);
+        }
+        await verify(job.key, tier, level.grid, CONTENT, job.ref);
+        await seamGate(job.key, tier, level.grid, CONTENT, job.seamLimit);
+        await brightnessGate(job.key, tier, level.grid, CONTENT, index === 0 ? { png: job.ref } : { tier: `${job.levels[index - 1].tier}-control` });
+      }
+    } else if (flag('grey')) {
       // Check only, of the one property the app's one-channel storage rests
       // on; a minute of decoding, against the hour a whole --verify is.
       for (const g of job.grey ?? []) await greyGate(g);
@@ -2344,12 +3158,14 @@ async function main() {
       if (!job.flat) {
         for (const level of levelsOf(job)) {
           await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
-          await seamGate(job.key, level.tier, level.grid, CONTENT);
+          await seamGate(job.key, level.tier, level.grid, CONTENT, job.seamLimit);
           if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
+          if (job.brightness) await brightnessGate(job.key, level.tier, level.grid, CONTENT, brightnessParent(job, level));
         }
         // A level against the one it sits on: both have to be on disk, so a
         // run pinned to one level checks only that level's own gates.
         for (let i = 1; wantedLevel === null && i < (job.levels ?? []).length; i++) {
+          if (!isCut(job.levels[i - 1]) || !isCut(job.levels[i])) continue;
           await childGroupGate(job.key, job.levels[i - 1].tier, job.levels[i - 1].grid, CONTENT, job.levels[i].tier, CONTENT);
         }
       }
@@ -2373,6 +3189,10 @@ async function main() {
     } else {
       for (const [index, level] of (job.levels ?? []).entries()) {
         if (wantedLevel !== null && Number(wantedLevel) !== index) continue;
+        if (!isCut(level)) {
+          console.log(`-- level ${index} (${level.tier}): not cut; built when a level derived from it is`);
+          continue;
+        }
         console.log(`-- level ${index} (${level.tier}, ${level.grid.cols}x${level.grid.rows})`);
         const { rows, water } = await levelRowSource(job, level);
         try {
@@ -2384,8 +3204,9 @@ async function main() {
             // call, and this one is a third of a gigabyte.
             const whole = await rows.whole();
             if (job.mask) noDataGateRaw(whole, rows.width, rows.height, `${job.key} level 0`);
-            await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? []);
+            await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? [], rows.channels);
             if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
+            if (job.levelTarget) await levelTargetGate(job.levelTarget);
           }
           await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);
           // Every level, not only the one the whole-map gate can read: the mask
@@ -2393,8 +3214,9 @@ async function main() {
           // --level=n has nothing else standing between it and an unmasked cap.
           if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
           await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
-          await seamGate(job.key, level.tier, level.grid, CONTENT);
-          if (index > 0) {
+          await seamGate(job.key, level.tier, level.grid, CONTENT, job.seamLimit);
+          if (job.brightness) await brightnessGate(job.key, level.tier, level.grid, CONTENT, brightnessParent(job, level));
+          if (index > 0 && isCut(job.levels[index - 1])) {
             await childGroupGate(job.key, job.levels[index - 1].tier, job.levels[index - 1].grid, CONTENT, level.tier, CONTENT);
           }
           if (index === 0 && job.derive) await job.derive(water, rows.width, rows.height);
@@ -2414,10 +3236,10 @@ async function main() {
   // generated table, so a cut that did not refresh it would leave every URL
   // pointing at the set it replaced. A --grey or --base run cut no set and
   // writes nothing — a rewrite of the same table would still touch a file the
-  // dev server watches.
-  if (flag('grey') || flag('base')) return;
+  // dev server watches. Nor does a --solve-gain run, which only measures.
+  if (flag('grey') || flag('base') || flag('solve-gain')) return;
   console.log('== index');
-  await indexSets();
+  await indexSets({ appTable: !flag('root-only') });
 }
 
 // Run only when this file IS the command; an importer calls nothing.

@@ -2184,6 +2184,41 @@ describe('the ladder against the sector memory envelope', () => {
     expect(mib(budget() - profile.residentCap * set)).toBeLessThan(4);
   });
 
+  it('gives back only what is far when Mercury\'s own tiles are the ones asking', () => {
+    // Mercury is close: its own 8K container is inside its band and is never
+    // offered, so its tiles can only be paid for by the far bodies. A Mercury
+    // tile is its colour tile alone (it reads its colour as height), 21.33
+    // MiB, against the 23.0 of an Earth set with its two crops.
+    const profile = UNMEASURED_DESKTOP_PROFILE;
+    const pool = cloudFieldPoolBytes(profile.cloudFieldLayers);
+    const set = sectorSetGpuBytes(SECTOR_SETS.Mercury);
+    expect(mib(set)).toBeCloseTo(21.33, 2);
+    const held = heaviestLadder(false, true, (key) => (key === 'mercury' ? 1 : 0));
+    const budget = () => sectorBudgetBytes(profile, bytesOf(held), profile.sectorFloorBytes, pool);
+    const start = bytesOf(held);
+    expect(Math.floor(budget() / set)).toBeLessThan(profile.residentCap);
+    const taken = releaseUntil(held, () => budget() / set >= profile.residentCap);
+    // Never Mercury's own 8K, which its tiles would then sit over at a
+    // quarter of the resolution the globe had a moment before.
+    expect(taken.some((t) => t.startsWith('mercury '))).toBe(false);
+    for (const t of taken) expect(t).toMatch(/ 8k$/);
+    // As many 32 MiB hand-backs as the shortfall needs and no more.
+    const step = equirectMapGpuBytes(8192, true) - equirectMapGpuBytes(4096, true);
+    const owed = start + pool + profile.residentCap * set - profile.envelopeBytes;
+    expect(taken.length).toBe(Math.ceil(owed / step));
+    // Seven, the farthest first: three Saturnians and Callisto, Earth's night
+    // lights and cloud deck (Earth is far now), and the Moon.
+    expect(taken.map((t) => t.split(' ')[0]).sort())
+      .toEqual(['callisto', 'dione', 'earthClouds', 'earthNight', 'enceladus', 'moon', 'tethys']);
+    expect(Math.floor(budget() / set)).toBe(profile.residentCap);
+    // What is left over once sixteen Mercury tiles are held — 10.7 MiB, the
+    // spare the atmosphere tables, the relief rungs and the haze cache all
+    // come out of. More than Earth's 3.5, since a Mercury tile has no crops.
+    const spare = budget() - profile.residentCap * set;
+    expect(spare).toBe(profile.envelopeBytes - pool - (start - taken.length * step) - profile.residentCap * set);
+    expect(mib(spare)).toBeCloseTo(10.67, 1);
+  });
+
   it('offers the tiles nothing where a container would land as RGBA', () => {
     // A transcoder with no compressed format to target hands three RGBA: the
     // 4K below an 8K container is 42.7 MiB there, a transient of two sets,

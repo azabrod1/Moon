@@ -517,10 +517,14 @@ export function ladderCeilingBytes(
  * The one envelope both allocators spend, as an object with one owner.
  *
  * Two managers share this device's GPU memory — the sector streamer's per-slot
- * ledger and the globe ladder's per-material one — and they meet at exactly
- * two live numbers: what the ladder is holding, and what the tiles are owed.
- * A third, fixed for the session, comes off the top before either: what is
- * reserved whole at boot (the cloud field's pool).
+ * ledger and the globe ladder's per-material one — and this object holds the
+ * two live numbers they meet at: what the ladder is holding, and what the
+ * tiles are owed. A third, fixed for the session, comes off the top before
+ * either: what is reserved whole at boot (the cloud field's pool). One more
+ * figure crosses between them outside this object, going the other way: how
+ * far the tiles fall short of their working set (the streamer's
+ * tilesShortfallFor), which the ladder's release pass answers by giving
+ * compressed rungs back (world/ladderPressure).
  * Holding those in one place is what lets either side ask "what may I spend"
  * without knowing how the other is wired, and gives the debug line and the
  * tests a single object instead of a figure assembled at each call site.

@@ -1825,8 +1825,9 @@ export class RestoreQueue {
   }
 
   /** The swap of `up` has ended. True when it was this queue's entry; a
-   *  no-op, and false, for any other handle. */
-  ended(up: TextureUpgrade, outcome: SwapOutcome): boolean {
+   *  no-op, and false, for any other handle. `nowMs` is the clock `take`
+   *  compares the cooldown it stamps against. */
+  ended(up: TextureUpgrade, outcome: SwapOutcome, nowMs = performance.now()): boolean {
     const entry = this.inFlight;
     if (!entry || entry.up !== up) return false;
     this.inFlight = null;
@@ -1837,13 +1838,12 @@ export class RestoreQueue {
     }
     // Its own cooldown, on the same schedule a handle's release keeps, so a
     // stalled link is not asked again on the very next frame.
-    const now = performance.now();
     if (outcome === 'failed') {
       entry.failures = (entry.failures ?? 0) + 1;
-      entry.retryAtMs = now + RELEASE_RETRY_MS * 2 ** Math.min(entry.failures - 1, RELEASE_RETRY_MAX_DOUBLINGS);
+      entry.retryAtMs = nowMs + RELEASE_RETRY_MS * 2 ** Math.min(entry.failures - 1, RELEASE_RETRY_MAX_DOUBLINGS);
     } else {
       entry.timeouts = (entry.timeouts ?? 0) + 1;
-      entry.retryAtMs = now
+      entry.retryAtMs = nowMs
         + Math.min(RELEASE_TIMEOUT_RETRY_MS * 2 ** (entry.timeouts - 1), RELEASE_TIMEOUT_RETRY_MAX_MS);
     }
     this.entries.push(entry);
@@ -1915,7 +1915,7 @@ export class SwapSlot {
     });
     if (!started) {
       this.inFlight = null;
-      this.restores.ended(up, 'failed');
+      this.restores.ended(up, 'failed', nowMs);
     }
     return started;
   }

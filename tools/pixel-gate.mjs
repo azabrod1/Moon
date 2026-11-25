@@ -102,8 +102,10 @@ const routeTiles = (() => {
   if (!v) return null;
   const [set, dir] = v.split('=');
   const table = parseSectorTable(readFileSync(new URL('../src/planetarium/world/sectorSets.generated.ts', import.meta.url), 'utf8'));
+  const row = table[set];
+  if (!row) throw new Error(`--route-tiles: the app's table has no set ${set}`);
   const [key, tier] = set.split('/');
-  return { prefix: `/textures/tiles/${key}/${tier}.${table[set].setHash8}/`, dir };
+  return { prefix: `/textures/tiles/${key}/${tier}.${row.setHash8}/`, dir };
 })();
 // `--linear` adds, per pose, the frame's mean in linear light (on over off)
 // and the RMS of the encoded difference, and writes the difference three

@@ -68,6 +68,7 @@ import {
   releaseExpired,
   releaseCandidate,
   releaseOffer,
+  RestoreQueue,
   SwapSlot,
   RELEASE_ABANDON_MARGIN,
   abandonDiscretionaryRelease,
@@ -3168,6 +3169,23 @@ describe('what a release puts on the material', () => {
     } finally {
       bindTierAdmission(null);
       warn.mockRestore();
+    }
+  });
+
+  it('stamps a restore entry\'s cooldown on the clock its caller takes entries by', () => {
+    const queue = new RestoreQueue();
+    const entry = onStandin('moon');
+    queue.entries.push(entry);
+    bindTierAdmission(() => 'admit');
+    try {
+      expect(queue.take(undefined, 1_000)?.entry).toBe(entry);
+      expect(queue.ended(entry.up, 'failed', 1_000)).toBe(true);
+      // Eight seconds on the caller's clock, whatever performance.now() reads.
+      expect(queue.entries[0].retryAtMs).toBe(9_000);
+      expect(queue.take(undefined, 8_999)).toBeNull();
+      expect(queue.take(undefined, 9_000)?.entry).toBe(entry);
+    } finally {
+      bindTierAdmission(null);
     }
   });
 

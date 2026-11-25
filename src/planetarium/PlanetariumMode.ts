@@ -5088,6 +5088,7 @@ export class PlanetariumMode {
     fixedBytes: number;
     availableBytes: number;
     releasing: string | null;
+    draining: boolean;
     restoreQueued: number;
     rungs: LadderRungReadout[];
   } {
@@ -5129,6 +5130,9 @@ export class PlanetariumMode {
       fixedBytes: this.memory.fixedBytes,
       availableBytes: this.memory.availableBytes(),
       releasing: this.swaps.inFlight?.key ?? null,
+      // The swap slot still taken by an abandoned container transfer that
+      // cannot be aborted: nothing is releasing, and no swap may start yet.
+      draining: !this.swaps.inFlight && this.swaps.busy(nowMs),
       // Rungs still waiting to fetch back the map a lost context took. Above
       // zero only between a restore and the last re-fetch landing; a figure
       // that stays up is a body left on its stand-in.

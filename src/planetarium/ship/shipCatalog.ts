@@ -52,6 +52,35 @@ export const SHIP_NOTES: Record<ShipId, string> = {
   manta: 'Our own design: a flying wing with a long tail.',
 };
 
+/** What can keep the chosen ship off the screen. */
+export interface ShipPageState {
+  /** A historic mission is flying its probe. */
+  mission: boolean;
+  /** A look (the Retro look) is flying a ship of its own. */
+  lookShip: boolean;
+  /** Show ship is on. */
+  shown: boolean;
+}
+
+/**
+ * The line under the cards: the checked ship's own, unless that ship is not
+ * the one on screen. Then it says why, because a pick that seems to do
+ * nothing reads as broken; the pick is saved either way and appears when the
+ * reason ends. A mission outranks a look, and both outrank a hidden ship,
+ * which is the order they take the screen in.
+ */
+export function shipPageNote(ship: ShipId, state: ShipPageState): string {
+  if (state.mission) return 'This mission flies its own probe. Your ship comes back when it ends.';
+  if (state.lookShip) return 'The look you chose flies its own ship. Yours comes back when you change the look.';
+  if (!state.shown) return 'The ship is hidden. Turn on Show ship to see it.';
+  return SHIP_NOTES[ship];
+}
+
+/** What the ☰ root's Ship row carries beside it. */
+export function shipRowValue(ship: ShipId, shown: boolean): string {
+  return shown ? SHIP_LABELS[ship] : `${SHIP_LABELS[ship]}, hidden`;
+}
+
 export const shipSetting = storedSetting<ShipId>('planetarium-ship', enumCodec(SHIP_IDS));
 
 /** The ship this load flies: the saved one, else Classic. */

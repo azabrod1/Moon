@@ -603,7 +603,7 @@ import {
 import { viewportSize } from '../app/viewportSize';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
 import { createFleet } from './ship/fleet';
-import { SHIP_IDS, SHIP_LABELS, SHIP_NOTES, resolveBootShip, shipSetting, type ShipId } from './ship/shipCatalog';
+import { SHIP_IDS, resolveBootShip, shipPageNote, shipRowValue, shipSetting, type ShipId } from './ship/shipCatalog';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -16492,7 +16492,8 @@ export class PlanetariumMode {
       this.player.group.visible = this.showShip && !this.landedOn;
       setText('settings-ship-label', this.showShip ? 'On' : 'Off');
     }
-    // The Ship page said the mission flies its own probe; no longer.
+    // The menu can be open on the Ship page when a mission is left, and its
+    // note said the mission flies its own probe.
     this.syncShipPage();
     if (restorePreviousState) this.restorePreMissionState();
     else {
@@ -23541,21 +23542,16 @@ export class PlanetariumMode {
   }
 
   /** The Ship page and the root row that opens it, read on every open like the
-   *  other pages. The line under the cards is the checked ship's own, unless
-   *  that ship is not the one on screen: then it says why, because a pick that
-   *  seems to do nothing reads as broken. The pick is saved either way. */
+   *  other pages. What they say is in ship/shipCatalog.ts. */
   private syncShipPage() {
     const ship = this.shipChoice;
     setSegmentValue(document.getElementById('settings-ship-grid'), ship);
-    const note = this.activeHistoricJourney
-      ? 'This mission flies its own probe. Your ship comes back when it ends.'
-      : this.lookShip
-        ? 'The look you chose flies its own ship. Yours comes back when you change the look.'
-        : this.showShip
-          ? SHIP_NOTES[ship]
-          : 'The ship is hidden. Turn on Show ship to see it.';
-    setText('settings-ship-note', note);
-    this.menuPanel.setTierValue('ship', this.showShip ? SHIP_LABELS[ship] : `${SHIP_LABELS[ship]}, hidden`);
+    setText('settings-ship-note', shipPageNote(ship, {
+      mission: this.activeHistoricJourney !== null,
+      lookShip: this.lookShip !== null,
+      shown: this.showShip,
+    }));
+    this.menuPanel.setTierValue('ship', shipRowValue(ship, this.showShip));
   }
 
   /** The rung ladder under "Now rendering": a pip per rung with the one being

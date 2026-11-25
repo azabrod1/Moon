@@ -24,6 +24,8 @@ export function createSoyuz(referenceRadiusAU: number): ShipOverride {
   const radiators = paint(new Raster(256, HULL_WHITE, 42).panels(10, 3, 0.05, 0.22).texture(), { roughness: 0.7 });
   const dark = paint(0x33372f, { roughness: 0.75 });
   const metal = paint(0x70757c, { roughness: 0.5, metalness: 0.5 });
+  // The small hardware: the docking probe, the joints' bands, the aerials.
+  const fittings = paint(0x70757c, { roughness: 0.5, metalness: 0.5, fine: true });
   // Solar cells: deep blue, with the silver lines between the cells and the
   // three hinged panels of each wing.
   const cells = new Raster(256, 0x121d42, 43).panels(4, 12, 0.3, 0.45, [0, 0, 1, 1], 0x7f8794);
@@ -36,24 +38,24 @@ export function createSoyuz(referenceRadiusAU: number): ShipOverride {
     .add(radiators, lathe([[-0.82, RADIUS], [-0.36, RADIUS]]))
     .add(dark, lathe([[-0.36, RADIUS], [-0.355, 0.26], [-0.27, 0.26]]))
     .add(dark, disc(0.42), { at: [STERN, 0, 0] })
-    .add(metal, bell(0.1, 0.12), { at: [STERN + 0.03, 0, 0] })
+    .add(metal, bell(0.1, 0.12, 16), { at: [STERN + 0.03, 0, 0] })
     // Descent module, then the orbital module and its docking ring.
     .add(blanket, lathe([[-0.27, 0.3], [-0.24, 0.337], [-0.12, 0.34], [0.12, 0.3], [0.32, 0.225], [0.42, 0.18]]))
     .add(blanket, lathe([[0.42, 0.17], [0.47, 0.25], [0.56, 0.315], [0.72, 0.342], [0.88, 0.33], [1.02, 0.27], [1.11, 0.19], [1.16, 0.1]]))
     .add(metal, lathe([[1.16, 0.1], [1.22, 0.085], [1.22, 0]]))
-    .add(metal, tube(0.02, 0.03, 0.1, 10), { at: [1.27, 0, 0] })
+    .add(fittings, tube(0.02, 0.03, 0.1, 10), { at: [1.27, 0, 0] })
     // The pale bands where the modules join.
-    .add(metal, tube(0.19, 0.19, 0.03, 32, true), { at: [0.42, 0, 0] })
-    .add(metal, tube(0.305, 0.305, 0.03, 32, true), { at: [-0.27, 0, 0] });
+    .add(fittings, tube(0.19, 0.19, 0.03, 32, true), { at: [0.42, 0, 0] })
+    .add(fittings, tube(0.305, 0.305, 0.03, 32, true), { at: [-0.27, 0, 0] });
 
   // The solar wings and their roots.
   hull.pair(solar, new THREE.BoxGeometry(0.42, 0.014, WING_LENGTH), { at: [-0.6, 0, WING_ROOT + WING_LENGTH / 2] })
-    .pair(metal, new THREE.BoxGeometry(0.05, 0.03, 0.06), { at: [-0.6, 0, RADIUS + 0.015] });
+    .pair(fittings, new THREE.BoxGeometry(0.05, 0.03, 0.06), { at: [-0.6, 0, RADIUS + 0.015] });
 
   // The rendezvous radar's dish on its stalk, and the periscope under the descent module.
-  hull.add(metal, rod([0.9, 0.3, 0], [1.0, 0.48, 0], 0.012))
-    .add(metal, dish(0.075, 0.03), { at: [1.0, 0.5, 0], turn: [0, Math.PI, 0] })
-    .add(metal, rod([0.0, -0.3, 0.05], [0.12, -0.46, 0.05], 0.018));
+  hull.add(fittings, rod([0.9, 0.3, 0], [1.0, 0.48, 0], 0.012))
+    .add(fittings, dish(0.075, 0.03, 14), { at: [1.0, 0.5, 0], turn: [0, Math.PI, 0] })
+    .add(fittings, rod([0.0, -0.3, 0.05], [0.12, -0.46, 0.05], 0.018));
 
   const wingTip = WING_ROOT + WING_LENGTH + 0.005;
   hull.add(NAV_LIGHTS.port(), bulb(), { at: [-0.6, 0, -wingTip] })

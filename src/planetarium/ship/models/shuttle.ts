@@ -62,21 +62,21 @@ export function createShuttle(referenceRadiusAU: number): ShipOverride {
     { span: 1.19, lead: -1.25, chord: 0.3, thick: 0.03, lift: -0.115 },
   ]);
   hull.pair(wingWhite, wingUpper).pair(tiles, wingLower);
-  const [finLeft, finRight] = wing([
+  // The tail is the same shape stood on end, both its skins white.
+  const fin = wing([
     { span: 0.2, lead: -0.95, chord: 0.85, thick: 0.07 },
     { span: 0.98, lead: -1.62, chord: 0.38, thick: 0.035 },
   ]);
-  const upright = { turn: [-Math.PI / 2, 0, 0] } as const;
-  hull.add(wingWhite, finLeft, upright).add(wingWhite, finRight, upright);
+  for (const skin of fin) hull.add(wingWhite, skin, { turn: [-Math.PI / 2, 0, 0] });
 
   // The orbital engines' pods beside the tail, and the body flap under the stern.
   hull.pair(plainWhite, new THREE.SphereGeometry(1, 16, 12), { at: [-1.5, 0.21, 0.19], scale: [0.4, 0.12, 0.115] })
-    .pair(bellMetal, bell(0.05, 0.1), { at: [-1.86, 0.21, 0.19] })
+    .pair(bellMetal, bell(0.05, 0.1, 10), { at: [-1.86, 0.21, 0.19] })
     .add(tiles, new THREE.BoxGeometry(0.26, 0.03, 0.46), { at: [-1.88, -0.195, 0] });
 
   // The three main engines.
   const engines = [[0.115, 0], [-0.07, 0.125], [-0.07, -0.125]] as const;
-  for (const [up, side] of engines) hull.add(bellMetal, bell(0.115, 0.28), { at: [STERN, up, side] });
+  for (const [up, side] of engines) hull.add(bellMetal, bell(0.115, 0.28, 18), { at: [STERN, up, side] });
 
   hull.add(NAV_LIGHTS.port(), bulb(), { at: [-1.48, -0.115, -1.2] })
     .add(NAV_LIGHTS.starboard(), bulb(), { at: [-1.48, -0.115, 1.2] })

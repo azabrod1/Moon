@@ -30,9 +30,16 @@
  *    about 0.65 mirrors that image into the chase camera whenever the ship
  *    flies sunward (tools/ship-gallery.mjs, the back-lit view). "Metal" here
  *    is a colour and a soft sheen.
- *  - Everything is opaque except the flames, which are the default ship's own
- *    additive recipe. Nothing else may blend: Earth's ground marks its sea in
- *    the alpha channel, and a blended mesh drawn over it would disturb that.
+ *  - Everything is opaque except the flames, and the flames add to the colour
+ *    and write no alpha: Earth's ground marks its sea in the alpha channel,
+ *    and anything that wrote there would disturb the mark.
+ *
+ * And one about cost. The app asks what the hull hides (the Sun's disc, a
+ * planet's marker) by casting rays at every mesh of the ship, and a ray tests
+ * every triangle of a mesh whose box it crosses: 37 rays a frame while the Sun
+ * is behind the ship (PlanetariumMode.computeShipSunVisibility). So the parts
+ * too fine to hide anything, lamps and paints marked `fine`, take no part in
+ * those rays, and a ship keeps what is left under a budget (fleet.test.ts).
  *
  * Nothing here needs a document or a canvas, so every ship builds in a test.
  */
@@ -115,16 +122,12 @@ export class HullBuilder {
     return this.place(material, geometry, matrix.clone().premultiply(MIRROR_Z));
   }
 
-  /** Add a part `count` times, evenly turned about the ship's long axis (or
-   *  about `y`, for a disc), the first of them turned by `startTurn` radians. */
-  ring(
-    material: THREE.Material, geometry: THREE.BufferGeometry, count: number,
-    placement: Placement = {}, startTurn = 0, axis: 'x' | 'y' = 'x',
-  ): this {
+  /** Add a part `count` times, evenly turned about the ship's long axis, the
+   *  first of them turned by `startTurn` radians. */
+  ring(material: THREE.Material, geometry: THREE.BufferGeometry, count: number, placement: Placement = {}, startTurn = 0): this {
     const matrix = placementMatrix(placement).clone();
     for (let index = 0; index < count; index++) {
-      const angle = startTurn + (index / count) * Math.PI * 2;
-      const about = axis === 'x' ? new THREE.Matrix4().makeRotationX(angle) : new THREE.Matrix4().makeRotationY(angle);
+      const about = new THREE.Matrix4().makeRotationX(startTurn + (index / count) * Math.PI * 2);
       this.place(material, geometry, matrix.clone().premultiply(about));
     }
     return this;
@@ -143,17 +146,24 @@ export class HullBuilder {
     return this;
   }
 
-  /** The parts as a group, one mesh per material. */
+  /** The parts as a group, one mesh per material. A lamp's mesh, and a
+   *  paint's that is marked `fine`, is left out of every raycast. */
   build(): THREE.Group {
     const group = new THREE.Group();
     for (const [material, geometries] of this.parts) {
       const merged = mergeGeometries(geometries);
       if (!merged) throw new Error('A ship part carries attributes the others do not');
-      group.add(new THREE.Mesh(merged, material));
+      const mesh = new THREE.Mesh(merged, material);
+      if (material.userData.fine) mesh.raycast = ignoreRays;
+      group.add(mesh);
     }
     return group;
   }
 }
+
+/** What a mesh does with a ray when it is too fine, or too much light and too
+ *  little hull, to hide anything: nothing. */
+function ignoreRays(): void {}
 
 /** A ship's root: its parts, at the ship's scale for the app's reference radius. */
 export function shipRoot(referenceRadiusAU: number, ...parts: THREE.Object3D[]): THREE.Group {
@@ -220,9 +230,10 @@ export function rod(from: Triple, to: Triple, radius: number, segments = 8): THR
     .translate(start.x + span.x / 2, start.y + span.y / 2, start.z + span.z / 2);
 }
 
-/** A hoop around the long axis (or around `y`), centred on the origin. */
-export function hoop(radius: number, thickness: number, axis: 'x' | 'y' = 'x', segments = 48): THREE.BufferGeometry {
-  const torus = new THREE.TorusGeometry(radius, thickness, 10, segments);
+/** A hoop around the long axis (or around `y`), centred on the origin:
+ *  `segments` along it, `sides` around its own thickness. */
+export function hoop(radius: number, thickness: number, axis: 'x' | 'y' = 'x', segments = 48, sides = 6): THREE.BufferGeometry {
+  const torus = new THREE.TorusGeometry(radius, thickness, sides, segments);
   return axis === 'x' ? torus.rotateY(Math.PI / 2) : torus.rotateX(Math.PI / 2);
 }
 
@@ -248,7 +259,7 @@ export function dish(radius: number, depth: number, segments = 24): THREE.Buffer
 
 /** A small round lamp, for a `lamp` material. */
 export function bulb(radius = 0.022): THREE.BufferGeometry {
-  return new THREE.SphereGeometry(radius, 8, 6);
+  return new THREE.SphereGeometry(radius, 6, 4);
 }
 
 /** One station of a wing: where it is along the span, where its leading edge
@@ -275,21 +286,24 @@ function aerofoilHalfThickness(fraction: number): number {
  * +Z (starboard) with the chord along X. The leading edge is round and the
  * trailing edge sharp. Returned as its upper and lower skins, so a wing can
  * be white above and tiled below; the end caps come with the upper skin.
+ * The texture's `u` runs from the leading edge to the trailing one and `v`
+ * along the span.
  * Turn it with a placement for a fin (`turn: [-Math.PI / 2, 0, 0]` stands it
  * up) and use `HullBuilder.pair` for the other wing.
  */
 export function wing(sections: readonly WingSection[], samples = 10): [upper: THREE.BufferGeometry, lower: THREE.BufferGeometry] {
   const around = 2 * samples + 1;
+  const spanLength = sections[sections.length - 1].span - sections[0].span;
   const positions: number[] = [];
   const uvs: number[] = [];
-  sections.forEach((section, sectionIndex) => {
+  sections.forEach((section) => {
     for (let step = 0; step < around; step++) {
       // Trailing edge, over the top to the leading edge, back underneath.
       const upper = step <= samples;
       const fraction = (1 - Math.cos((Math.PI * Math.abs(step - samples)) / samples)) / 2;
       const half = aerofoilHalfThickness(fraction) * section.thick;
       positions.push(section.lead - fraction * section.chord, (section.lift ?? 0) + (upper ? half : -half), section.span);
-      uvs.push(fraction, sectionIndex / (sections.length - 1));
+      uvs.push(fraction, (section.span - sections[0].span) / spanLength);
     }
   });
   const skins: [number[], number[]] = [[], []];
@@ -318,7 +332,7 @@ export function wing(sections: readonly WingSection[], samples = 10): [upper: TH
     const base = sectionIndex * around;
     for (let step = 0; step < samples; step++) {
       const quad = [base + step, base + step + 1, base + around - 2 - step, base + around - 1 - step];
-      const order = outward ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
+      const order = outward ? [0, 2, 1, 0, 3, 2] : [0, 1, 2, 0, 2, 3];
       for (const corner of order) caps.push(...positions.slice(quad[corner] * 3, quad[corner] * 3 + 3));
     }
   }
@@ -420,6 +434,9 @@ export interface PaintOptions {
   glowColour?: number;
   /** Where that light shows, where it is not everywhere (a radiator hot at its root). */
   glowMap?: THREE.Texture;
+  /** For parts too fine to hide anything (a truss, an aerial, a trim ring):
+   *  the rays that ask what the hull hides skip them. */
+  fine?: boolean;
 }
 
 /**
@@ -430,7 +447,7 @@ export interface PaintOptions {
 export function paint(look: number | THREE.Texture, options: PaintOptions = {}): THREE.MeshStandardMaterial {
   const map = typeof look === 'number' ? null : look;
   const colour = typeof look === 'number' ? look : 0xffffff;
-  return new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshStandardMaterial({
     color: colour,
     map,
     roughness: options.roughness ?? 0.7,
@@ -439,6 +456,8 @@ export function paint(look: number | THREE.Texture, options: PaintOptions = {}):
     emissiveMap: options.glowMap ?? (options.glowColour === undefined ? map : null),
     emissiveIntensity: options.glow ?? NIGHT_FLOOR,
   });
+  material.userData.fine = options.fine === true;
+  return material;
 }
 
 /** An unlit light: a navigation lamp, a window, an engine's throat. One that
@@ -449,6 +468,7 @@ export function lamp(red: number, green: number, blue: number): THREE.MeshBasicM
   const material = new THREE.MeshBasicMaterial();
   material.color.setRGB(red, green, blue);
   material.toneMapped = false;
+  material.userData.fine = true;
   return material;
 }
 
@@ -500,18 +520,27 @@ export interface Flames {
 }
 
 /**
- * The flames for a set of nozzles: two additive cones each, a core inside a
- * haze, and one mesh of embers, a disc glowing in each throat. This is the
- * default ship's recipe and its ramp (defaultShip.ts, PlayerShip.update): the
+ * The flames for a set of nozzles: two cones of light each, a core inside a
+ * haze, and one mesh of embers, a disc glowing in each throat. The shapes and
+ * the ramp are the default ship's (defaultShip.ts, PlayerShip.update): the
  * geometry is authored at full-burn size over the ramp's greatest scale, and
  * the opacities keep the stacked surfaces under the bloom's threshold until
  * the burn is nearly full. `embers` adds throats that glow without a flame of
  * their own, so a cluster of engines can share one flame.
+ *
+ * A flame adds to the colour exactly as three's additive blending does and
+ * leaves the alpha alone, as the atmosphere's shell does and for its reason
+ * (world/atmosphereShell.ts): three's own additive mode adds the flame's
+ * alpha too, over the mark Earth's sea keeps there. It is light, not hull, so
+ * it takes no part in the hull's raycasts either.
  */
 export function createFlames(nozzles: readonly Nozzle[], tint: FlameTint = FLAMES.torch, embers: readonly Ember[] = []): Flames {
   const flameMaterial = (colour: Triple): THREE.MeshBasicMaterial => {
     const material = new THREE.MeshBasicMaterial({
-      transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneFactor,
+      blendEquationAlpha: THREE.AddEquation, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
     });
     material.color.setRGB(colour[0], colour[1], colour[2]);
     material.toneMapped = false;
@@ -545,6 +574,7 @@ export function createFlames(nozzles: readonly Nozzle[], tint: FlameTint = FLAME
     // After the transparent starfield, so no star sorts over a flame.
     mesh.renderOrder = 1;
     mesh.visible = false;
+    mesh.raycast = ignoreRays;
   }
   return {
     meshes,

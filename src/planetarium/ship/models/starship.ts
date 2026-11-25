@@ -64,8 +64,8 @@ export function createStarship(referenceRadiusAU: number): ShipOverride {
     const outer = inner + Math.PI / 3;
     const innerAt = [Math.cos(inner) * 0.085, Math.sin(inner) * 0.085] as const;
     const outerAt = [Math.cos(outer) * 0.212, Math.sin(outer) * 0.212] as const;
-    hull.add(bellMetal, bell(0.047, 0.15), { at: [ENGINE_BAY, ...innerAt] })
-      .add(bellMetal, bell(0.083, 0.18), { at: [ENGINE_BAY, ...outerAt] });
+    hull.add(bellMetal, bell(0.047, 0.15, 12), { at: [ENGINE_BAY, ...innerAt] })
+      .add(bellMetal, bell(0.083, 0.18, 16), { at: [ENGINE_BAY, ...outerAt] });
     embers.push({ at: [ENGINE_BAY - 0.04, ...innerAt], radius: 0.022 }, { at: [ENGINE_BAY - 0.05, ...outerAt], radius: 0.034 });
   }
 

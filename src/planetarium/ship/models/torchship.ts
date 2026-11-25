@@ -24,10 +24,12 @@ const RING_TURN_RATE = (Math.PI * 2) / 14;
 
 export function createTorchship(referenceRadiusAU: number): ShipOverride {
   const white = paint(new Raster(256, HULL_WHITE, 61).panels(8, 4, 0.06, 0.2).texture(), { roughness: 0.7 });
-  const truss = paint(0x545a63, { roughness: 0.55, metalness: 0.45 });
+  // The truss, the spokes and the struts: too open to hide anything.
+  const truss = paint(0x545a63, { roughness: 0.55, metalness: 0.45, fine: true });
+  const grey = paint(0x545a63, { roughness: 0.55, metalness: 0.45 });
   const dark = paint(0x24272c, { roughness: 0.7, metalness: 0.2 });
-  const foil = paint(0xb8923a, { roughness: 0.56, metalness: 0.55 });
-  const copper = paint(0x8a5a33, { roughness: 0.56, metalness: 0.55 });
+  const foil = paint(0xb8923a, { roughness: 0.64, metalness: 0.5 });
+  const copper = paint(0x8a5a33, { roughness: 0.56, metalness: 0.55, fine: true });
   const windows = lamp(0.9, 0.74, 0.45);
   // Radiators: dark panels, glowing red-orange at the root and cooling to the tip.
   const heat = new Raster(128, 0x000000, 62);
@@ -46,21 +48,21 @@ export function createTorchship(referenceRadiusAU: number): ShipOverride {
     .add(dark, disc(0.34), { at: [1.47, 0, 0] })
     .add(white, tube(0.16, 0.16, 0.35, 24), { at: [1.295, 0, 0] })
     .add(windows, tube(0.163, 0.163, 0.035, 24, true), { at: [1.38, 0, 0] })
-    .add(truss, tube(0.12, 0.12, 0.62, 16), { at: [0.81, 0, 0] })
+    .add(grey, tube(0.12, 0.12, 0.62, 16), { at: [0.81, 0, 0] })
     .add(truss, rod([1.2, 0.15, 0], [1.2, 0.4, 0], 0.014))
-    .add(white, dish(0.17, 0.05), { at: [1.2, 0.42, 0], turn: [0, 0, -Math.PI / 2] })
+    .add(white, dish(0.17, 0.05, 16), { at: [1.2, 0.42, 0], turn: [0, 0, -Math.PI / 2] })
     // The truss: a core, three longerons and a frame every so often.
     .add(truss, tube(0.05, 0.05, SPINE_FROM - SPINE_TO, 12), { at: [(SPINE_FROM + SPINE_TO) / 2, 0, 0] })
     .ring(truss, rod([SPINE_FROM, 0.13, 0], [SPINE_TO, 0.13, 0], 0.012, 6), 3)
     // Stern: the shadow shield, the reactor, and the magnet coils on their struts.
-    .add(truss, tube(0.3, 0.3, 0.03, 32), { at: [-1.83, 0, 0] })
+    .add(grey, tube(0.3, 0.3, 0.03, 32), { at: [-1.83, 0, 0] })
     .add(dark, tube(0.2, 0.17, 0.2, 24), { at: [-1.95, 0, 0] })
     .ring(truss, rod([-2.02, 0.17, 0], [-2.3, 0.36, 0], 0.012, 6), 3, {}, Math.PI / 3);
-  for (let frame = SPINE_FROM - 0.1; frame > SPINE_TO; frame -= 0.35) hull.add(truss, hoop(0.13, 0.012, 'x', 18), { at: [frame, 0, 0] });
-  for (const [at, radius] of [[-2.08, 0.2], [-2.19, 0.28], [-2.3, 0.36]] as const) hull.add(copper, hoop(radius, 0.028, 'x', 32), { at: [at, 0, 0] });
+  for (let frame = SPINE_FROM - 0.1; frame > SPINE_TO; frame -= 0.35) hull.add(truss, hoop(0.13, 0.012, 'x', 14, 4), { at: [frame, 0, 0] });
+  for (const [at, radius] of [[-2.08, 0.2], [-2.19, 0.28], [-2.3, 0.36]] as const) hull.add(copper, hoop(radius, 0.028, 'x', 28), { at: [at, 0, 0] });
 
   // Six tanks in two rows of three, the second row turned to sit between the first.
-  const tank = new THREE.SphereGeometry(0.23, 20, 14);
+  const tank = new THREE.SphereGeometry(0.23, 14, 8);
   hull.ring(foil, tank, 3, { at: [0.1, 0.3, 0] }).ring(foil, tank, 3, { at: [-0.38, 0.3, 0] }, Math.PI / 3);
 
   // Radiators: a wide pair to the sides, a shorter pair above and below.
@@ -75,7 +77,7 @@ export function createTorchship(referenceRadiusAU: number): ShipOverride {
 
   // The ring, a part of its own so it can turn: four spokes and a row of windows facing aft.
   const ring = new HullBuilder()
-    .add(white, hoop(RING_RADIUS, 0.105, 'x', 56))
+    .add(white, hoop(RING_RADIUS, 0.105, 'x', 40, 8))
     .ring(truss, rod([0, 0.12, 0], [0, RING_RADIUS - 0.09, 0], 0.035), 4)
     .ring(windows, new THREE.BoxGeometry(0.02, 0.05, 0.09), 12, { at: [-0.098, RING_RADIUS, 0] }, Math.PI / 12)
     .build();

@@ -30,36 +30,38 @@ export function createApollo(referenceRadiusAU: number): ShipOverride {
   }
   const aluminium = paint(panels.texture(), { roughness: 0.66, metalness: 0.4 });
   const metal = paint(0x60656d, { roughness: 0.5, metalness: 0.5 });
+  // The small hardware: thrusters, the antenna and its boom, the docking probe.
+  const fittings = paint(0x60656d, { roughness: 0.5, metalness: 0.5, fine: true });
   const bellMetal = paint(0x43464d, { roughness: 0.62, metalness: 0.45 });
   const glass = paint(0x0a0f16, { roughness: 0.45, metalness: 0.4, glow: 0.3, glowColour: 0x4a3423 });
 
   const hull = new HullBuilder()
     .add(silver, lathe([[0.53, 0.5], [SHOULDER, RADIUS], [0.63, RADIUS], [1.31, 0.105], [1.42, 0.09], [1.44, 0]]))
-    .add(metal, tube(0.03, 0.045, 0.14, 12), { at: [1.5, 0, 0] })
+    .add(fittings, tube(0.03, 0.045, 0.14, 12), { at: [1.5, 0, 0] })
     .add(aluminium, lathe([[STERN, RADIUS], [SHOULDER, RADIUS]]))
     .add(metal, disc(RADIUS), { at: [STERN, 0, 0] })
     .add(silver, lathe([[-0.98, 0.2], [STERN, 0.44]]))
-    .add(bellMetal, bell(0.36, 0.78, 32), { at: [-0.8, 0, 0] });
+    .add(bellMetal, bell(0.36, 0.78), { at: [-0.8, 0, 0] });
 
-  // Three windows on the cone's upper side.
+  // Three windows on the cone's upper side, each lying on its slope.
   const windowPane = new THREE.BoxGeometry(0.11, 0.012, 0.075);
   for (const around of [-0.55, 0, 0.55]) {
-    hull.ring(glass, windowPane, 1, { at: [0.95, 0.346, 0], turn: [0, 0, CONE_SLOPE] }, around);
+    hull.add(glass, windowPane, { at: [0.95, 0.346 * Math.cos(around), 0.346 * Math.sin(around)], turn: [around, 0, CONE_SLOPE] });
   }
 
   // Four thruster clusters around the cylinder: a block and four small nozzles each.
-  const nozzle = tube(0.028, 0.012, 0.06, 10);
+  const nozzle = tube(0.028, 0.012, 0.06, 8);
   const eighth = Math.PI / 4;
-  hull.ring(metal, new THREE.BoxGeometry(0.09, 0.05, 0.09), 4, { at: [0.25, 0.57, 0] }, eighth)
-    .ring(metal, nozzle, 4, { at: [0.32, 0.585, 0] }, eighth)
-    .ring(metal, nozzle, 4, { at: [0.18, 0.585, 0], turn: [0, Math.PI, 0] }, eighth)
-    .ring(metal, nozzle, 4, { at: [0.25, 0.585, 0.07], turn: [0, -Math.PI / 2, 0] }, eighth)
-    .ring(metal, nozzle, 4, { at: [0.25, 0.585, -0.07], turn: [0, Math.PI / 2, 0] }, eighth);
+  hull.ring(fittings, new THREE.BoxGeometry(0.09, 0.05, 0.09), 4, { at: [0.25, 0.57, 0] }, eighth)
+    .ring(fittings, nozzle, 4, { at: [0.32, 0.585, 0] }, eighth)
+    .ring(fittings, nozzle, 4, { at: [0.18, 0.585, 0], turn: [0, Math.PI, 0] }, eighth)
+    .ring(fittings, nozzle, 4, { at: [0.25, 0.585, 0.07], turn: [0, -Math.PI / 2, 0] }, eighth)
+    .ring(fittings, nozzle, 4, { at: [0.25, 0.585, -0.07], turn: [0, Math.PI / 2, 0] }, eighth);
 
   // The high-gain antenna: four dishes on a boom from the stern's rim.
-  hull.add(metal, rod([STERN, 0.3, 0.42], [-1.0, 0.55, 0.78], 0.015));
+  hull.add(fittings, rod([STERN, 0.3, 0.42], [-1.0, 0.55, 0.78], 0.015));
   for (const [up, side] of [[0.11, 0.11], [0.11, -0.11], [-0.11, 0.11], [-0.11, -0.11]] as const) {
-    hull.add(metal, dish(0.1, 0.035), { at: [-1.0, 0.55 + up, 0.78 + side] });
+    hull.add(fittings, dish(0.1, 0.035, 14), { at: [-1.0, 0.55 + up, 0.78 + side] });
   }
 
   hull.add(NAV_LIGHTS.port(), bulb(), { at: [0.4, 0, -0.565] })

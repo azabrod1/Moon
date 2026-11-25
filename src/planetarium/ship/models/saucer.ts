@@ -9,7 +9,7 @@
  */
 import * as THREE from 'three';
 import type { ShipOverride } from '../../PlayerShip';
-import { HullBuilder, Raster, bulb, hoop, lamp, lathe, paint, shipRoot } from './fleetKit';
+import { HullBuilder, Raster, bulb, hoop, lamp, lathe, paint, shipRoot, type Triple } from './fleetKit';
 
 const RADIUS = 1.6;
 const RIM_HEIGHT = -0.03;
@@ -23,11 +23,15 @@ const DOME_GLOW = 0.1;
 
 export function createSaucer(referenceRadiusAU: number): ShipOverride {
   const skin = paint(new Raster(512, 0x8a9097, 51).panels(24, 6, 0.1, 0.22).texture(), { roughness: 0.68, metalness: 0.45 });
-  const trim = paint(0x3a3f47, { roughness: 0.6, metalness: 0.4 });
+  // The trim rings and the pods beneath are too slight to hide anything.
+  const trim = paint(0x3a3f47, { roughness: 0.64, metalness: 0.4, fine: true });
   const dome = paint(0x0b1a1f, { roughness: 0.5, metalness: 0.4, glow: DOME_GLOW, glowColour: 0x2bd4c8 });
   const drive = lamp(0, 0, 0);
   const rimLamps = Array.from({ length: LAMP_GROUPS }, () => lamp(0, 0, 0));
   const about = { axis: 'y' } as const;
+  /** A point on a circle about the saucer's own axis, `turns` round from dead ahead. */
+  const around = (radius: number, height: number, turns: number): Triple =>
+    [radius * Math.cos(turns * Math.PI * 2), height, radius * Math.sin(turns * Math.PI * 2)];
 
   const hull = new HullBuilder()
     // The upper skin, the lower skin (flat in the middle), and the dome.
@@ -40,12 +44,13 @@ export function createSaucer(referenceRadiusAU: number): ShipOverride {
     .add(trim, hoop(RADIUS, 0.028, 'y', 64), { at: [0, RIM_HEIGHT, 0] })
     // Beneath: the light in the middle inside its collar, and three pods.
     .add(drive, new THREE.CircleGeometry(0.26, 32).rotateX(Math.PI / 2), { at: [0, -0.302, 0] })
-    .add(trim, hoop(0.29, 0.03, 'y'), { at: [0, -0.3, 0] })
-    .ring(trim, new THREE.SphereGeometry(0.15, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), 3, { at: [0.8, -0.2, 0] }, 0, 'y');
+    .add(trim, hoop(0.29, 0.03, 'y'), { at: [0, -0.3, 0] });
+  const pod = new THREE.SphereGeometry(0.15, 14, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+  for (let index = 0; index < 3; index++) hull.add(trim, pod, { at: around(0.8, -0.2, index / 3) });
   const lampCount = LAMP_GROUPS * LAMPS_PER_GROUP;
-  rimLamps.forEach((material, group) => {
-    hull.ring(material, bulb(0.03), LAMPS_PER_GROUP, { at: [RADIUS + 0.012, RIM_HEIGHT, 0] }, (group / lampCount) * Math.PI * 2, 'y');
-  });
+  for (let index = 0; index < lampCount; index++) {
+    hull.add(rimLamps[index % LAMP_GROUPS], bulb(0.03), { at: around(RADIUS + 0.012, RIM_HEIGHT, index / lampCount) });
+  }
 
   const body = hull.build();
   let seconds = 0;
@@ -69,10 +74,11 @@ export function createSaucer(referenceRadiusAU: number): ShipOverride {
       power = on ? 0.35 + 0.65 * throttle : 0;
       show();
     },
+    // Told the throttle every frame, and that is what redraws; its own time
+    // only moves while the clock does.
     tick(dt) {
       seconds += dt;
       lean += (power - lean) * Math.min(1, dt * 2);
-      show();
     },
   };
 }

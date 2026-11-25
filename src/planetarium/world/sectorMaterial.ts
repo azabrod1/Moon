@@ -1,7 +1,9 @@
 /**
  * The material a streamed surface sector draws with. A sector overlays its
  * body's globe (or a coarser sector) with a 2048² tile of a finer source plus
- * crops of the globe's own relief / roughness maps, and it must shade EXACTLY
+ * crops of the globe's own relief / roughness maps (or, on a body whose globe
+ * reads its colour map as its height, with that tile as its height too, and
+ * no crop at all), and it must shade EXACTLY
  * like the surface under it: same lighting terms, same eclipse and
  * planetshine uniforms, same scalar state — or the sector reads as a
  * rectangle on the surface.
@@ -14,7 +16,7 @@
  * mirrored here at creation and again every frame by the streamer
  * (`syncSectorMaterial`), which is what carries the Moon's per-frame eclipse
  * tint onto its sectors. The sector never references a base texture — every
- * map it draws is its own tile or crop — so the base's dispose-on-swap seams
+ * map it draws is its own tile or a crop — so the base's dispose-on-swap seams
  * can never leave it sampling a freed texture.
  */
 import * as THREE from 'three';
@@ -28,7 +30,8 @@ import {
 } from './surfaceShading';
 
 /** The maps a sector owns: its colour tile, and crops of whichever relief /
- *  roughness maps its base material carries. */
+ *  roughness maps its base material carries — or, where the base reads its
+ *  colour map as its height, the colour tile again as `bumpMap`. */
 export interface SectorMaps {
   map: THREE.Texture;
   bumpMap?: THREE.Texture | null;
@@ -162,7 +165,8 @@ export function syncSectorMaterial(mat: THREE.MeshStandardMaterial, base: THREE.
   // and it is eased in wall time — a sector left holding whatever it was born
   // with would fade on its own schedule, which reads as a rectangle appearing.
   // Whether its RELIEF may be drawn is the TILE's own business: the sector
-  // carries crops of whatever relief maps the base had, so it answers for what
-  // is bound on itself.
+  // carries crops of whatever relief maps the base had, or its own colour tile
+  // as its height where the base reads colour as height (Mercury), so it
+  // answers for what is bound on itself.
   setSurfaceSynthesis(mat, surfaceSynthesisEnvelope(base), surfaceReliefKind(mat));
 }

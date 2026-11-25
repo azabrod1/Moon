@@ -3,8 +3,10 @@
  * Moon, Mars, Mercury) without a 16K texture. A body's map is split into 8×4 sectors
  * (sectorGrid); while the player is close, the sectors that face the camera
  * AND are large on screen each stream their own 2048² tile (plus crops of the
- * globe's relief / roughness maps) and draw as a sector mesh overlaid on the
- * globe. Everything else keeps drawing the globe's 4K map: a tile that is
+ * globe's relief / roughness maps, where the globe has them; a body whose
+ * globe reads its colour map as its height, Mercury, has no crop, and each
+ * tile reads its own colour tile as its height) and draw as a sector mesh
+ * overlaid on the globe. Everything else keeps drawing the globe's 4K map: a tile that is
  * still downloading changes nothing on screen, so there is never a hold, a
  * veil, or a half-loaded surface — the base map IS the fallback.
  *
@@ -64,7 +66,8 @@
  * draws only the leaves no finer tile covers. A leaf is left out when a tile
  * over it is DRAWN — attached under the same host mesh, `visible` and
  * `material.visible` true — and shares the covered mesh's program: the same
- * crop signature and SectorFamily.sharesProgram, so a resident still drawing
+ * signature (crop slots and the colour-as-height mark) and
+ * SectorFamily.sharesProgram, so a resident still drawing
  * the set the base had before it gained a map, waiting on its reload, covers
  * nothing. The host takes cover from any drawn descendant, a sector from its
  * own, so a level-2 tile over level 0 with no level 1 between cuts both.
@@ -727,9 +730,11 @@ interface SectorSlot {
   score: number;
   keep: boolean;
   wanted: boolean;
-  /** Crop-slot signature of the set this sector draws (a resident) or last
-   *  drew. A resident whose signature no longer matches the base's reloads
-   *  IN PLACE: the old sector stays on the globe while the new set loads. */
+  /** Signature of the set this sector draws (a resident) or last drew: the
+   *  crop slots the base carried, plus a mark when the base reads its colour
+   *  map as its height (cropSignature). A resident whose signature no longer
+   *  matches the base's reloads IN PLACE: the old sector stays on the globe
+   *  while the new set loads. */
   signature: string;
   /** Bytes the maps this slot draws hold, and the bytes its in-flight load
    *  has RESERVED for the maps it is fetching — both from the layouts, so

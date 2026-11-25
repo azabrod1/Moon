@@ -3292,7 +3292,7 @@ describe('Mercury on the touch row, where its 8K lands as RGBA', () => {
   // pins what the streamer does there; it changes no policy.
   const MiB = 1024 * 1024;
   const TILE = sectorSetGpuBytes(SECTOR_SETS.Mercury);
-  afterEach(() => bindKtx2TierLoader(null));
+  afterEach(() => { bindKtx2TierLoader(null); withMaxTextureSize(4096); });
 
   function mercuryOnTouch(): TestHandle {
     const photo = new THREE.Texture();

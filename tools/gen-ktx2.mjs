@@ -162,10 +162,25 @@ const JOBS = {
   // webp rung again like Venus and Saturn.
   // Mercury's rungs are averaged down from its 64K MESSENGER level in linear
   // light by gen-tiles, which writes them to the cache beside the boot map it
-  // writes to public/; ETC1S like the photo moons, for the same reason: a
-  // grey map's chroma is nothing for UASTC's bits to keep.
+  // writes to public/. The 4K is ETC1S like the photo moons': a grey map's
+  // chroma is nothing for UASTC's bits to keep, and at 4K a cell is too small
+  // on screen to read.
+  //
+  // The 8K is UASTC, because it is the map Mercury's 16K tiles land on, and
+  // in ETC1S it was not the map it was encoded from. A grey ETC1S block is two
+  // endpoints of one shared colour and a 2-bit index a texel, about four
+  // shades to a 4x4 cell, and on cratered ground its error does not average
+  // out: decoded against the picture, the ETC1S 8K was darker in linear light
+  // by 0.65 % over the whole map and by 2.3 to 3.0 % over the cratered
+  // ground at 18 N 99 E — so a tile, which is the picture, landed as a
+  // brighter square there. Up close its cells were also what the planet
+  // looked like, and lit again as its bump map. UASTC at this table's
+  // defaults (gen-tiles.sources.json records the numbers): 34 MB on the wire
+  // against 6.9, and 42.7 MiB held on an ASTC or BC7 GPU against 21.3 on
+  // ETC2 — which is what the ladder already charges an 8K container before
+  // it is fetched. The 8K is fetched only up close, and the worker keeps it.
   mercury4k: { tier: '4k', mode: 'etc1s', source: fromTilesRung('mercury', 'mercury-v2-chain-4k'), out: '4k/mercury.v2.ktx2' },
-  mercury8k: { tier: '8k', mode: 'etc1s', source: fromTilesRung('mercury', 'mercury-v2-chain-8k'), out: '8k/mercury.v2.ktx2' },
+  mercury8k: { tier: '8k', source: fromTilesRung('mercury', 'mercury-v2-chain-8k'), out: '8k/mercury.v2.ktx2' },
   // The three the boot warm uploads, which is why the toured cap does not
   // rule them: the idle after boot fetches these on EVERY session, so a
   // device downloads each one once and the worker serves it thereafter, while

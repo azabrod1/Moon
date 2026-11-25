@@ -231,7 +231,42 @@
     "used_by": [
       "gen-tiles mercury: its 64K level, the 32K and 16K levels averaged down from it, and from the 16K the boot map mercury.v2.webp and the 4K and 8K rungs (zoom/rungs/mercury-v2-chain-{4k,8k}.png, encoded by gen-ktx2 mercury4k and mercury8k)"
     ],
-    "notes": "Re-based 2026-11-25: the rows past 80 N and 81.25 S are read as the edge row and the caps filled once in the 64K from mercury-v2-8k.png (scaled 0.9628 north and 0.9516 south in linear light to the ground beside them). Level gain 1.786675 (gen-moonmaps' curve; solved so the boot map keeps the old one's cos-latitude Rec. 709 mean in linear light, 0.23616115, whose encoded mean is 129.74); the old maps were levelled at 1.849244 on encoded averages. The new boot map measures 0.236194 (+0.014 %), encoded 130.32. Against it in linear light: 4K -0.11 %, 8K -0.08 %, 16K -0.17 %, 64K -0.29 % (lanczos3's clipped undershoot adds light on each average down); the old ladder had the 4K at +4.32 % and the 8K at +5.33 %. Wire: mercury.v2.webp 664,632 bytes (was 651,108), 4k/mercury.v2.ktx2 1,729,826 (was 1,736,194), 8k/mercury.v2.ktx2 6,876,782 (was 6,882,530), ETC1S as before. 16K tiles (q85): 32 tiles, 44.5 MB, every tile within 0.23 % of the 8K rung in linear light."
+    "notes": "Re-based 2026-11-25: the rows past 80 N and 81.25 S are read as the edge row and the caps filled once in the 64K from mercury-v2-8k.png (scaled 0.9628 north and 0.9516 south in linear light to the ground beside them). Level gain 1.786675 (gen-moonmaps' curve; solved so the boot map keeps the old one's cos-latitude Rec. 709 mean in linear light, 0.23616115, whose encoded mean is 129.74); the old maps were levelled at 1.849244 on encoded averages. The new boot map measures 0.236194 (+0.014 %), encoded 130.32. Against it in linear light: 4K -0.11 %, 8K -0.08 %, 16K -0.17 %, 64K -0.29 % (lanczos3's clipped undershoot adds light on each average down); the old ladder had the 4K at +4.32 % and the 8K at +5.33 %. Wire: mercury.v2.webp 664,632 bytes (was 651,108), 4k/mercury.v2.ktx2 1,729,826 (was 1,736,194), 8k/mercury.v2.ktx2 34,224,940 as UASTC (rung8k below). 16K tiles (q85): 32 tiles, 44.5 MB, every tile within 0.23 % of the 8K rung in linear light.",
+    "rung8k": {
+      "file": "8k/mercury.v2.ktx2",
+      "format": "UASTC (tools/gen-ktx2.mjs defaults: level 2, RDO lambda 1, 8K dictionary, zstd 18), container only",
+      "shippedBytes": 34224940,
+      "replaced": "The same name as ETC1S (-q 255 -comp_level 5) of the same picture, 6876782 bytes, never on main.",
+      "linearMeanVsPicture": {
+        "wholeMap": {
+          "etc1s": -0.65,
+          "uastc": -0.23
+        },
+        "frame6": {
+          "etc1s": -0.76,
+          "uastc": -0.37
+        },
+        "frame20": {
+          "etc1s": -2.33,
+          "uastc": -0.86
+        },
+        "frame68": {
+          "etc1s": -3.0,
+          "uastc": -0.99
+        }
+      },
+      "rmsVsPicture": {
+        "wholeMap": {
+          "etc1s": 12.42,
+          "uastc": 1.93
+        },
+        "frame20": {
+          "etc1s": 22.94,
+          "uastc": 3.11
+        }
+      },
+      "measured": "Level 0 unpacked with basisu -unpack (ETC1 for the ETC1S file, BC7 for the UASTC one), the baked vertical flip undone, against zoom/rungs/mercury-v2-chain-8k.png it was encoded from: the mean of the green channel in linear light as a per cent, and the RMS of the 0-255 difference. frame6, frame20 and frame68 are the 400, 120 and 36 px squares round 17.7 N 99.4 E, the ground of the tile checks' close poses. Why UASTC: the tiles are the picture, so a globe darker than the picture is a brighter square at every landing."
+    }
   },
   "mercury-v2-8k.png": {
     "sha256": "0ac3786c7ada1255d74a029abde7bdeb9570deefcd52b52e3a3ba55fd7a4d031",

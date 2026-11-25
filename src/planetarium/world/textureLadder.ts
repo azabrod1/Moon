@@ -407,7 +407,13 @@ export interface CompressedRung {
 }
 export const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, CompressedRung>>> = {
   // Both rungs averaged down from the MESSENGER mosaic's 64K level
-  // (tools/gen-tiles.mjs, encoded by tools/gen-ktx2.mjs), ETC1S
+  // (tools/gen-tiles.mjs, encoded by tools/gen-ktx2.mjs). The 8K is UASTC: it
+  // is the map Mercury's 16K tiles land on, and in ETC1S it was up to 3 %
+  // darker than its own picture over cratered ground, so a tile landed as a
+  // brighter square (gen-ktx2.mjs's job table has the measurement). It costs
+  // 34 MB on the wire once per device and 42.7 MiB held on an ASTC or BC7
+  // GPU, which is what tierUploadBytes charges any 8K container before it is
+  // fetched. The 4K is ETC1S
   // like the photo moons' and container-only like theirs: the SSS 4K webp the
   // 4K rung used to be transcoded from was a different product, and a ladder
   // that changes product at a rung change changes the planet's face.

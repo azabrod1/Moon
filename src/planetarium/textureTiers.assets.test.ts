@@ -111,7 +111,11 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  * each).
  *
  * UASTC for the maps built out of slow gradients — the Moon's maria, the cloud
- * deck's soft edges, Earth's night falloff, and Jupiter's banded clouds.
+ * deck's soft edges, Earth's night falloff, and Jupiter's banded clouds — and
+ * Mercury's 8K, the map its 16K tiles land on: in ETC1S a grey 4x4 cell
+ * holds about four shades, and over cratered ground the map came out up to
+ * 3 % darker than the picture it was encoded from, so every tile landed as a
+ * brighter square (tools/gen-ktx2.mjs's job table has the measurement).
  *
  * ETC1S for the photo moons, every one of which is cratered texture at every
  * scale, the codebook's best case: measured per body on a 4096x2048 candidate
@@ -122,7 +126,7 @@ const SUPERCOMPRESSION_BY_MODEL: Record<number, number> = {
  */
 const CONTAINER_COLOR_MODEL: Record<string, number> = {
   '4k/mercury.v2.ktx2': DF_MODEL_ETC1S,
-  '8k/mercury.v2.ktx2': DF_MODEL_ETC1S,
+  '8k/mercury.v2.ktx2': DF_MODEL_UASTC,
   '4k/moon.ktx2': DF_MODEL_UASTC,
   '8k/moon.ktx2': DF_MODEL_UASTC,
   '4k/earth-clouds.v2.ktx2': DF_MODEL_UASTC,
@@ -194,7 +198,9 @@ describe('the files behind the colour ladder', () => {
     // did while it was the grainy Viking mosaic, and its Tianwen-1 map
     // compresses so well as webp (0.78 MB at 4K) that the container would be
     // seven times it. Mercury's rungs are a photo of cratered ground like a
-    // photo moon's, and its map is grey, so they are ETC1S like theirs. The
+    // photo moon's and ship as containers alone like theirs: the 4K ETC1S, the
+    // 8K UASTC under the 8K rule, because its 16K tiles land on it and must
+    // land on the picture they were cut from. The
     // Moon, the cloud deck and Earth's night lights are the three the boot
     // warm uploads on every session, downloaded once per device rather than
     // once per tour, and admitted on that basis. Jupiter's 8K is the one

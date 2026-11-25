@@ -16,6 +16,7 @@ import { RCAS_DEFAULT_STOPS, rcasStopsForFactor } from './app/fsr1';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
 import type { ShipProfile } from './planetarium/PlayerShip';
+import type { ShipId } from './planetarium/ship/shipCatalog';
 import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
@@ -3573,6 +3574,12 @@ function installDevHooks() {
     // visibility, and a red marker sprite culled by the REAL analytic occlusion.
     planetOccluderDisc: (name: string) => planetariumMode?.devPlanetOccluderDisc(name) ?? null,
     setShipVisible: (visible: boolean) => planetariumMode?.devSetShipVisible(visible),
+    // Fly one of the ☰ Ship page's ships (ship/shipCatalog.ts) without saving
+    // the choice, and pose it for a look: the ship parked at screen centre,
+    // the camera and the Sun at given angles around it (tools/ship-gallery.mjs).
+    setShip: (id: ShipId) => planetariumMode?.devSetShip(id) ?? false,
+    shipStudio: (opts?: Parameters<PlanetariumMode['devShipStudio']>[0]) =>
+      planetariumMode?.devShipStudio(opts) ?? false,
     probeLimbMarker: (screenX: number, screenY: number, depthAU: number) =>
       planetariumMode?.devProbeLimbMarker(screenX, screenY, depthAU) ?? null,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,

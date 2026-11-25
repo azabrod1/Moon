@@ -602,6 +602,8 @@ import {
 } from '../app/fullscreen';
 import { viewportSize } from '../app/viewportSize';
 import { setSegmentOffered, setSegmentValue, wireSegmented } from './ui/SegmentedControl';
+import { createFleet } from './ship/fleet';
+import { SHIP_IDS, SHIP_LABELS, SHIP_NOTES, resolveBootShip, shipSetting, type ShipId } from './ship/shipCatalog';
 
 /** How long a context-restore re-warm may keep the late-link check muted. */
 const REWARM_MUTE_MAX_MS = 15_000;
@@ -1956,6 +1958,12 @@ export class PlanetariumMode {
 
   // Show player ship mesh for size comparison
   private showShip = true;
+  /** The ship the user chose on the ☰ Ship page (ship/shipCatalog.ts), the
+   *  fleet it is built from, and the ship a look flies in place of it (the
+   *  Retro look's), if any. applyShip() puts the right one on screen. */
+  private shipChoice: ShipId = resolveBootShip();
+  private readonly fleet = createFleet(SHIP_REFERENCE_RADIUS_AU);
+  private lookShip: ((referenceRadiusAU: number) => ShipOverride) | null = null;
   // Headless screenshot framing: when set, the per-frame collision resolver is
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
@@ -3048,6 +3056,8 @@ export class PlanetariumMode {
     // group's scale — swapping profiles only swaps children — so it is set
     // once here rather than re-asserted every frame.
     this.player.group.scale.setScalar(0.5);
+    // The saved ship, before the first frame: the default never shows in its place.
+    this.applyShip();
     this.store = new PlanetariumStore();
 
     this.controls = new OrbitControls(camera, renderer.domElement);
@@ -8253,11 +8263,31 @@ export class PlanetariumMode {
 
   /**
    * Fly the ship `build` makes, at the ship's reference radius, in place of
-   * the default one (PlayerShip.setOverride), or the default ship for null.
-   * For a look with its own ship (the Retro look's, src/retro).
+   * the user's own, or the user's ship again for null. For a look with its
+   * own ship (the Retro look's, src/retro).
    */
   setShipOverride(build: ((referenceRadiusAU: number) => ShipOverride) | null): void {
-    this.player.setOverride(build ? build(SHIP_REFERENCE_RADIUS_AU) : null);
+    this.lookShip = build;
+    this.applyShip();
+  }
+
+  /**
+   * Put the right ship on screen: a look's own if it has one, else the ship
+   * the user chose, else the default (PlayerShip.setOverride). A mission's
+   * probe still outranks all three; that is the profile, which this leaves
+   * alone. Both sources hand back the same ship each time, so calling this
+   * again changes nothing.
+   */
+  private applyShip(): void {
+    this.player.setOverride(this.lookShip?.(SHIP_REFERENCE_RADIUS_AU) ?? this.fleet(this.shipChoice));
+  }
+
+  /** The Ship page's pick: saved, and flown from the next frame. */
+  private chooseShip(id: ShipId): void {
+    this.shipChoice = id;
+    shipSetting.write(id);
+    this.applyShip();
+    this.syncShipPage();
   }
 
   /**
@@ -13438,6 +13468,7 @@ export class PlanetariumMode {
       this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
+      this.syncShipPage();
     });
 
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
@@ -13534,8 +13565,8 @@ export class PlanetariumMode {
     // is kept up to date while it is closed — a level from the URL or the DEV
     // bridge is read on the next open.
     this.menuPanel.wire({
-      onShow: () => { this.syncGraphicsPage(); this.syncDisplayPage(); },
-      onPageOpen: () => { this.syncGraphicsPage(); this.syncDisplayPage(); },
+      onShow: () => { this.syncGraphicsPage(); this.syncDisplayPage(); this.syncShipPage(); },
+      onPageOpen: () => { this.syncGraphicsPage(); this.syncDisplayPage(); this.syncShipPage(); },
     });
 
     // Graphics quality and Frame rate: a segment each, on the Graphics page.
@@ -13555,6 +13586,8 @@ export class PlanetariumMode {
       this.nightSides.set(value as NightSides);
       this.syncDisplayPage();
     });
+    // The ship, on the Ship page: a card each, wired as the segments are.
+    wireSegmented(document.getElementById('settings-ship-grid'), (value) => this.chooseShip(value as ShipId));
 
     // Full-screen mobile flight zone
     const flightZone = document.getElementById('touch-flight-zone');
@@ -16459,6 +16492,8 @@ export class PlanetariumMode {
       this.player.group.visible = this.showShip && !this.landedOn;
       setText('settings-ship-label', this.showShip ? 'On' : 'Off');
     }
+    // The Ship page said the mission flies its own probe; no longer.
+    this.syncShipPage();
     if (restorePreviousState) this.restorePreMissionState();
     else {
       this.preMissionState = null;
@@ -18118,6 +18153,62 @@ export class PlanetariumMode {
     this.player.posX = -sunScene.x;
     this.player.posY = -sunScene.y;
     this.player.posZ = -sunScene.z;
+    this.noteSunViewDiscontinuity();
+    return true;
+  }
+
+  /** DEV: fly a ship without saving the choice, as a test tool needs. */
+  devSetShip(id: ShipId): boolean {
+    if (!SHIP_IDS.includes(id)) return false;
+    this.shipChoice = id;
+    this.applyShip();
+    this.syncShipPage();
+    return true;
+  }
+
+  /**
+   * Headless-QA pose for looking at a ship (tools/ship-gallery.mjs): the ship
+   * parked at screen centre, the camera on a sphere around it and the Sun in a
+   * chosen direction from it. Both directions are in the ship's own frame:
+   * azimuth 0 is dead astern and turns toward port, elevation is up.
+   * `distance` is in chase distances, so 1 is the everyday trail.
+   */
+  devShipStudio(opts: {
+    azimuthDeg?: number; elevationDeg?: number; distance?: number;
+    sunAzimuthDeg?: number; sunElevationDeg?: number; sunDistanceAU?: number;
+  } = {}): boolean {
+    if (!this.solarSystem) return false;
+    this.devShipProfileOverride = 'default';
+    this.player.setProfile('default');
+    this.showShip = true;
+    this.player.group.visible = true;
+    this.player.moving = false;
+    this.enterDevPose();
+    const aim = flightAnglesFromSceneDirection(1, 0, 0);
+    this.player.heading = aim.headingRad;
+    this.player.pitch = aim.pitchRad;
+    this.player.syncModelOrientation();
+
+    const pose = this.player.group.quaternion;
+    const fromShip = (azimuthDeg: number, elevationDeg: number): THREE.Vector3 => {
+      const azimuth = azimuthDeg * DEG2RAD;
+      const elevation = elevationDeg * DEG2RAD;
+      return new THREE.Vector3(
+        -Math.cos(azimuth) * Math.cos(elevation), Math.sin(elevation), -Math.sin(azimuth) * Math.cos(elevation),
+      ).applyQuaternion(pose);
+    };
+    const cam = this.camera as THREE.PerspectiveCamera;
+    this.setDisplayFov(60);
+    this.setCameraFrameUp(FLIGHT_UP_SCENE);
+    cam.position.copy(fromShip(opts.azimuthDeg ?? 0, opts.elevationDeg ?? 18))
+      .multiplyScalar(CRUISE_CAM_DIST_AU * (opts.distance ?? 1));
+    this.controls.target.set(0, 0, 0);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld(true);
+    // Floating origin maps the heliocentric Sun (0,0,0) to -player.
+    const sun = fromShip(opts.sunAzimuthDeg ?? 20, opts.sunElevationDeg ?? 35)
+      .multiplyScalar(Math.max(opts.sunDistanceAU ?? 1, SUN_DATA.radiusAU * 2));
+    this.player.setPosition(-sun.x, -sun.y, -sun.z);
     this.noteSunViewDiscontinuity();
     return true;
   }
@@ -23447,6 +23538,24 @@ export class PlanetariumMode {
     setSegmentValue(seg, mode);
     setText('settings-night-sides-note', NIGHT_SIDES_NOTES[mode]);
     this.menuPanel.setTierValue('display', nightSidesSummary(mode));
+  }
+
+  /** The Ship page and the root row that opens it, read on every open like the
+   *  other pages. The line under the cards is the checked ship's own, unless
+   *  that ship is not the one on screen: then it says why, because a pick that
+   *  seems to do nothing reads as broken. The pick is saved either way. */
+  private syncShipPage() {
+    const ship = this.shipChoice;
+    setSegmentValue(document.getElementById('settings-ship-grid'), ship);
+    const note = this.activeHistoricJourney
+      ? 'This mission flies its own probe. Your ship comes back when it ends.'
+      : this.lookShip
+        ? 'The look you chose flies its own ship. Yours comes back when you change the look.'
+        : this.showShip
+          ? SHIP_NOTES[ship]
+          : 'The ship is hidden. Turn on Show ship to see it.';
+    setText('settings-ship-note', note);
+    this.menuPanel.setTierValue('ship', this.showShip ? SHIP_LABELS[ship] : `${SHIP_LABELS[ship]}, hidden`);
   }
 
   /** The rung ladder under "Now rendering": a pip per rung with the one being

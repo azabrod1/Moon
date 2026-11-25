@@ -25,15 +25,22 @@ import { createJunoModel } from './ship/models/juno';
 // Default cruise speed: 1c
 const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 
+/** Whether the system asks for less motion: a ship's own animation then holds still. */
+const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+
 export type ShipProfile = 'default' | 'voyager' | 'cassini' | 'newHorizons' | 'juno';
 
-/** A ship a look flies in place of the default one (the Retro look's,
- *  src/retro/ship.ts): built in the default ship's frame and units, with its
- *  own exhaust, told each frame whether it burns and at what throttle (0..1).
- *  The mission profiles' probes are not replaced. */
+/** A ship flown in place of the default one: the one the user chose
+ *  (ship/fleet.ts) or a look's own (the Retro look's, src/retro/ship.ts).
+ *  Built in the default ship's frame and units, with its own exhaust, told
+ *  each frame whether it burns and at what throttle (0..1). The mission
+ *  profiles' probes are not replaced. */
 export interface ShipOverride {
   model: THREE.Group;
   exhaust(on: boolean, throttle: number): void;
+  /** Its own slow motion (a turning ring, a travelling light), advanced by
+   *  the frame's seconds while the ship is not held by a paused clock. */
+  tick?(dt: number): void;
 }
 
 export class PlayerShip {
@@ -234,7 +241,12 @@ export class PlayerShip {
     const exhaustOn = this.moving && effectiveMultiplier > 0.01;
 
     const showExhaust = this.profile === 'default' && exhaustOn;
-    if (this.override) this.override.exhaust(showExhaust, Math.min(Math.max(speedFrac, 0), 1));
+    if (this.override) {
+      this.override.exhaust(showExhaust, Math.min(Math.max(speedFrac, 0), 1));
+      // Its own motion stops with the clock, as the ship does, and is not run
+      // for a ship a mission's probe has taken the place of.
+      if (this.profile === 'default' && !this.held && !reducedMotion?.matches) this.override.tick?.(dt);
+    }
     this.exhaustCone.visible = showExhaust && !this.override;
     this.exhaustCore.visible = showExhaust && !this.override;
 
@@ -368,7 +380,8 @@ export class PlayerShip {
   }
 
   /** Fly `override` in place of the default ship, or the default ship again
-   *  for null. The profile stays as it is. */
+   *  for null. The profile stays as it is, so a mission's probe stays on
+   *  screen and the new ship shows when the mission ends. */
   setOverride(override: ShipOverride | null) {
     if (override === this.override) return;
     if (this.override) {

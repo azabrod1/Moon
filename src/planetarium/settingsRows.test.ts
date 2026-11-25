@@ -6,6 +6,7 @@ import segmented from './ui/SegmentedControl.ts?raw';
 import { QUALITY_LEVELS } from '../app/renderQuality';
 import { FRAME_RATES } from '../app/frameRateSetting';
 import { NIGHT_SIDES, nightSidesSummary, DEFAULT_NIGHT_SIDES } from '../app/nightSidesSetting';
+import { DEFAULT_SHIP, SHIP_IDS, SHIP_LABELS } from './ship/shipCatalog';
 
 // The ☰ panel is vanilla HTML and the TypeScript reaches it by id, so nothing
 // but a running app connects the two: a row renamed in the HTML leaves a
@@ -43,6 +44,10 @@ const graphicsPage = panelMarkup.slice(
 );
 const displayPage = panelMarkup.slice(
   panelMarkup.indexOf('data-page="display"'),
+  panelMarkup.indexOf('data-page="ship"'),
+);
+const shipPage = panelMarkup.slice(
+  panelMarkup.indexOf('data-page="ship"'),
   panelMarkup.indexOf('data-page="credits"'),
 );
 const creditsPage = panelMarkup.slice(panelMarkup.indexOf('data-page="credits"'));
@@ -105,9 +110,10 @@ describe('the Graphics page', () => {
   });
 
   it('holds every control in the panel as a radiogroup of checkable radios', () => {
-    // Quality and Frame rate here, Night sides on the Display page.
+    // Quality and Frame rate here, Night sides on the Display page, the
+    // ships on the Ship page.
     const groups = [...panelMarkup.matchAll(/role="radiogroup"[\s\S]*?<\/div>/g)].map((m) => m[0]);
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(4);
     for (const group of groups) {
       const radios = [...group.matchAll(/role="radio"/g)];
       expect(radios.length).toBeGreaterThanOrEqual(2);
@@ -181,6 +187,59 @@ describe('the Display page', () => {
     const value = row.match(/<span class="menu-tier-value">([^<]*)<\/span>/)?.[1];
     expect(value).toBe(nightSidesSummary(DEFAULT_NIGHT_SIDES));
     expect(mode).toContain("setTierValue('display', nightSidesSummary(mode))");
+  });
+});
+
+describe('the Ship page', () => {
+  /** Each card: the value it stands for, whether the markup checks it, and its text. */
+  const cards = [...shipPage.matchAll(
+    /<button type="button" class="ship-card" role="radio" aria-checked="(true|false)" data-value="([a-z]+)">([\s\S]*?)<\/button>/g,
+  )].map((match) => ({
+    checked: match[1] === 'true',
+    value: match[2],
+    label: match[3].match(/<span>([^<]*)<\/span>/)?.[1],
+    markup: match[3],
+  }));
+
+  it('lives inside the panel, behind a tier row straight above Show ship', () => {
+    expect(panelMarkup).toContain('class="menu-page" data-page="ship" hidden');
+    expect(shipPage).toContain('class="menu-back"');
+    expect(shipPage).toContain('<h3>Ship</h3>');
+    const row = rootPage.indexOf('data-open="ship"');
+    const showShip = rootPage.indexOf('id="settings-ship-toggle"');
+    expect(row).toBeGreaterThan(rootPage.indexOf('data-open="display"'));
+    expect(showShip).toBeGreaterThan(row);
+    // Nothing between the two but the end of the tier row and the start of Show ship's own.
+    const between = rootPage.slice(row, showShip);
+    expect(between).not.toMatch(/menu-divider|menu-action/);
+    expect([...between.matchAll(/class="settings-row"/g)]).toHaveLength(1);
+  });
+
+  it('gives every ship in the catalog a card, in the catalog\'s order and with its label', () => {
+    expect(cards.map((card) => card.value)).toEqual([...SHIP_IDS]);
+    for (const card of cards) expect(card.label, card.value).toBe(SHIP_LABELS[card.value as keyof typeof SHIP_LABELS]);
+  });
+
+  it('checks the default ship in the markup, and names it on the root row', () => {
+    expect(cards.filter((card) => card.checked).map((card) => card.value)).toEqual([DEFAULT_SHIP]);
+    const row = rootPage.slice(rootPage.indexOf('data-open="ship"'));
+    expect(row.match(/<span class="menu-tier-value">([^<]*)<\/span>/)?.[1]).toBe(SHIP_LABELS[DEFAULT_SHIP]);
+  });
+
+  it('draws each card as an outline over its name, with no element the group\'s wiring would trip on', () => {
+    for (const card of cards) {
+      expect(card.markup, card.value).toMatch(/<svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true">(<path d="[^"]+"><\/path>)+<\/svg>/);
+      // The radiogroup audit above reads a group up to its first </div>.
+      expect(card.markup, card.value).not.toContain('<div');
+    }
+  });
+
+  it('declares the two ids the TypeScript reads, and describes the group by its note', () => {
+    const pageIds = [...idsIn(shipPage, /id="([a-z0-9-]+)"/g)];
+    expect(pageIds.sort()).toEqual(['settings-ship-grid', 'settings-ship-note']);
+    for (const id of pageIds) expect(pageRead.has(id), id).toBe(true);
+    expect(shipPage).toContain('role="radiogroup" aria-label="Ship"');
+    expect(shipPage).toContain('aria-describedby="settings-ship-note"');
   });
 });
 

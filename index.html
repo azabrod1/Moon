@@ -950,6 +950,48 @@
     .menu-seg-btn:hover { color: var(--t1); }
     .menu-seg-btn.on { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
     .menu-seg-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+    /* The Ship page: a card for each ship (ship/shipCatalog.ts), four to a
+       row, its outline over its name. A row that wraps and centres rather than
+       a grid, so a fleet of any size fills its last row from the middle. The
+       checked card wears the segment's own tint. */
+    .ship-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+    .ship-card {
+      flex: 0 0 calc((100% - 18px) / 4);
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      padding: 8px 2px 7px;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--t2);
+      font-family: var(--font-ui);
+      font-size: 10.5px;
+      font-weight: 500;
+      letter-spacing: 0.1px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.16s var(--ease), color 0.16s var(--ease), border-color 0.16s var(--ease);
+    }
+    .ship-card:hover { color: var(--t1); }
+    .ship-card.on {
+      background: rgba(var(--accent-rgb), 0.16);
+      border-color: rgba(var(--accent-rgb), 0.45);
+      color: var(--t1);
+    }
+    .ship-card:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+    /* A ship's outline, in the line the action buttons' glyphs are drawn in. */
+    .ship-icon {
+      width: 44px;
+      height: 26px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
     /* What Dynamic is drawing right now: the word, and a pip per rung with the
        one in use lit. The captions sit in a grid of the same cells as the pips,
        so each one lands under the rung it names. */
@@ -4999,6 +5041,12 @@
             </button>
           </div>
           <div class="menu-divider"></div>
+          <!-- Which ship, straight above whether it shows. -->
+          <button type="button" class="pk-row menu-tier" data-open="ship">
+            <b>Ship</b>
+            <span class="menu-tier-value">Classic</span>
+            <span class="menu-tier-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
           <div class="settings-row">
             <span class="settings-label">Show ship</span>
             <button class="settings-toggle" id="settings-ship-toggle">
@@ -5118,6 +5166,55 @@
               <button type="button" class="menu-seg-btn" role="radio" aria-checked="false" data-value="brightened" id="settings-night-sides-brightened">Lit up</button>
             </div>
             <div class="menu-note" id="settings-night-sides-note"></div>
+          </div>
+        </div>
+        <!-- Ship: which ship the user flies. A card for each ship in
+             ship/shipCatalog.ts, in its order, wired as the segments are
+             (ui/SegmentedControl.ts); settingsRows.test.ts holds the cards to
+             the catalog. Each outline points the way the ship flies, to the
+             right, on a 40 by 24 grid. -->
+        <div class="menu-page" data-page="ship" hidden>
+          <div class="menu-head">
+            <button type="button" class="menu-back" aria-label="Back"><span aria-hidden="true">&lsaquo;</span></button>
+            <h3>Ship</h3>
+          </div>
+          <div class="menu-field">
+            <div class="ship-grid" role="radiogroup" aria-label="Ship"
+                 aria-describedby="settings-ship-note" id="settings-ship-grid">
+              <button type="button" class="ship-card" role="radio" aria-checked="true" data-value="classic">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M10 9H24C28 9 31 10.5 34 12C31 13.5 28 15 24 15H10Z"></path><path d="M14 9L8.5 5.5V9M14 15L8.5 18.5V15"></path><path d="M10 10.5L6.5 9.5V14.5L10 13.5"></path><path d="M21 9V15"></path></svg>
+                <span>Classic</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="starship">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M6 9.5H26C30 9.5 33 10.8 35 12C33 13.2 30 14.5 26 14.5H6Z"></path><path d="M7 9.5L8.5 5H13L15 9.5M7 14.5L8.5 19H13L15 14.5"></path><path d="M25 9.6L26 7H28.5L30 10.2M25 14.4L26 17H28.5L30 13.8"></path></svg>
+                <span>Starship</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="shuttle">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M5 10H27C31 10 33.5 11 35 12C33.5 13 31 14 27 14H5Z"></path><path d="M24 10L15 8.5L9 3H6L7 10M24 14L15 15.5L9 21H6L7 14"></path><path d="M5 12H11"></path></svg>
+                <span>Shuttle</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="apollo">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M12 7H23V17H12Z"></path><path d="M23 7L32 11V13L23 17"></path><path d="M12 10.5L6 8V16L12 13.5"></path><path d="M32 12H34.5"></path></svg>
+                <span>Apollo</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="soyuz">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M31.6 12A3.6 3.6 0 1 1 24.4 12A3.6 3.6 0 1 1 31.6 12Z"></path><path d="M24.5 10L19.5 9.2V14.8L24.5 14"></path><path d="M19.5 9.6H13.5L11.5 8.5V15.5L13.5 14.4H19.5"></path><path d="M14.5 9.4V2.5H18.5V9.4M14.5 14.6V21.5H18.5V14.6"></path><path d="M14.5 5.8H18.5M14.5 18.2H18.5"></path></svg>
+                <span>Soyuz</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="saucer">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M4 13.5C4 11.5 12 10 20 10C28 10 36 11.5 36 13.5C36 15.5 28 17 20 17C12 17 4 15.5 4 13.5Z"></path><path d="M14 10.4C14 6.3 26 6.3 26 10.4"></path><path d="M11 13.8h.01M20 14.6h.01M29 13.8h.01"></path></svg>
+                <span>Saucer</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="torchship">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M27 4.5C28.8 4.5 28.8 19.5 27 19.5C25.2 19.5 25.2 4.5 27 4.5Z"></path><path d="M33 12H9"></path><path d="M33 9.5C34.6 10.6 34.6 13.4 33 14.5"></path><path d="M23 12A2.2 2.2 0 1 1 18.6 12A2.2 2.2 0 1 1 23 12Z"></path><path d="M17 12L14.5 5H10.5L11.5 12L10.5 19H14.5Z"></path><path d="M8 9V15M5.5 8V16"></path></svg>
+                <span>Torchship</span>
+              </button>
+              <button type="button" class="ship-card" role="radio" aria-checked="false" data-value="manta">
+                <svg class="ship-icon" viewBox="0 0 40 24" aria-hidden="true"><path d="M34 12C29 8.5 20 5.5 10 2.5C13 6.5 15.5 9.5 17 12C15.5 14.5 13 17.5 10 21.5C20 18.5 29 15.5 34 12Z"></path><path d="M17 12H5"></path></svg>
+                <span>Manta</span>
+              </button>
+            </div>
+            <div class="menu-note" id="settings-ship-note"></div>
           </div>
         </div>
         <!-- Who the maps, data and code came from. Static text: nothing in the

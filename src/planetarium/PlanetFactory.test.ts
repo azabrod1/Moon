@@ -20,6 +20,10 @@ import {
   synthCraterShare,
   upgradeGeometryOnApproach,
   wearsGroundField,
+  smoothsMagnifiedMap,
+  parseMapSmoothMode,
+  planetArchetype,
+  moonArchetype,
   wantsGeometryPrebuild,
   wireEarthLateDetail,
   EARTH_CLOUD_SHELL_SCALE,
@@ -111,12 +115,16 @@ import {
   NIGHT_LIFT_STRENGTH,
   nightLiftUniform,
   seaWindOn,
+  setSurfaceMapSmooth,
   surfaceGroundField,
+  surfaceMapSmooth,
+  surfaceMapSmoothRule,
   surfaceShadingArgsOf,
   type SurfaceArchetype,
 } from './world/surfaceShading';
 import { surfaceDetailTexture, surfaceGroundTexture } from './world/surfaceDetailNoise';
-import { PLANETS } from './planets/planetData';
+import { PLANETS, PLUTO } from './planets/planetData';
+import { MOONS } from './planets/moonData';
 import { seaWindTexture } from './world/seaWind';
 import {
   createEarthNightSectorMaterial,
@@ -4378,6 +4386,199 @@ describe('which bodies wear the ground field', () => {
     const mat = moon.mesh.material as THREE.Material;
     expect(surfaceGroundField(mat)).toBe(false);
     expect(surfaceShadingArgsOf(mat)?.uSynthDetail.value).toBe(surfaceDetailTexture());
+  });
+});
+
+describe('which bodies smooth their magnified colour map', () => {
+  /** Every body the catalog draws, with the class and the colour map the
+   *  factory asks with. */
+  const bodies = (): [string, string | undefined, SurfaceArchetype][] => [
+    ...[...PLANETS, PLUTO].map((p): [string, string | undefined, SurfaceArchetype] => [p.name, p.textureKey, planetArchetype(p)]),
+    ...MOONS.map((m): [string, string | undefined, SurfaceArchetype] => [m.name, m.textureKey, moonArchetype(m)]),
+  ];
+  const smoothing = (mode: Parameters<typeof smoothsMagnifiedMap>[3]) =>
+    bodies().filter(([name, key, archetype]) => smoothsMagnifiedMap(name, key, archetype, mode)).map(([name]) => name);
+
+  it('is every photographed ground, and nothing painted, gaseous or Earth\'s', () => {
+    const on = smoothing('shipped');
+    expect([...on].sort()).toEqual([
+      'Ariel', 'Callisto', 'Charon', 'Dione', 'Enceladus', 'Europa', 'Ganymede', 'Iapetus', 'Io',
+      'Mars', 'Mercury', 'Mimas', 'Miranda', 'Moon', 'Pluto', 'Rhea', 'Tethys', 'Titan', 'Triton',
+    ]);
+    for (const off of ['Earth', 'Venus', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Phobos', 'Deimos']) {
+      expect(on).not.toContain(off);
+    }
+  });
+
+  it('is none under ?mapsmooth=0, and the named bodies alone under DEV ?mapsmooth=<names>', () => {
+    expect(parseMapSmoothMode('', true)).toBe('shipped');
+    expect(parseMapSmoothMode('?mapsmooth=1', true)).toBe('shipped');
+    expect(parseMapSmoothMode('?mapsmooth=0', false)).toBe('off');
+    expect(parseMapSmoothMode('?mapsmooth=0', true)).toBe('off');
+    // A production build has no names reading: anything but 0 is the rule.
+    expect(parseMapSmoothMode('?mapsmooth=Mercury', false)).toBe('shipped');
+    const named = parseMapSmoothMode('?mapsmooth=Mercury, pluto,,Phobos', true);
+    expect(named).toEqual(new Set(['mercury', 'pluto', 'phobos']));
+    expect(smoothing('off')).toEqual([]);
+    // The names limit the rule; they do not widen it to a painted moon.
+    expect(smoothing(named)).toEqual(['Mercury', 'Pluto']);
+  });
+
+  it('reaches the moons the factory builds, as a rule that waits for the photograph', () => {
+    const ruled = (planet: string) => createMoonMeshes(planet)
+      .filter((m) => surfaceMapSmoothRule(m.mesh.material as THREE.Material))
+      .map((m) => m.data.name);
+    expect(ruled('Earth')).toEqual(['Moon']);
+    expect(ruled('Mars')).toEqual([]);
+    expect([...ruled('Jupiter')].sort()).toEqual(['Callisto', 'Europa', 'Ganymede', 'Io']);
+    // A moon is built on a flat placeholder: the rule is up, the filter is not.
+    for (const m of createMoonMeshes('Jupiter')) expect(surfaceMapSmooth(m.mesh.material as THREE.Material)).toBe(false);
+  });
+
+  it('turns on with the moon\'s photograph, which lands periodic in longitude', () => {
+    loaderState.loads.length = 0;
+    const [moon] = createMoonMeshes('Earth');
+    const mat = moon.mesh.material as THREE.MeshStandardMaterial;
+    const load = loaderState.loads.find((l) => /textures\/moon\.webp$/.test(l.url));
+    expect(load).toBeDefined();
+    expect(surfaceMapSmooth(mat)).toBe(false);
+    const photo = fakeTexture('moon photo');
+    load!.onLoad(photo);
+    expect(mat.map).toBe(photo);
+    expect(surfaceMapSmooth(mat)).toBe(true);
+    expect(photo.wrapS).toBe(THREE.RepeatWrapping);
+    expect(photo.wrapT).toBe(THREE.ClampToEdgeWrapping);
+  });
+
+  it('smooths only while a photograph is the bound map', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(mat, 'airless', undefined, 0, undefined, undefined, 'Mercury');
+    setSurfaceMapSmooth(mat, true);
+    // The stand-in a failed fetch leaves, through the same swap a real map takes.
+    expect(applyColorTierTexture(mat, fallbackTexture(), 1)).toBe(true);
+    expect(surfaceMapSmooth(mat)).toBe(false);
+    expect(applyColorTierTexture(mat, fakeTexture('real'), 2)).toBe(true);
+    expect(surfaceMapSmooth(mat)).toBe(true);
+    // A body off the rule never smooths, photograph or not.
+    const plain = new THREE.MeshStandardMaterial();
+    augmentSurfaceMaterial(plain, 'airless', undefined, 0, undefined, undefined, 'Mercury');
+    applyColorTierTexture(plain, fakeTexture('real'), 2);
+    expect(surfaceMapSmooth(plain)).toBe(false);
+    mat.dispose();
+    plain.dispose();
+  });
+});
+
+describe('a smoothed globe\'s colour map wraps in longitude from its first upload', () => {
+  type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
+  let pending: Pending[] = [];
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  /** A Moon ladder over an augmented material carrying `rule`. */
+  function moonHandle(rule: boolean): StandardUpgrade {
+    const up = climbedToFourK('moon');
+    augmentSurfaceMaterial(up.material, 'airless', undefined, 0, undefined, undefined, 'Moon');
+    setSurfaceMapSmooth(up.material, rule);
+    up.material.userData.photoLoaded = true;
+    return up;
+  }
+
+  /** The wrap each texture had when the warm queue was handed it: three applies
+   *  the wrap with the upload, so that is the moment it has to be right. */
+  function recordWrapAtUpload(): Array<[number, number]> {
+    const seen: Array<[number, number]> = [];
+    bindTextureWarmer((t) => { seen.push([t.wrapS, t.wrapT]); });
+    return seen;
+  }
+
+  it('on every rung the climb fetches, and only for a body under the rule', async () => {
+    for (const rule of [true, false]) {
+      const seen = recordWrapAtUpload();
+      const up = moonHandle(rule);
+      upgradeTextureOnApproach(up, '8k', 1_000);
+      expect(pending).toHaveLength(1);
+      const tex = mapTexture(8192);
+      pending.pop()!.onLoad(tex);
+      await settleRungUpload();
+      expect(up.material.map).toBe(tex);
+      expect(seen).toEqual([[rule ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping, THREE.ClampToEdgeWrapping]]);
+      expect(surfaceMapSmooth(up.material)).toBe(rule);
+    }
+  });
+
+  it('on the map a release swaps in below', async () => {
+    const seen = recordWrapAtUpload();
+    const up = moonHandle(true);
+    up.appliedTier = '8k';
+    up.material.userData.colorTierRank = TIER_RANK['8k'];
+    expect(startTierRelease(up, 1_000)).toBe(true);
+    const low = mapTexture(4096);
+    pending.pop()!.onLoad(low);
+    await settleRungUpload();
+    expect(up.material.map).toBe(low);
+    expect(seen).toEqual([[THREE.RepeatWrapping, THREE.ClampToEdgeWrapping]]);
+    expect(surfaceMapSmooth(up.material)).toBe(true);
+  });
+
+  it('on the colour-as-bump alias, which is the same texture', async () => {
+    recordWrapAtUpload();
+    const up = moonHandle(true);
+    up.material.bumpMap = up.material.map;
+    upgradeTextureOnApproach(up, '8k', 1_000);
+    const tex = mapTexture(8192);
+    pending.pop()!.onLoad(tex);
+    await settleRungUpload();
+    expect(up.material.bumpMap).toBe(tex);
+    expect(up.material.bumpMap!.wrapS).toBe(THREE.RepeatWrapping);
+  });
+
+  it('on a planet\'s boot map, whether it arrives in time or late, and never on its stand-in', async () => {
+    vi.useFakeTimers();
+    try {
+      loaderState.loads.length = 0;
+      const inTime = loadTexture('mercury', '2k', 'color', { makeFallback: fallbackTexture, periodicLongitude: true });
+      const real = fakeTexture('real');
+      loaderState.loads[0].onLoad(real);
+      await expect(inTime).resolves.toBe(real);
+      expect([real.wrapS, real.wrapT]).toEqual([THREE.RepeatWrapping, THREE.ClampToEdgeWrapping]);
+
+      loaderState.loads.length = 0;
+      const late = createLateTextureSlot();
+      const delivered: THREE.Texture[] = [];
+      late.connect((t) => delivered.push(t));
+      const slow = loadTexture('mercury', '2k', 'color', { makeFallback: fallbackTexture, periodicLongitude: true, late });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const stand = await slow;
+      expect(stand.userData.proceduralFallback).toBe(true);
+      expect(stand.wrapS).toBe(THREE.ClampToEdgeWrapping);
+      const arrived = fakeTexture('late');
+      loaderState.loads[0].onLoad(arrived);
+      expect(delivered).toEqual([arrived]);
+      expect(arrived.wrapS).toBe(THREE.RepeatWrapping);
+
+      // Without the option — Compare's and Look inside's loads — nothing changes.
+      loaderState.loads.length = 0;
+      const plain = loadTexture('mercury', '2k', 'color', { makeFallback: fallbackTexture });
+      const plainTex = fakeTexture('plain');
+      loaderState.loads[0].onLoad(plainTex);
+      await expect(plain).resolves.toBe(plainTex);
+      expect([plainTex.wrapS, plainTex.wrapT]).toEqual([THREE.ClampToEdgeWrapping, THREE.ClampToEdgeWrapping]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

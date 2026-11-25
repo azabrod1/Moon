@@ -5,7 +5,9 @@
  * One quantity, two instruments, and they answer different questions:
  *
  *   - In the shader, per fragment: `fwidth(uv) * textureSize(map, 0)`
- *     (surfaceShading's `smoothTexelWeight`). That reads the real GPU
+ *     (surfaceShading's `smoothTexelWeight`; a ground's colour map takes each
+ *     axis's gradient length instead, `groundTexelWeight`, which a camera
+ *     roll leaves alone — groundTexelFootprint below). That reads the real GPU
  *     allocation of whatever map THIS material draws, so a streamed sector
  *     reports its own tile against its own UV and a released rung reports the
  *     coarser map the frame it lands. It is the authority wherever a fragment
@@ -120,6 +122,23 @@ export function surfaceMagnifiedWeight(texels: number): number {
   const [lo, hi] = SURFACE_TEXEL_FADE;
   const t = Math.min(1, Math.max(0, (texels - lo) / (hi - lo)));
   return 1 - t * t * (3 - 2 * t);
+}
+
+/**
+ * Map texels per screen pixel as a ground's smooth filter reads them
+ * (surfaceShading's `groundTexelWeight`), from the screen derivatives of the
+ * map's coordinates: each axis by the length of its screen gradient, times
+ * that axis's texel count, and the busier axis. The CPU twin of the shader's
+ * reading, for pinning what a camera roll does to it — nothing, where the
+ * cloud deck's `fwidth` (|dFdx| + |dFdy|) grows by up to root two at 45
+ * degrees.
+ */
+export function groundTexelFootprint(
+  du: readonly [dx: number, dy: number],
+  dv: readonly [dx: number, dy: number],
+  texels: readonly [width: number, height: number],
+): number {
+  return Math.max(Math.hypot(du[0], du[1]) * texels[0], Math.hypot(dv[0], dv[1]) * texels[1]);
 }
 
 /**

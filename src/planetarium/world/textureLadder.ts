@@ -55,6 +55,7 @@ import { queueTextureWarm } from './textureWarmer';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './textureBytes';
 import { restoreAlbedoGrade } from './albedoGrade';
+import { globeColorWrapFor, isPhotoTexture, setColorMapIsPhoto } from './mapSmooth';
 import { releaseFits, type ReleaseCandidate, type ReleaseContext } from './gpuEnvelope';
 
 // A colour-tier fetch goes through this indirection so the completion,
@@ -1011,6 +1012,10 @@ function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
   // The placeholder tint goes with the first real map; the body's albedo
   // grade, if it has one, stays through every rung.
   restoreAlbedoGrade(std);
+  // And the smooth magnification filter comes on with it, for a body whose
+  // rule asks for it: what was bound before may have been painted noise or the
+  // stand-in a failed fetch leaves (world/mapSmooth).
+  setColorMapIsPhoto(std, isPhotoTexture(tex));
 }
 
 export function applyColorTierTexture(mat: THREE.Material, tex: THREE.Texture, rank: number): boolean {
@@ -1098,6 +1103,8 @@ export function upgradeTextureOnApproach(
         return;
       }
       applyTextureDefaults(tex, 'color');
+      // Before the warm below uploads it: the wrap is applied with the upload.
+      globeColorWrapFor(tex, up.material);
       // Decode before the rank swap: the material keeps its current map until
       // the new one is cheap to draw, so a mid-session upgrade never freezes
       // the frame on a synchronous decode — and the warm queue then uploads it
@@ -1556,6 +1563,7 @@ export function startTierRelease(
         return;
       }
       applyTextureDefaults(tex, 'color');
+      globeColorWrapFor(tex, up.material);
       const swap = () => {
         if (abandoned()) {
           tex.dispose();

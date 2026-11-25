@@ -46,9 +46,10 @@ import { CLOUD_NORMAL_SCALE, cloudShellScale } from './world/cloudDeck';
 import { enableCloudField } from './world/cloudFieldSlots';
 import { CLOUD_DECK_DEPTH_BIAS_UNITS } from './world/shellDepthBias';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
+import { globeColorWrap, globeColorWrapFor, isPhotoTexture, setColorMapIsPhoto } from './world/mapSmooth';
 import {
   augmentSurfaceMaterial, nightLiftUniform, rebindSeaWindMap, seatSurfaceAirRadius, setGroundUnderCloudDeck,
-  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceWaterGloss,
+  setPlanetariumCloudDeck, setSurfaceCraterShare, setSurfaceGroundField, setSurfaceMapSmooth, setSurfaceWaterGloss,
   surfaceDrawsDetailField, surfaceReliefKind, type SurfaceArchetype, type SurfaceReliefKind,
   type SurfaceShadingFx,
 } from './world/surfaceShading';
@@ -300,6 +301,11 @@ export interface LoadTextureOptions {
    *  which needs a 2D context — tests running without a DOM inject a plain
    *  texture here so the timeout/late/retry machinery itself stays testable. */
   makeFallback?: () => THREE.Texture;
+  /** Wrap the real map periodic in longitude (world/mapSmooth
+   *  globeColorWrap), on the texture as it arrives and before anything uploads
+   *  it: a globe whose body smooths its magnified map. The fallback stays
+   *  clamped; it is not drawn through the filter. */
+  periodicLongitude?: boolean;
 }
 
 /**
@@ -321,7 +327,9 @@ export function loadTexture(
   kind: MapKind = 'color',
   options: LoadTextureOptions = {},
 ): Promise<THREE.Texture> {
-  const { timeoutMs = 8000, late, makeFallback = () => createFallbackTexture(key, kind) } = options;
+  const {
+    timeoutMs = 8000, late, makeFallback = () => createFallbackTexture(key, kind), periodicLongitude = false,
+  } = options;
   const file = PLANET_TEXTURE_FILES[key];
   if (!file) return Promise.resolve(makeFallback());
   const url = resolveTextureUrl(file, tier);
@@ -351,6 +359,7 @@ export function loadTexture(
       onLoad: (tex) => {
         clearTimeout(timer);
         applyTextureDefaults(tex, kind);
+        globeColorWrap(tex, periodicLongitude);
         if (!settled) {
           settled = true;
           // loadTexture serves planet-level maps only (bases + Earth details),
@@ -1032,6 +1041,70 @@ export function wearsGroundField(
   return sharpestWidth >= 4096 && !FULL_FIELD_KEEPERS.has(name);
 }
 
+/**
+ * Which bodies draw their colour map through the smooth magnification filter
+ * this boot:
+ * - 'shipped': the bodies smoothsMagnifiedMap names;
+ * - 'off': none — `?mapsmooth=0`, in any build, the maps plain bilinear up
+ *   close the way they were;
+ * - a set of names: DEV `?mapsmooth=Mercury,Pluto`, the rule limited to the
+ *   bodies named (case aside), for judging them one at a time.
+ */
+export type MapSmoothMode = 'shipped' | 'off' | ReadonlySet<string>;
+
+export function parseMapSmoothMode(search: string, dev: boolean = import.meta.env.DEV): MapSmoothMode {
+  const raw = new URLSearchParams(search).get('mapsmooth');
+  if (raw === null || raw === '' || raw === '1') return 'shipped';
+  if (raw === '0') return 'off';
+  if (!dev) return 'shipped';
+  return new Set(raw.split(',').map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0));
+}
+
+/** This boot's mode. */
+export const MAP_SMOOTH_MODE: MapSmoothMode =
+  typeof location === 'undefined' ? 'shipped' : parseMapSmoothMode(location.search);
+
+/** The surface classes that are ground: what is drawn is a solid surface's
+ *  photograph, not a cloud top (the gas giants and Venus), Earth's globe (its
+ *  sea and its streamed tiles have their own rules) or the cloud deck. */
+const MAP_SMOOTH_ARCHETYPES: ReadonlySet<SurfaceArchetype> = new Set(['airless', 'rocky', 'icy']);
+
+/**
+ * Whether a body draws its colour map through the smooth magnification filter
+ * wherever the map is magnified (world/surfaceShading SURFACE_MAP_FRAGMENT).
+ *
+ * Up close a photograph is stretched past a texel a pixel, and bilinear draws
+ * every texel of a busy map as a square with a hard edge: Mercury and Pluto at
+ * their 8K looked like a grid at the near end of the usual distance. The
+ * filter smooths that away wherever the map is magnified and costs nothing
+ * where it is not. So, all of:
+ * - the colour map is a photograph (`textureKey` names a file). A painted
+ *   moon's canvas is soft noise with no texel grid worth hiding, and the
+ *   close-range field takes it over anyway;
+ * - the surface class is ground (MAP_SMOOTH_ARCHETYPES).
+ * A streamed tile takes its globe's answer (world/sectorMaterial). The answer
+ * is the rule; the filter is live only while a photograph is the map bound
+ * (world/mapSmooth), and the rule also makes the globe's colour map periodic
+ * in longitude so the filter's taps read across the seam.
+ *
+ * In flight only. Look inside and Compare build their own photographed
+ * materials and leave them on plain bilinear, which is acceptable because
+ * both frame a body whole: Look inside's closest zoom holds a disc a screen
+ * or two across and Compare's less, so even a 2K map is stretched there to a
+ * few pixels a texel at most, short of the close range where flight puts tens
+ * of pixels on a texel and the squares this filter hides read as a grid.
+ */
+export function smoothsMagnifiedMap(
+  name: string,
+  textureKey: string | undefined,
+  archetype: SurfaceArchetype,
+  mode: MapSmoothMode = MAP_SMOOTH_MODE,
+): boolean {
+  if (mode === 'off' || !textureKey || !PLANET_TEXTURE_FILES[textureKey]) return false;
+  if (!MAP_SMOOTH_ARCHETYPES.has(archetype)) return false;
+  return mode === 'shipped' || mode.has(name.toLowerCase());
+}
+
 // planetArchetype/moonArchetype are exported for the volume-compare fillers,
 // so a body's night-fill + limb character match everywhere it renders.
 export function planetArchetype(planet: PlanetData): SurfaceArchetype {
@@ -1182,7 +1255,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       }
     : null;
 
-  const surfaceTexturePromise = loadTexture(planet.textureKey, '2k', 'color', { late: surfaceLate });
+  // Asked before the load, because the answer decides how the map wraps and the
+  // wrap must be on the texture before its first upload (world/mapSmooth).
+  const mapSmoothRule = smoothsMagnifiedMap(planet.name, planet.textureKey, planetArchetype(planet));
+  const surfaceTexturePromise = loadTexture(
+    planet.textureKey, '2k', 'color', { late: surfaceLate, periodicLongitude: mapSmoothRule },
+  );
   const earthDetailTexturePromise = earthLate
     ? Promise.all([
         loadTexture('earthNight', '2k', 'color', { late: earthLate.night }),
@@ -1316,6 +1394,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   )) {
     setSurfaceGroundField(mat, true);
   }
+  setSurfaceMapSmooth(mat, mapSmoothRule);
+  // Live only while a photograph is bound: a boot fetch that timed out or
+  // failed handed construction the procedural stand-in, and the late arrival
+  // (below, through the ladder's swap) turns the filter on with the real map.
+  setColorMapIsPhoto(mat, isPhotoTexture(texture));
 
   // A base map that missed the load timeout lands here rather than on the
   // floor. Rank 2 = the 2K tier, so an on-approach 4K that already won is not
@@ -2047,6 +2130,8 @@ export function paintMoonTextures(moon: MoonMesh): void {
     // The placeholder tint goes; the body's albedo grade (its own colour
     // over a map authored brighter than its albedo) stays.
     restoreAlbedoGrade(mat);
+    // Painted noise, not a photograph: no smooth filter until the photo wins.
+    setColorMapIsPhoto(mat, false);
   }
   mat.needsUpdate = true;
   moon.painted = true;
@@ -2148,6 +2233,10 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     )) {
       setSurfaceGroundField(mat, true);
     }
+    // The rule only: a moon starts on a flat placeholder and is painted before
+    // its photograph lands, and the filter comes on with the photograph
+    // (the ladder's swap, world/mapSmooth).
+    setSurfaceMapSmooth(mat, smoothsMagnifiedMap(moonData.name, moonData.textureKey, archetype));
 
     // Photo-textured moons (Moon, Io, …) stream their real image; on arrival it
     // replaces the procedural colour through the same rank swap the 4K upgrade
@@ -2162,6 +2251,8 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         context: { map: 'moon photo', name: moonData.name },
         onLoad: (tex) => {
           applyTextureDefaults(tex, 'color');
+          // Before anything uploads it (world/mapSmooth globeColorWrap).
+          globeColorWrapFor(tex, mat);
           // Decode off-thread before the rank swap — the procedural colour
           // stays until the photo is cheap to draw, so the swap can't freeze
           // a frame on a synchronous JPEG decode.

@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import type { MoonMesh } from '../PlanetFactory';
 import { paintMoonTextures } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
+import { setColorMapIsPhoto } from './mapSmooth';
 import {
   archetypeCode,
   classifyMoonArchetype,
@@ -436,6 +437,7 @@ export class ProceduralMoonTexturer {
       mat.map = colorRT.texture;
       mat.color.setRGB(1, 1, 1);
       mat.userData.colorTierRank = 0; // procedural floor, as the CPU path sets
+      setColorMapIsPhoto(mat, false); // painted, so no smooth filter (world/mapSmooth)
       mat.userData.proceduralColorRT = colorRT;
       this.tracked.add(colorRT);
     }

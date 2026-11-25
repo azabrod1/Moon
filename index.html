@@ -1198,6 +1198,17 @@
       0% { box-shadow: 0 0 0 1px rgba(var(--ember-rgb), 0.8), 0 0 26px rgba(var(--ember-rgb), 0.4); }
       100% { box-shadow: none; }
     }
+    .obs-pick {
+      width: 100%; height: 38px; box-sizing: border-box; margin-top: 8px; padding: 0 12px;
+      display: flex; align-items: center; gap: 9px; border-radius: var(--r-m);
+      border: 1px solid var(--obs-hairline); background: rgba(255, 255, 255, 0.03);
+      color: var(--obs-t1); font-family: var(--font); font-size: 12.5px; font-weight: 500;
+      text-align: left; cursor: pointer;
+    }
+    .obs-pick svg { width: 16px; height: 16px; flex: none; color: #8fb0ff; }
+    .obs-pick:hover { border-color: rgba(var(--accent-rgb), 0.45); }
+    .obs-pick:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    @media (hover: none) { .obs-pick { height: 44px; } }
     .obs-coach {
       position: relative; margin: 10px 2px 2px; padding: 11px 13px; border-radius: var(--r-m);
       border: 1px solid rgba(var(--accent-rgb), 0.45); background: #0c101c;
@@ -1410,139 +1421,174 @@
     .shud-chevron:hover { border-color: rgba(var(--accent-rgb), 0.5); }
     .shud-chevron i { font-style: normal; font-size: 15px; line-height: 1; transform: translateY(-1px); }
     .shud-discnote {
-      position: absolute; left: 0; top: 0; transform: translateX(-50%); white-space: nowrap;
-      font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.08em;
-      color: var(--obs-t3); text-transform: uppercase;
+      position: absolute; left: 0; top: 0; transform: translateX(-50%);
+      /* One line where it fits; a long one (a point too small to resolve,
+         with its altitude) wraps inside a phone's width rather than running
+         off both edges. */
+      width: max-content; max-width: calc(100% - 24px); text-align: center; line-height: 1.5;
+      font-family: var(--obs-mono); font-size: 10.5px; letter-spacing: 0.1em;
+      color: var(--obs-t2); text-transform: uppercase;
       text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6);
     }
     .shud-trackpill {
       position: absolute; left: 0; top: 0; transform: translateX(-50%);
       display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px;
-      background: rgba(8, 10, 20, 0.4); border: 1px solid var(--obs-hairline-dim);
+      background: rgba(8, 10, 20, 0.72); border: 1px solid rgba(255, 255, 255, 0.1);
       --glass-blur: 8px;
       backdrop-filter: blur(var(--glass-blur)); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-      color: var(--obs-t2); pointer-events: auto; cursor: pointer; font-family: var(--font); white-space: nowrap;
+      color: var(--obs-t1); pointer-events: auto; cursor: pointer; font-family: var(--font); white-space: nowrap;
     }
     .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
+    /* Under the open Look-at or places card the marker's text would read
+       through the glass. */
+    body.look-menu-open .shud-discnote, body.look-menu-open .shud-trackpill { visibility: hidden; }
     .shud-trackpill i { font-style: normal; color: var(--obs-accent); font-size: 12px; letter-spacing: 0; }
-    .shud-tr { position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); display: flex; gap: 8px; }
+    /* One top row: the way out, where you stand, and the Observatory. */
+    .shud-tr {
+      position: absolute; top: calc(14px + env(safe-area-inset-top, 0px));
+      left: calc(14px + env(safe-area-inset-left, 0px)); right: calc(14px + env(safe-area-inset-right, 0px));
+      display: flex; align-items: center; gap: 8px;
+    }
+    .shud-tr-gap { flex: 1 1 0; }
     .shud-chip {
-      display: flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: 999px;
-      background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); --glass-blur: 8px; backdrop-filter: blur(var(--glass-blur));
-      font-size: 12px; font-weight: 500; color: var(--obs-t2); white-space: nowrap;
+      flex: none; height: 38px; box-sizing: border-box; padding: 0 14px;
+      display: flex; align-items: center; gap: 7px; border-radius: 999px;
+      background: var(--obs-glass); border: 1px solid rgba(255, 255, 255, 0.1); --glass-blur: 8px; backdrop-filter: blur(var(--glass-blur));
+      font-size: 12.5px; font-weight: 500; color: var(--obs-t1); white-space: nowrap;
       pointer-events: auto; cursor: pointer; font-family: var(--font);
     }
-    .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
-    .shud-chip i { font-style: normal; color: var(--obs-accent); }
-    /* The Earth↔Moon action is intentionally a fixed hit target. Its label
-       alternates between "Switch to Earth" and the wider "Switch to the Moon";
-       if the pill follows the text width, a rapid second click can land just
-       outside the newly shrunken button before the pointer has moved. */
-    #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
-    /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
-    #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
-    /* The bottom band: the narrative at the left, the field-of-view block at
-       the right, on one baseline above the time pill. One flex row, so neither
-       can run under the other — the narrative wraps in what the block leaves.
-       With the Observatory panel open the band ends at the panel's edge, so
-       the block never sits under the panel's lower reach. */
+    .shud-chip:hover { border-color: rgba(var(--accent-rgb), 0.35); }
+    .shud-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .shud-chip svg { width: 16px; height: 16px; flex: none; }
+    .shud-back { padding: 0 14px 0 9px; gap: 5px; }
+    .shud-obs svg { width: 18px; height: 18px; color: #8fb0ff; }
+    /* Where you stand: the place, and the door to the spot picker. Plain
+       text, with no caret, on a body with no ground to choose from. */
+    .shud-place { flex: 0 1 auto; min-width: 0; padding: 0 12px 0 13px; gap: 8px; }
+    .shud-place > svg:first-child { color: #8fb0ff; }
+    .shud-place span { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    .shud-place:disabled { cursor: default; }
+    .shud-place:disabled:hover { border-color: rgba(255, 255, 255, 0.1); }
+    .shud-place:disabled .shud-caret { display: none; }
+    .shud-caret { width: 13px; height: 13px; flex: none; color: var(--obs-t2); }
+    /* One bottom card: what you are looking at, the clock, the field of view.
+       Centred between the safe-area insets; with the Observatory panel open
+       it centres in the width the panel leaves. The card itself lets drags
+       and the wheel through to the sky; only its controls take the pointer. */
     .shud-bottom {
       position: absolute;
-      left: calc(24px + env(safe-area-inset-left, 0px));
-      right: calc(24px + env(safe-area-inset-right, 0px));
-      bottom: calc(86px + env(safe-area-inset-bottom, 0px));
-      display: flex; justify-content: space-between; align-items: flex-end; gap: 24px;
-      /* Over a bright disc (Jupiter's cloud tops fill the frame from Io) the
-         grey lines vanish; a tight dark edge on each glyph keeps them, and
-         over black sky it is invisible. No scrim: the picture stays as lit. */
-      text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6);
+      left: calc(14px + env(safe-area-inset-left, 0px));
+      right: calc(14px + env(safe-area-inset-right, 0px));
+      bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+      width: fit-content; max-width: calc(100% - 28px); margin: 0 auto;
+      box-sizing: border-box; padding: 10px 20px;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 28px;
     }
-    body.observatory-sheet-open .shud-bottom { right: calc(12px + 334px + 20px + env(safe-area-inset-right, 0px)); }
-    .shud-bl { max-width: 46vw; flex: 0 1 auto; min-width: 0; }
-    .shud-eyebrow {
-      font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
-      color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
+    body.observatory-sheet-open .shud-bottom { right: calc(12px + 334px + 20px + env(safe-area-inset-right, 0px)); max-width: calc(100% - 380px); }
+    .shud-bl { order: 1; min-width: 0; max-width: 400px; display: flex; flex-direction: column; gap: 4px; }
+    .shud-target {
+      max-width: 100%; margin: 0; padding: 0; display: flex; align-items: center; gap: 8px;
+      background: none; border: none; text-align: left; color: var(--obs-t1);
+      font-family: var(--font); cursor: pointer; pointer-events: auto;
     }
-    .shud-eyebrow i { font-style: normal; letter-spacing: 0; color: var(--obs-accent); font-size: 11px; }
+    .shud-target .shud-caret { width: 15px; height: 15px; }
+    .shud-target:disabled { cursor: default; }
+    .shud-target:disabled .shud-caret { display: none; }
+    .shud-target:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
     .shud-bl h1 {
-      margin: 10px 0 0; font-size: 34px; font-weight: 200; letter-spacing: 0.01em;
-      color: var(--obs-t1); text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 2px 24px rgba(0, 0, 0, 0.6);
+      margin: 0; font-size: 20px; font-weight: 300; line-height: 1.2; letter-spacing: 0.01em;
+      color: var(--obs-t1); text-wrap: balance;
     }
-    .shud-sub { margin-top: 7px; font-size: 12.5px; color: var(--obs-t2); }
+    .shud-sub { font-size: 12.5px; line-height: 1.35; color: var(--obs-t2); }
+    .shud-sub:empty { display: none; }
     .shud-sub b { color: var(--obs-warm); font-weight: 500; }
-    .shud-when { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--obs-t2); }
-    /* Bottom-center transport strip: the surface view's only time control.
-       Sits above the sheet inset on mobile so the sheet never seals the
-       transport. */
-    .shud-timebar {
-      position: absolute; left: 50%; transform: translateX(-50%);
-      bottom: calc(var(--sheet-inset, 0px) + 14px + env(safe-area-inset-bottom, 0px));
-      display: flex; align-items: center; gap: 10px;
-      padding: 7px 12px; border-radius: 11px; white-space: nowrap;
-      background: rgba(10, 14, 26, 0.6); border: 1px solid rgba(140, 160, 200, 0.18);
-      --glass-blur: 10px;
-      -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
-      pointer-events: auto;
+    /* The clock: the surface view's only time control. */
+    .shud-timebar { order: 2; display: flex; align-items: center; gap: 14px; }
+    .shud-when {
+      display: flex; flex-direction: column; gap: 4px; white-space: nowrap;
+      font-family: var(--obs-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--obs-t1);
     }
-    .shud-timebar .shud-when { margin-top: 0; }
+    .shud-when .obs-now-text { font-size: 12px; }
+    .shud-when small { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--obs-t2); }
+    .shud-tb { display: flex; align-items: center; gap: 6px; }
     .shud-tb-btn {
+      min-width: 32px; height: 32px; box-sizing: border-box; padding: 0 10px;
+      display: flex; align-items: center; justify-content: center;
       background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(140, 160, 200, 0.22);
-      border-radius: 7px; color: var(--obs-t1); cursor: pointer;
-      font-family: var(--obs-mono); font-size: 10.5px; letter-spacing: 0.04em;
-      padding: 5px 9px; min-height: 26px;
+      border-radius: 8px; color: var(--obs-t1); cursor: pointer; pointer-events: auto;
+      font-family: var(--obs-mono); font-size: 11px; letter-spacing: 0.04em;
     }
-    .shud-tb-btn:hover { border-color: rgba(var(--accent-rgb), 0.4); color: var(--obs-t1); }
-    .shud-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-t3); flex: none; }
-    .shud-when small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--obs-t3); }
-    /* Paused clock (incl. the silent park when stepping down through 1×):
-       hollow the dot, same idiom as the bottom bar's paused rail thumb. */
-    .shud-timebar.paused .shud-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--obs-t3); }
-    .shud-br { flex: none; text-align: right; }
-    .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
-    .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
+    .shud-tb-btn:hover { border-color: rgba(var(--accent-rgb), 0.4); }
+    .shud-tb-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .shud-tb-btn svg { width: 14px; height: 14px; }
+    /* Pause shows the action it will take: pause while the clock runs,
+       play (and the accent) while it is stopped. */
+    .shud-tb-play { padding: 0; }
+    .shud-tb-play .shud-ico-play { display: none; }
+    .shud-timebar.paused .shud-tb-play { background: rgba(var(--accent-rgb), 0.2); border-color: rgba(var(--accent-rgb), 0.45); }
+    .shud-timebar.paused .shud-tb-play .shud-ico-play { display: block; }
+    .shud-timebar.paused .shud-tb-play .shud-ico-pause { display: none; }
+    .shud-br { order: 3; flex: none; display: flex; align-items: center; gap: 14px; }
+    .shud-fovtext { display: flex; flex-direction: column; gap: 4px; }
+    .shud-fov { font-size: 20px; font-weight: 300; line-height: 1.2; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
+    .shud-eyebrow { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #8790a5; white-space: nowrap; }
+    .shud-fovscale { position: relative; width: 110px; height: 2px; background: rgba(255, 255, 255, 0.14); border-radius: 1px; }
     .shud-fovmark {
-      position: absolute; top: -3px; width: 2px; height: 8px; border-radius: 1px;
-      background: var(--obs-accent); left: 56%; box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.6);
+      position: absolute; top: -5px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px;
+      background: #8fb0ff; left: 56%;
     }
-    .shud-fovend { position: absolute; top: 8px; font-size: 9px; color: var(--obs-t3); font-variant-numeric: tabular-nums; }
-    .shud-fovend.lo { left: 0; }
-    .shud-fovend.hi { right: 0; }
-    .shud-hint { margin-top: 22px; font-size: 10.5px; color: var(--obs-t3); }
     @media (max-width: 640px) {
-      .shud-bl h1 { font-size: 24px; }
-      /* The band joins the one bottom-inset exclusion zone: a jump parks the
-         sheet at peek, and the narrative must not sit under it. The panel is
-         that sheet here, not a side panel, so the band keeps the full width;
-         the field-of-view block narrows to a fixed lane with its hint
-         wrapping inside it, and the narrative takes the rest. */
-      .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 120px + env(safe-area-inset-bottom, 0px)); gap: 16px; }
-      body.observatory-sheet-open .shud-bottom { right: calc(24px + env(safe-area-inset-right, 0px)); }
-      .shud-bl { max-width: none; flex: 1 1 auto; }
-      .shud-br { width: 120px; }
-      .shud-fovscale { width: 120px; }
-      .shud-hint { line-height: 1.4; }
+      /* Phone: round 44px buttons at the ends of the top row, the place
+         between them. */
+      .shud-tr { top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); justify-content: space-between; }
+      .shud-tr-gap { display: none; }
+      .shud-chip { height: 44px; font-size: 13.5px; }
+      .shud-back, .shud-obs { width: 44px; padding: 0; justify-content: center; }
+      .shud-back span, .shud-obs span { display: none; }
+      .shud-back svg { width: 18px; height: 18px; }
+      .shud-obs svg { width: 20px; height: 20px; color: var(--obs-t1); }
+      /* The card spans the width above the phone sheet's inset (a jump parks
+         the sheet at peek, and the card must not sit under it): the target
+         and the field on one line, the clock under them. */
+      .shud-bottom {
+        left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px));
+        bottom: calc(var(--sheet-inset, 0px) + 12px + env(safe-area-inset-bottom, 0px));
+        width: auto; max-width: none; margin: 0; padding: 12px 14px;
+        align-items: flex-start; justify-content: space-between; gap: 10px 12px;
+      }
+      body.observatory-sheet-open .shud-bottom { right: calc(12px + env(safe-area-inset-right, 0px)); max-width: none; }
+      .shud-bl { order: 1; flex: 1 1 0; max-width: none; }
+      .shud-br { order: 2; padding-top: 2px; }
+      .shud-fovtext { align-items: flex-end; }
+      .shud-fovscale { display: none; }
+      .shud-timebar {
+        order: 3; flex: 1 0 100%; justify-content: space-between; gap: 8px;
+        padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      /* The date over the time, so the clock's four buttons fit beside it. */
+      .shud-when { gap: 3px; }
+      .shud-when .shud-date, .shud-when .shud-time { display: block; }
+      .shud-when .shud-time { margin-top: 3px; font-size: 10.5px; color: var(--obs-t2); }
+      .shud-when .shud-wsep { display: none; }
+      .shud-tb-btn { min-width: 44px; height: 44px; border-radius: 10px; font-size: 11.5px; }
+      .shud-tb-btn svg { width: 16px; height: 16px; }
       /* The open sheet already says where you stand and names the system's
-         phase in its hero, and the band would sit on the sky between them.
-         It keeps only what the sheet lacks — a live event's name and its
-         countdown, or the phase of a body the hero does not describe — one
-         compact line above the transport strip. The field-of-view block
-         yields too; the pinch still zooms. */
-      body.observatory-sheet-open .shud-bottom { bottom: calc(var(--sheet-inset, 0px) + 96px + env(safe-area-inset-bottom, 0px)); }
+         phase in its hero. The card keeps only what the sheet lacks: a live
+         event's name and its countdown, or the phase of a body the hero does
+         not describe, over the clock. The field readout yields too; the
+         pinch still zooms. */
       body.observatory-sheet-open .shud-br,
-      body.observatory-sheet-open .shud-eyebrow,
       body.observatory-sheet-open .shud-prose,
       body.observatory-sheet-open .shud-sep,
       body.observatory-sheet-open #surface-hud.shud-hero-repeats .shud-bl { display: none; }
-      body.observatory-sheet-open .shud-bl { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-      body.observatory-sheet-open .shud-bl h1 { margin: 0; font-size: 20px; }
-      body.observatory-sheet-open .shud-sub { margin-top: 0; }
+      body.observatory-sheet-open #surface-hud.shud-hero-repeats .shud-timebar { padding-top: 0; border-top: none; }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
        width and would block the HUD chips). The time pill stays, and so does
        the tutorial card — its time-lapse and eclipse steps narrate from in here. */
     body.surface-view-active #planetarium-actions { display: none; }
-    body.surface-view-active #top-bar { opacity: 0.25; pointer-events: none; transition: opacity 0.3s; }
+    body.surface-view-active #top-bar { opacity: 0; pointer-events: none; transition: opacity 0.3s; }
     /* Surface view owns one clock: the transport strip. Hide duplicate time
        surfaces that would overlap tracking or repeat the same state. */
     body.surface-view-active #planetarium-bottom-bar { display: none; }
@@ -3459,6 +3505,112 @@
        looking AT, not where you stand. */
     .stm-current { background: rgba(255, 255, 255, 0.05); }
     .stm-current .pk-tag-here { color: var(--t2); }
+    /* The places list's search field: the deck's, inside the card. */
+    .stm-search { margin: 0 14px 8px; }
+    .stm-empty { padding: 14px 18px 18px; font-size: 12px; line-height: 1.5; color: var(--t2); }
+
+    /* ============================================= */
+    /* STANDING ON THE GROUND: the two ways in, and  */
+    /* the spot picker                               */
+    /* ============================================= */
+    /* On the landed view, above the bottom bar (PlanetariumMode
+       syncLandedEntry): Look up is the one-click sky; Pick a spot opens the
+       picker where the body has ground to stand on. */
+    #landed-entry {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+      display: none; gap: 10px; z-index: 19; pointer-events: none;
+    }
+    #landed-entry.visible { display: flex; }
+    .le-btn {
+      width: 236px; min-height: 60px; box-sizing: border-box; padding: 10px 16px;
+      display: flex; align-items: center; gap: 13px; text-align: left;
+      border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(8, 10, 15, 0.78); --glass-blur: 12px;
+      -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+      color: var(--t1); font-family: var(--font); cursor: pointer; pointer-events: auto;
+      transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+    }
+    .le-btn svg { width: 22px; height: 22px; flex: none; color: var(--t2); }
+    .le-btn > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .le-btn b { font-size: 15px; font-weight: 500; letter-spacing: 0.1px; }
+    .le-btn small { font-size: 12px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .le-btn:hover { border-color: rgba(255, 255, 255, 0.24); }
+    .le-btn.le-primary {
+      border-color: rgba(var(--accent-rgb), 0.36);
+      background: linear-gradient(rgba(var(--accent-rgb), 0.16), rgba(var(--accent-rgb), 0.16)), rgba(8, 10, 15, 0.78);
+    }
+    .le-btn.le-primary svg { color: #8fb0ff; }
+    .le-btn.le-primary small { color: #b4bdd0; }
+    .le-btn.le-primary:hover { border-color: rgba(var(--accent-rgb), 0.62); }
+    .le-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    /* Beside the open Observatory panel (334px at the right): centred in the
+       width it leaves, and gone where that is too narrow for the pair; the
+       panel's own Look up window is still there. */
+    @media (max-width: 1180px) { body.observatory-sheet-open #landed-entry { left: calc((100% - 366px) / 2); } }
+    @media (max-width: 880px) { body.observatory-sheet-open #landed-entry { display: none; } }
+
+    /* The spot picker (ui/SitePicker.ts): the landed globe stays the picture
+       and takes the taps; only the controls here take pointer events. */
+    #site-picker { position: absolute; inset: 0; display: none; pointer-events: none; z-index: 20; }
+    #site-picker.visible { display: block; }
+    body.site-picker-active #planetarium-actions { display: none; }
+    body.site-picker-active #top-bar { opacity: 0; pointer-events: none; }
+    .sp-head {
+      position: absolute; top: calc(14px + env(safe-area-inset-top, 0px));
+      left: calc(14px + env(safe-area-inset-left, 0px)); right: calc(14px + env(safe-area-inset-right, 0px));
+      display: flex; align-items: center; gap: 14px;
+    }
+    .sp-cancel {
+      flex: none; height: 38px; padding: 0 14px 0 11px; display: flex; align-items: center; gap: 7px;
+      border-radius: var(--r-m); background: var(--obs-glass); border: 1px solid rgba(255, 255, 255, 0.1);
+      --glass-blur: 12px; -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
+      color: var(--t1); font-family: var(--font); font-size: 12.5px; font-weight: 500;
+      cursor: pointer; pointer-events: auto;
+    }
+    .sp-cancel svg { width: 16px; height: 16px; }
+    .sp-cancel:hover { border-color: rgba(255, 255, 255, 0.24); }
+    .sp-title { min-width: 0; display: flex; flex-direction: column; gap: 3px; text-shadow: 0 1px 2px rgba(2, 4, 10, 0.9), 0 0 10px rgba(2, 4, 10, 0.6); }
+    .sp-title h2 { margin: 0; font-size: 16px; font-weight: 500; letter-spacing: 0.1px; color: var(--t1); }
+    .sp-title p { margin: 0; font-size: 12.5px; color: #b4bdd0; }
+    /* Positioned by transform each frame, like the surface markers. */
+    .sp-pin { position: absolute; left: 0; top: 0; width: 0; height: 0; display: none; }
+    .sp-pin.visible { display: block; }
+    .sp-pin i {
+      position: absolute; left: -19px; top: -19px; width: 38px; height: 38px; box-sizing: border-box;
+      border-radius: 50%; background: rgba(var(--accent-rgb), 0.2); border: 1px solid rgba(143, 176, 255, 0.55);
+    }
+    .sp-pin b {
+      position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; box-sizing: border-box;
+      border-radius: 50%; border: 2px solid #8fb0ff; background: rgba(8, 10, 15, 0.45);
+    }
+    .sp-pin b::after {
+      content: ''; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
+      border-radius: 50%; background: #fff;
+    }
+    .sp-card {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+      width: min(480px, calc(100vw - 24px)); box-sizing: border-box; padding: 14px 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      pointer-events: auto;
+    }
+    .sp-spot { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+    .sp-eyebrow { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #8fb0ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sp-coords { font-size: 22px; font-weight: 300; letter-spacing: 0.01em; font-variant-numeric: tabular-nums; color: var(--t1); white-space: nowrap; }
+    .sp-sub { font-size: 12.5px; line-height: 1.3; color: var(--t2); min-height: 16px; }
+    .sp-actions { flex: none; display: flex; align-items: center; gap: 8px; }
+    .sp-btn {
+      height: 44px; padding: 0 14px; border-radius: var(--r-m); white-space: nowrap;
+      background: rgba(255, 255, 255, 0.045); border: 1px solid var(--line);
+      color: var(--t1); font-family: var(--font); font-size: 13.5px; font-weight: 500; cursor: pointer;
+    }
+    .sp-btn:hover { border-color: rgba(255, 255, 255, 0.22); }
+    .sp-btn.sp-go { border-color: rgba(var(--accent-rgb), 0.45); background: rgba(var(--accent-rgb), 0.22); }
+    .sp-btn.sp-go:hover { background: rgba(var(--accent-rgb), 0.3); }
+    .sp-btn:disabled { opacity: 0.4; cursor: default; }
+    .sp-btn:focus-visible, .sp-cancel:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
     /* Tools front door: a full-screen click-catcher (Look-at idiom) with the
        card anchored under the Tools button — openToolsMenu sets `left` from
@@ -4639,6 +4791,14 @@
 
       #planetarium-bottom-bar { bottom: calc(8px + env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 12px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)); }
       #planetarium-btn-land { bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
+      /* The two entry buttons share the width; the picker's card stacks the
+         spot over its two actions. Both clear the bottom bar. */
+      #landed-entry { left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); transform: none; bottom: calc(66px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
+      .le-btn { width: auto; flex: 1 1 0; min-width: 0; min-height: 62px; padding: 10px 12px; gap: 11px; }
+      .sp-card { bottom: calc(66px + env(safe-area-inset-bottom, 0px)); flex-direction: column; align-items: stretch; gap: 12px; }
+      .sp-actions { display: grid; grid-template-columns: 1fr 1.5fr; }
+      .sp-head { top: calc(12px + env(safe-area-inset-top, 0px)); left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); gap: 12px; }
+      .sp-cancel { height: 44px; }
       /* Horizontal inset so the end sections (the rail on the left, the Stats
          chip on the right) clear the bar's rounded wall — 2px left the chip
          all but touching the border. */
@@ -4816,15 +4976,6 @@
       /* One clock: the sheet's now-bar replaces the bottom time pill while
          the sheet is open. */
       body.observatory-sheet-open #planetarium-bottom-bar { display: none; }
-      /* The strip stacks on narrow screens (readout row + controls row) —
-         inline it overflows 390px and clips the Now button. */
-      .shud-timebar {
-        flex-wrap: wrap; justify-content: center; row-gap: 6px;
-        max-width: calc(100vw - 16px);
-      }
-      /* Four chips can't fit one row at 390px — give the cluster a left
-         edge and let it wrap, keeping chips ranked from the right. */
-      .shud-tr { left: calc(16px + env(safe-area-inset-left, 0px)); flex-wrap: wrap; justify-content: flex-end; }
     }
     @media (hover: none) {
       .obs-close { padding: 8px 12px; margin: -8px -8px -8px 0; }
@@ -5321,9 +5472,16 @@
           <!-- No heading: the window it points at is already titled "Look up",
                and the same words twice in a stack read as a stutter. -->
           <b><i>NEW</i></b>
-          <p>Step through here and you&rsquo;re standing on the ground, looking up. Everything overhead is at its real size and its real place.</p>
+          <p>Step through here to look up from the surface. Everything overhead is at its real size and in its real place.</p>
           <button type="button" id="observatory-coach-got">Got it</button>
         </div>
+        <!-- Where the landed body has ground to stand on: the spot picker,
+             reachable while the panel (the sheet, on a phone) covers the
+             landed view's own buttons. -->
+        <button class="obs-pick" id="observatory-pick" type="button" style="display:none">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17.6 C10 17.6 15.2 12.7 15.2 8.5 a5.2 5.2 0 1 0 -10.4 0 C4.8 12.7 10 17.6 10 17.6 Z"></path><circle cx="10" cy="8.5" r="1.9"></circle></svg>
+          <span id="observatory-pick-label">Pick a spot to stand</span>
+        </button>
         <div id="observatory-earth-rows">
           <div class="obs-sec">Jump to</div>
           <div class="obs-jrow2">
@@ -5395,35 +5553,58 @@
         <button class="shud-chevron" id="surface-chevron" style="display:none" title="Target off frame — resume tracking"><i>&#x2039;</i></button>
         <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
         <button class="shud-trackpill" id="surface-trackpill" style="display:none" data-glass><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
+        <!-- One top row: the way out, where you stand, the Observatory. -->
         <div class="shud-tr">
-          <button class="shud-chip" id="surface-lookat" style="display:none" title="Choose what to look at" data-glass><i>&#x2316;</i><span id="surface-lookat-name"></span></button>
-          <button class="shud-chip" id="surface-observatory" data-glass>&#x1F52D; Observatory</button>
-          <button class="shud-chip" id="surface-swap" style="display:none" data-glass><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
-          <button class="shud-chip" id="surface-exit" data-glass>&#x2715; Exit surface view</button>
+          <button class="shud-chip shud-back" id="surface-exit" type="button" title="Back to orbit" aria-label="Back to orbit" data-glass>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 4.5 L7 10 L12.5 15.5"></path></svg>
+            <span>Orbit</span>
+          </button>
+          <button class="shud-chip shud-place" id="surface-place" type="button" title="Choose where to stand" data-glass>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17.6 C10 17.6 15.2 12.7 15.2 8.5 a5.2 5.2 0 1 0 -10.4 0 C4.8 12.7 10 17.6 10 17.6 Z"></path><circle cx="10" cy="8.5" r="1.9"></circle></svg>
+            <span id="surface-eyebrow"></span>
+            <svg class="shud-caret" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 L10 12.5 L15 7.5"></path></svg>
+          </button>
+          <span class="shud-tr-gap"></span>
+          <button class="shud-chip shud-obs" id="surface-observatory" type="button" title="Observatory" aria-label="Observatory" data-glass>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
+            <span>Observatory</span>
+          </button>
         </div>
-        <div class="shud-bottom">
+        <!-- One bottom card: what you are looking at, the field, the clock. -->
+        <div class="shud-bottom pn pn-high" data-glass>
           <div class="shud-bl">
-            <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
-            <h1 id="surface-headline">--</h1>
+            <button class="shud-target" id="surface-lookat" type="button" title="Choose what to look at">
+              <h1 id="surface-headline">--</h1>
+              <svg class="shud-caret" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 L10 12.5 L15 7.5"></path></svg>
+            </button>
             <div class="shud-sub" id="surface-sub"></div>
           </div>
           <div class="shud-br">
-            <div class="shud-eyebrow">Field of view</div>
-            <div class="shud-fov" id="surface-fov">10&deg;</div>
-            <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
-            <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+            <div class="shud-fovtext">
+              <div class="shud-fov" id="surface-fov">10&deg;</div>
+              <div class="shud-eyebrow">Field</div>
+            </div>
+            <div class="shud-fovscale" aria-hidden="true"><span class="shud-fovmark" id="surface-fov-mark"></span></div>
           </div>
-        </div>
-        <div class="shud-timebar" id="surface-timebar" data-glass>
-          <div class="shud-when">
-            <span class="shud-dot"></span>
-            <span class="obs-now-text" id="surface-when">--</span>
-            <small id="surface-when-tag"></small>
+          <div class="shud-timebar" id="surface-timebar">
+            <div class="shud-when">
+              <span class="obs-now-text" id="surface-when">--</span>
+              <small id="surface-when-tag"></small>
+            </div>
+            <div class="shud-tb">
+              <button class="shud-tb-btn" id="surface-tb-slower" type="button" title="Slower" aria-label="Slower">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 10 H15"></path></svg>
+              </button>
+              <button class="shud-tb-btn shud-tb-play" id="surface-tb-pause" type="button" title="Pause" aria-label="Pause">
+                <svg class="shud-ico-pause" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6 4.8 H8.6 V15.2 H6 Z M11.4 4.8 H14 V15.2 H11.4 Z"></path></svg>
+                <svg class="shud-ico-play" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M7 4.8 L15.4 10 L7 15.2 Z"></path></svg>
+              </button>
+              <button class="shud-tb-btn" id="surface-tb-faster" type="button" title="Faster" aria-label="Faster">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 10 H15 M10 5 V15"></path></svg>
+              </button>
+              <button class="shud-tb-btn" id="surface-tb-now" type="button" title="Jump to the present">Now</button>
+            </div>
           </div>
-          <button class="shud-tb-btn" id="surface-tb-pause">Pause</button>
-          <button class="shud-tb-btn" id="surface-tb-slower" title="Slower">&minus;</button>
-          <button class="shud-tb-btn" id="surface-tb-faster" title="Faster">+</button>
-          <button class="shud-tb-btn" id="surface-tb-now" title="Jump to the present">Now</button>
         </div>
       </div>
 
@@ -5718,12 +5899,16 @@
       <div id="surface-target-menu">
         <div class="stm-card pn pn-high" data-glass>
           <div class="stm-head">
-            <h3>Look at</h3>
+            <h3 id="surface-target-title">Look at</h3>
             <button class="pk-x" id="surface-target-menu-close" aria-label="Close">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
             </button>
           </div>
           <div class="stm-sub" id="surface-target-sub"></div>
+          <label class="pk-search stm-search" id="surface-target-search-row" style="display:none">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="5.6"></circle><path d="M13.2 13.2 L17 17"></path></svg>
+            <input type="text" id="surface-target-search" placeholder="Search a place or type coordinates" aria-label="Search a place or type coordinates" autocomplete="off" spellcheck="false" />
+          </label>
           <div class="pk-list" id="surface-target-list"></div>
         </div>
       </div>
@@ -5782,6 +5967,44 @@
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-back"></button>
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>
           <button class="tutorial-btn tutorial-btn-primary" id="tutorial-primary"></button>
+        </div>
+      </div>
+
+      <!-- Landed view: the two ways into the sky. -->
+      <div id="landed-entry">
+        <button class="le-btn le-primary" id="landed-entry-lookup" type="button" data-glass>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
+          <span><b>Look up</b><small id="landed-entry-lookup-sub"></small></span>
+        </button>
+        <button class="le-btn" id="landed-entry-pick" type="button" data-glass>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17.6 C10 17.6 15.2 12.7 15.2 8.5 a5.2 5.2 0 1 0 -10.4 0 C4.8 12.7 10 17.6 10 17.6 Z"></path><circle cx="10" cy="8.5" r="1.9"></circle></svg>
+          <span><b>Pick a spot</b><small>Stand anywhere on it</small></span>
+        </button>
+      </div>
+
+      <!-- Spot picker: tap the landed globe to choose where to stand. -->
+      <div id="site-picker">
+        <div class="sp-head">
+          <button class="sp-cancel" id="site-picker-cancel" type="button" data-glass>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            <span>Cancel</span>
+          </button>
+          <div class="sp-title">
+            <h2>Choose where to stand</h2>
+            <p id="site-picker-hint"></p>
+          </div>
+        </div>
+        <div class="sp-pin" id="site-picker-pin" aria-hidden="true"><i></i><b></b></div>
+        <div class="sp-card pn pn-high" data-glass>
+          <div class="sp-spot">
+            <div class="sp-eyebrow" id="site-picker-eyebrow">Your spot</div>
+            <div class="sp-coords" id="site-picker-coords"></div>
+            <div class="sp-sub" id="site-picker-sub"></div>
+          </div>
+          <div class="sp-actions">
+            <button class="sp-btn" id="site-picker-places" type="button">Places</button>
+            <button class="sp-btn sp-go" id="site-picker-go" type="button" disabled>Stand here</button>
+          </div>
         </div>
       </div>
 

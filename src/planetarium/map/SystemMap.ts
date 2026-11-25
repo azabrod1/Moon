@@ -62,7 +62,7 @@ import {
   getSatelliteOrbitMeta,
   EARTH_MOON_ORBIT_META,
 } from '../../astronomy/satellites';
-import { tidalLockQuaternion, tidalRollNorth } from '../world/tidalLock';
+import { moonOrientationQuaternion, tidalRollNorth } from '../world/tidalLock';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { ResampleSweep, ringRefillDue } from './mapResample';
@@ -3567,7 +3567,9 @@ export class SystemMap {
           tidalRollNorth(
             moon.data.name, parent.planet.name, this.tmpMoonNormal, this.tmpMoonNormal,
           );
-          if (tidalLockQuaternion(this.tmpMoonOffset, this.tmpMoonNormal, this.tmpMoonQuat)) {
+          if (moonOrientationQuaternion(
+            moon.data.name, parent.planet.name, this.tmpMoonOffset, this.tmpMoonNormal, utcMs, this.tmpMoonQuat,
+          )) {
             moon.globe.quaternion.copy(this.tmpMoonQuat);
           }
           moon.orientedUtcMs = utcMs;

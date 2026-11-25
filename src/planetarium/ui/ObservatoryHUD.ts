@@ -1,18 +1,27 @@
 /**
- * Surface-view HUD for the Observatory:
- * bottom-left narrative stack (eyebrow / headline / subline with the warm
- * peak countdown / mono when-line), bottom-right FOV cluster with a
- * log-scale hairline, breathing corner brackets over the tracked target with
- * the mono disc annotation and tracking pill, and the top-right
- * Observatory/swap/exit chips. FlightHUD/SunLabel idiom: bind() once,
- * per-frame updateBrackets() with screen coords from the owner, 8 Hz
- * render() that touches text nodes only.
+ * Surface-view HUD for the Observatory: one row at the top, one card at the
+ * bottom, and the sky between them left alone but for the marker.
+ *
+ * - Top row: the way back to orbit, the place stood at (the door to the spot
+ *   picker where the body has ground to choose from; plain text elsewhere),
+ *   and the Observatory.
+ * - Marker: breathing corner brackets over the tracked target with the mono
+ *   disc annotation under them. The pill beside it appears only in free
+ *   look, where it re-centres on the target; while tracking there is
+ *   nothing to say.
+ * - Bottom card: what is being looked at (the headline is the Look-at
+ *   button; the subline carries the detail and the warm peak countdown),
+ *   the clock with its four controls, and the field of view.
+ *
+ * Each fact is said once: the place in the top row, the target in the card.
+ * FlightHUD/SunLabel idiom: bind() once, per-frame updateMarker() with
+ * screen coords from the owner, 8 Hz render() that touches text nodes only.
  */
 import { setText } from '../../shared/dom';
 import { SURFACE_FOV_MAX_DEG, SURFACE_FOV_MIN_DEG } from '../surfaceView';
 
 export interface SurfaceHudState {
-  /** "Surface view · standing on Earth" */
+  /** Where you stand, as the top row's place reads: "Moon · 2.0° S, 80.0° W". */
   eyebrow: string;
   /** Event name while one is in window, else the phase name. */
   headline: string;
@@ -30,12 +39,14 @@ export interface SurfaceHudState {
   tracking: boolean;
   /** Display name of the tracked target ("the Sun", "Io"). */
   targetName: string;
-  /** Look-at chip visibility — hidden when the sky offers only one target. */
+  /** The headline opens the Look-at list; plain text when the sky offers
+   *  only one target. */
   showLookatChip: boolean;
   /** Mono disc annotation under the brackets; null hides it. */
   discNote: string | null;
-  /** Swap chip label ("Switch to the Moon"), or null to hide. */
-  swapLabel: string | null;
+  /** The place in the top row opens the spot picker: where the landed body
+   *  has ground to stand on. */
+  placesOffered: boolean;
   /** Clock paused — the transport strip's pause button flips to "Resume". */
   paused: boolean;
 }
@@ -137,14 +148,17 @@ export class ObservatoryHUD {
   private chevronEl: HTMLElement | null = null;
   private discNoteEl: HTMLElement | null = null;
   private trackPillEl: HTMLElement | null = null;
-  private swapEl: HTMLElement | null = null;
-  private lookatEl: HTMLElement | null = null;
+  private lookatEl: HTMLButtonElement | null = null;
+  private placeEl: HTMLButtonElement | null = null;
+  private pauseEl: HTMLElement | null = null;
+  private whenEl: HTMLElement | null = null;
   private fovMarkEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
-  private blEl: HTMLElement | null = null;
-  private brEl: HTMLElement | null = null;
+  private bottomEl: HTMLElement | null = null;
   private timebarEl: HTMLElement | null = null;
   private chipRowEl: HTMLElement | null = null;
+  /** Tracking the target: the re-centre pill has nothing to offer. */
+  private tracking = true;
   /** Last rendered clock state. The button dispatches an explicit intent so a
    * delayed Pause click can never turn into a resume when it is finally read. */
   private paused = false;
@@ -165,11 +179,11 @@ export class ObservatoryHUD {
 
   constructor(
     private onExit: () => void,
-    private onSwap: () => void,
     private onResumeTracking: () => void,
     private onObservatory: () => void,
     private onTargetMenu: () => void,
     private onTimeAction: (action: SurfaceTimeAction) => void,
+    private onPlaceMenu: () => void,
   ) {}
 
   bind(): void {
@@ -179,28 +193,25 @@ export class ObservatoryHUD {
     this.chevronEl = document.getElementById('surface-chevron');
     this.discNoteEl = document.getElementById('surface-discnote');
     this.trackPillEl = document.getElementById('surface-trackpill');
-    this.swapEl = document.getElementById('surface-swap');
-    this.lookatEl = document.getElementById('surface-lookat');
+    this.lookatEl = document.getElementById('surface-lookat') as HTMLButtonElement | null;
+    this.placeEl = document.getElementById('surface-place') as HTMLButtonElement | null;
+    this.pauseEl = document.getElementById('surface-tb-pause');
+    this.whenEl = document.getElementById('surface-when');
     this.fovMarkEl = document.getElementById('surface-fov-mark');
     this.subEl = document.getElementById('surface-sub');
-    this.blEl = this.rootEl?.querySelector('.shud-bl') ?? null;
-    this.brEl = this.rootEl?.querySelector('.shud-br') ?? null;
+    this.bottomEl = this.rootEl?.querySelector('.shud-bottom') ?? null;
     this.timebarEl = document.getElementById('surface-timebar');
     this.chipRowEl = this.rootEl?.querySelector('.shud-tr') ?? null;
     if (this.wired) return;
     this.wired = true;
-    // Touch devices pinch to zoom; pointer devices scroll. Set once — the input
-    // capability doesn't change within a session.
-    const hint = this.rootEl?.querySelector('.shud-hint');
-    if (hint) {
-      const touch = (window.matchMedia?.('(pointer: coarse)').matches ?? false) || 'ontouchstart' in window;
-      hint.textContent = touch ? 'pinch to zoom · drag to look' : 'scroll to zoom · drag to look';
-    }
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
-    const swapTeardown = bindReliableSurfacePress(this.swapEl, () => this.onSwap());
-    if (swapTeardown) this.documentTeardowns.push(swapTeardown);
+    // A plain click, as the Look-at chip opens the same card: acting on
+    // pointerup (the reliable press) would raise the card's backdrop under a
+    // finger before the tap's own click arrives, and that click, landing on
+    // the backdrop, would close it again.
+    this.placeEl?.addEventListener('click', () => this.onPlaceMenu());
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
@@ -239,7 +250,13 @@ export class ObservatoryHUD {
    * This is intentionally cheaper than a full 8 Hz HUD render. */
   syncPaused(paused: boolean): void {
     this.paused = paused;
-    setText('surface-tb-pause', paused ? 'Resume' : 'Pause');
+    // The button shows the action it will take (CSS swaps the glyph on the
+    // strip's class) and names it for a screen reader and the tooltip.
+    const label = paused ? 'Resume' : 'Pause';
+    if (this.pauseEl && this.pauseEl.getAttribute('aria-label') !== label) {
+      this.pauseEl.setAttribute('aria-label', label);
+      this.pauseEl.title = label;
+    }
     this.timebarEl?.classList.toggle('paused', paused);
   }
 
@@ -264,7 +281,7 @@ export class ObservatoryHUD {
     const size = placement.sizePx ?? 0;
     const angle = placement.angleDeg ?? 0;
     const clamp = Math.round(this.clusterMaxY);
-    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}|${clamp}`;
+    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}|${clamp}|${this.tracking ? 't' : 'f'}`;
     if (css === this.lastMarkerCss) return;
     this.lastMarkerCss = css;
 
@@ -274,7 +291,8 @@ export class ObservatoryHUD {
     const anchored =
       placement.mode === 'brackets' || placement.mode === 'reticle' || placement.mode === 'pill';
     this.discNoteEl.style.display = anchored ? '' : 'none';
-    this.trackPillEl.style.display = anchored ? '' : 'none';
+    // The pill is the way back from free look; while tracking it is absent.
+    this.trackPillEl.style.display = anchored && !this.tracking ? '' : 'none';
 
     if (placement.mode === 'brackets') {
       const top = y - size / 2;
@@ -349,7 +367,27 @@ export class ObservatoryHUD {
         }
       }
     }
-    setText('surface-when', state.whenText);
+    if (this.whenEl && this.whenEl.dataset.key !== state.whenText) {
+      // "NOV 30 2026 · 03:00:00 UTC" as two spans: one line on a desktop,
+      // the date over the time on a phone, where the clock's buttons need
+      // the width.
+      this.whenEl.dataset.key = state.whenText;
+      const cut = state.whenText.indexOf(' · ');
+      const dateEl = document.createElement('span');
+      dateEl.className = 'shud-date';
+      dateEl.textContent = cut < 0 ? state.whenText : state.whenText.slice(0, cut);
+      this.whenEl.textContent = '';
+      this.whenEl.append(dateEl);
+      if (cut >= 0) {
+        const separatorEl = document.createElement('span');
+        separatorEl.className = 'shud-wsep';
+        separatorEl.textContent = ' · ';
+        const timeEl = document.createElement('span');
+        timeEl.className = 'shud-time';
+        timeEl.textContent = state.whenText.slice(cut + 3);
+        this.whenEl.append(separatorEl, timeEl);
+      }
+    }
     setText('surface-when-tag', state.whenTag);
     this.syncPaused(state.paused);
     // Stepping down can park the clock at the pause detent without a pause
@@ -365,25 +403,15 @@ export class ObservatoryHUD {
         Math.log(SURFACE_FOV_MAX_DEG / SURFACE_FOV_MIN_DEG);
       this.fovMarkEl.style.left = `${(Math.min(1, Math.max(0, normalizedFov)) * 100).toFixed(1)}%`;
     }
-    setText(
-      'surface-trackpill-text',
-      state.tracking
-        ? `Tracking ${state.targetName} · drag to look around`
-        : 'Free look · resume tracking',
-    );
+    this.tracking = state.tracking;
+    setText('surface-trackpill-text', `Re-centre on ${state.targetName}`);
     if (this.discNoteEl) {
       const note = state.discNote ?? '';
       if (this.discNoteEl.textContent !== note) this.discNoteEl.textContent = note;
       this.discNoteEl.style.visibility = note ? '' : 'hidden';
     }
-    if (this.swapEl) {
-      this.swapEl.style.display = state.swapLabel ? '' : 'none';
-      if (state.swapLabel) setText('surface-swap-name', state.swapLabel);
-    }
-    if (this.lookatEl) {
-      this.lookatEl.style.display = state.showLookatChip ? '' : 'none';
-      if (state.showLookatChip) setText('surface-lookat-name', state.targetName);
-    }
+    if (this.placeEl) this.placeEl.disabled = !state.placesOffered;
+    if (this.lookatEl) this.lookatEl.disabled = !state.showLookatChip;
     // Re-measure the bottom band's top edge here (8 Hz), not per marker
     // frame: the band moves only with content/viewport changes. Measured
     // last, so it reads this pass's text and classes. A part the compact
@@ -391,9 +419,8 @@ export class ObservatoryHUD {
     // very top) and does not count. 62 = the cluster's extent below its
     // anchor (note at +12, pill at +32, ~26px pill height) plus a hairline
     // of clearance.
-    const top = (el: HTMLElement | null) =>
-      el && el.getClientRects().length > 0 ? el.getBoundingClientRect().top : Infinity;
-    this.bandTopY = Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl));
+    const card = this.bottomEl;
+    this.bandTopY = card && card.getClientRects().length > 0 ? card.getBoundingClientRect().top : Infinity;
     this.clusterMaxY = this.bandTopY - 62;
     const chipRow = this.chipRowEl;
     this.chipRowBottomY =

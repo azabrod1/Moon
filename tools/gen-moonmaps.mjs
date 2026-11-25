@@ -265,8 +265,8 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * Under the default `below: 12` the darkest of those samples — crater
  * shadows, which on these airless ice moons are deep and sharp — were masked
  * and filled with the bright terrain around them, so every shadow core drew
- * as a pale patch inside a black ring. These three, and Mercury (below),
- * mask 0 alone.
+ * as a pale patch inside a black ring. These three mask 0 alone, as Mercury
+ * did while it was cut here (below).
  *
  * The producer also clipped the shadows' cores to 0: inside bright terrain 0
  * is two to three times commoner than 1. So a 0 is a gap or a shadow core,
@@ -281,7 +281,9 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * Enceladus' south-polar rows, Dione's last row, and a few pixels each side
  * of Dione's 180E edge.
  *
- * Mercury takes the same rule. MESSENGER's 166 m basemap also tags NoData as
+ * Mercury took the same rule while this tool cut its maps (they are
+ * tools/gen-tiles.mjs' now, from the full 166 m file, which holds no 0
+ * between its caps at all). MESSENGER's 166 m basemap also tags NoData as
  * 0 (GDAL_NODATA), and under `below: 12` about 2.4 per cent of the planet
  * between the caps was masked, almost all of it measured samples from 1 to
  * 11: the shadows of crater walls and of the long lobate scarps. The fill
@@ -300,7 +302,7 @@ const DEFAULT_NO_DATA = { below: NO_DATA_BELOW, mode: 'texture', seam: 0.03 };
  * them.
  */
 const SHADOW_HOLES = { rimBelow: 60, levelSolveBelow: NO_DATA_BELOW };
-/** The noData rule of the three moons and Mercury: 0 alone is unmeasured, and shadow holes. */
+/** The noData rule of the three moons: 0 alone is unmeasured, and shadow holes. */
 const SHADOW_NO_DATA = { ...DEFAULT_NO_DATA, below: 1, shadowHoles: SHADOW_HOLES };
 
 // ---------------------------------------------------------------------------
@@ -503,34 +505,16 @@ export const JOBS = {
       matchTexture: true,
     },
   },
-  // --- the five re-bases ----------------------------------------------------
+  // --- the re-bases ---------------------------------------------------------
   // Each ships its boot map and its rung cut from ONE source in ONE run, so
   // the step up the ladder is a pure sharpen — which is the whole reason these
-  // four bodies re-base rather than gaining a rung over the map they have.
-  mercury: {
-    src: 'Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_665m_from166m.tif',
-    // The boot map and both rungs come out of the one MESSENGER raster: a
-    // ladder whose rungs are cut from different products swaps the planet's
-    // character at the tier change, which is the one thing a rung must not do.
-    outputs: [{ width: 2048, out: 'mercury.v2.webp' }],
-    rungs: [{ width: 8192, name: 'mercury-v2-8k' }, { width: 4096, name: 'mercury-v2-4k' }],
-    // Mercury is grey: the map it replaces has no measurable chroma (mean
-    // 132.6, 131.7, 131.6), and MESSENGER's colour products are exaggerated
-    // principal-component false colour, not a look to copy.
-    colour: gains([1, 1, 1], [1, 1, 1]),
-    // Held at the level the shipped map sat at, because the planet's exposure
-    // was tuned around it: on the albedo curve Mercury's 0.142 would land at
-    // 65, half of what the app has always drawn it at. Same class of
-    // exception as Callisto's, and stated rather than hidden in a ramp.
-    level: { mean: 132.6, why: 'the shipped map the tiers must not step away from' },
-    // Both caps are no-data (the north above 75 N in the source, the south
-    // past 85 S blanked before the cut): the matched fill, the mirror line
-    // smoothed along longitude and grain at the octaves the imaged ground
-    // measures, rather than one guessed amplitude, which on a map whose
-    // albedo varies this much comes out as bright speckle at the poles.
-    // Between the caps the shadows are measurements: see SHADOW_HOLES.
-    noData: { ...SHADOW_NO_DATA, matchTexture: true },
-  },
+  // bodies re-base rather than gaining a rung over the map they have.
+  // Mercury was cut here, from a 4x reduction of MESSENGER's 166 m basemap,
+  // until its maps moved to tools/gen-tiles.mjs (`mercury`), which cuts its
+  // boot map, both rungs and its tile levels from one 64K resample of the
+  // full file, averaged down in linear light. Its filled 8K rung from this
+  // tool stays in the cache as that job's polar-cap reference
+  // (zoom/rungs/mercury-v2-8k.png, pinned in gen-tiles.sources.json).
   jupiter: {
     src: 'jupiter-bj/jupiter_map_css_plus_juno_bj.png',
     // Björn Jónsson's merged map: Cassini's December 2000 colour frames with
@@ -552,7 +536,7 @@ export const JOBS = {
     // Held at the level the replaced 2K map measures in this tool's own
     // metric (cos-latitude-weighted Rec. 709 mean of the sRGB counts, 168.7),
     // because the exposure, the night side and the glow were tuned on that
-    // Jupiter. Same class of exception as Mercury's: Jupiter's published
+    // Jupiter. Same class of exception as Callisto's: Jupiter's published
     // albedo is a disc's, not a map's, and the curve would put it elsewhere.
     // The gain this needs is under one, so it cannot clip, and a plain gain
     // leaves the zones' brightest gradation where the shoulder would have
@@ -1424,8 +1408,8 @@ function levelShoulder(spec) {
 /**
  * The level as a table of 256 encoded counts: what applyLevel does to every
  * channel value once its gain is known. Exported so a map cut by another
- * tool from the same source (tools/gen-tiles.mjs' Mercury levels) is graded
- * by this curve and not by a copy of it that could drift.
+ * tool (tools/gen-tiles.mjs' Mercury maps) is graded by this curve and not
+ * by a copy of it that could drift.
  */
 export function levelLut(gain, spec) {
   const shoulder = levelShoulder(spec);

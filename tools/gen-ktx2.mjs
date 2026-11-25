@@ -38,7 +38,9 @@
 // neither the ocean grade nor the night map's no-data mask can drift between
 // the globe and the sectors over it. The moon rungs are the third case: they
 // ship as a container alone, so their pixels come from the PNG
-// tools/gen-moonmaps.mjs writes beside the boot map it cuts in the same run.
+// tools/gen-moonmaps.mjs writes beside the boot map it cuts in the same run;
+// Mercury's likewise from the PNGs tools/gen-tiles.mjs writes beside its boot
+// map.
 //
 // -y_flip bakes the vertical flip: three's CompressedTexture cannot flipY at
 // upload, so the file itself must store what a flipY'd image texture presents.
@@ -67,9 +69,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-// gen-tiles resolves its own paths against the working directory, and this
-// tool borrows its job table.
-process.chdir(repo);
 
 const TEX = path.join(repo, 'public/textures');
 
@@ -108,6 +107,12 @@ const fromLevel = (job) => ({ kind: 'level', job });
  *  the same run, so the container is a pure sharpen of the boot map under it
  *  by construction. */
 const fromMoonmap = (name) => ({ kind: 'moonmap', name });
+
+/** A job whose pixels are the uncompressed rung a gen-tiles job wrote to the
+ *  same cache folder (its `downsamples` entries with a `png`): Mercury's, cut
+ *  from its 64K level in linear light alongside its boot map, so a container
+ *  is one resample of the same ground as the map under it. */
+const fromTilesRung = (job, name) => ({ kind: 'tiles-rung', job, name });
 
 /** RDO lambda where a job does not name one. Higher trades a little picture
  *  for a smaller file: the UASTC blocks are a fixed 8 bits a texel either
@@ -155,11 +160,12 @@ const JOBS = {
   // replaced it is all fine texture, which webp keeps in 0.78 MB and UASTC
   // in 5.78 — 7.4x, far past the cap at every lambda — so Mars keeps its
   // webp rung again like Venus and Saturn.
-  // Mercury's rungs come from the MESSENGER mosaic through gen:moonmaps, like
-  // the photo moons, and ETC1S for the same reason: a grey map's chroma is
-  // nothing for UASTC's bits to keep.
-  mercury4k: { tier: '4k', mode: 'etc1s', source: fromMoonmap('mercury-v2-4k'), out: '4k/mercury.v2.ktx2' },
-  mercury8k: { tier: '8k', mode: 'etc1s', source: fromMoonmap('mercury-v2-8k'), out: '8k/mercury.v2.ktx2' },
+  // Mercury's rungs are averaged down from its 64K MESSENGER level in linear
+  // light by gen-tiles, which writes them to the cache beside the boot map it
+  // writes to public/; ETC1S like the photo moons, for the same reason: a
+  // grey map's chroma is nothing for UASTC's bits to keep.
+  mercury4k: { tier: '4k', mode: 'etc1s', source: fromTilesRung('mercury', 'mercury-v2-chain-4k'), out: '4k/mercury.v2.ktx2' },
+  mercury8k: { tier: '8k', mode: 'etc1s', source: fromTilesRung('mercury', 'mercury-v2-chain-8k'), out: '8k/mercury.v2.ktx2' },
   // The three the boot warm uploads, which is why the toured cap does not
   // rule them: the idle after boot fetches these on EVERY session, so a
   // device downloads each one once and the worker serves it thereafter, while
@@ -266,20 +272,6 @@ const JOBS = {
   jupiter8k: { tier: '8k', rdo: 4.0, source: fromMoonmap('jupiter-8k'), out: '8k/jupiter.v2.ktx2' },
 };
 
-const args = process.argv.slice(2);
-const keepPng = args.includes('--keep-png');
-const wanted = args.includes('--all') ? Object.keys(JOBS) : args.filter((a) => !a.startsWith('--'));
-if (wanted.length === 0) {
-  console.error(`usage: node tools/gen-ktx2.mjs <job...> | --all  [--keep-png] [--cache=dir]\njobs: ${Object.keys(JOBS).join(', ')}`);
-  process.exit(2);
-}
-for (const name of wanted) {
-  if (!JOBS[name]) {
-    console.error(`unknown job ${name}; known: ${Object.keys(JOBS).join(', ')}`);
-    process.exit(2);
-  }
-}
-
 /** One browser for the whole run: launching Chromium per map is seconds each
  *  and the decode itself is the only thing that needs it. */
 let browser = null;
@@ -322,34 +314,39 @@ async function decodeToPng(srcFile, mime, pngOut) {
 /** The level-0 equirect of a gen-tiles job, resampled to the rung's tier.
  *  Same kernel and same `fit` as that tool's own downsamples: the rung under
  *  this one is the identical call at half the width. */
-async function levelToPng(jobName, pngOut, width) {
+export async function levelToPng(jobOrName, pngOut, width) {
   const [{ default: sharp }, tiles] = await Promise.all([
     import('sharp'),
     import('./gen-tiles.mjs'),
   ]);
-  const job = tiles.JOBS[jobName];
-  if (!job) throw new Error(`gen-tiles has no ${jobName} job`);
+  const job = typeof jobOrName === 'string' ? tiles.JOBS[jobOrName] : jobOrName;
+  if (!job) throw new Error(`gen-tiles has no ${jobOrName} job`);
   const { rows } = await tiles.levelRowSource(job, job.levels[0]);
   try {
     console.log(`  level 0 is ${rows.width}x${rows.height}; resampling to ${width}x${width / 2}`);
     const whole = await rows.whole();
-    await sharp(whole, { raw: { width: rows.width, height: rows.height, channels: 3 }, limitInputPixels: false })
-      .resize(width, width / 2, { fit: 'fill', kernel: 'lanczos3' })
-      .png({ compressionLevel: 1 })
-      .toFile(pngOut);
+    // A grey level (Mercury's is one byte a texel) is read as one channel and
+    // written as a grey PNG: read as three, its bytes would be a scrambled
+    // map a third of the height.
+    const channels = rows.channels ?? 3;
+    let pipe = sharp(whole, { raw: { width: rows.width, height: rows.height, channels }, limitInputPixels: false })
+      .resize(width, width / 2, { fit: 'fill', kernel: 'lanczos3' });
+    if (channels === 1) pipe = pipe.toColourspace('b-w');
+    await pipe.png({ compressionLevel: 1 }).toFile(pngOut);
   } finally {
     await rows.close();
   }
 }
 
-/** The gen:moonmaps intermediate for a rung, already a PNG at the tier's
- *  width. Copied rather than re-encoded: it IS the picture the rung ships. */
-function moonmapPng(name, pngOut, width) {
+/** A generator's uncompressed rung, already a PNG at the tier's width, under
+ *  .moon-data-cache/zoom/rungs/. Copied rather than re-encoded: it IS the
+ *  picture the rung ships. `makeIt` says which run writes it. */
+function rungPng(name, pngOut, width, makeIt) {
   const cacheArg = process.argv.slice(2).find((a) => a.startsWith('--cache='));
   const cache = path.resolve(cacheArg ? cacheArg.slice('--cache='.length) : '.moon-data-cache');
   const src = path.join(cache, 'zoom', 'rungs', `${name}.png`);
   if (!existsSync(src)) {
-    throw new Error(`${src} is not on disk — run \`node tools/gen-moonmaps.mjs ${name.replace(/(-v\d+)?-\d+k$/, '')}\` first`);
+    throw new Error(`${src} is not on disk — run \`${makeIt}\` first`);
   }
   console.log('  reading', src);
   writeFileSync(pngOut, readFileSync(src));
@@ -366,7 +363,11 @@ async function sourcePng(source, pngOut, width) {
     return;
   }
   if (source.kind === 'moonmap') {
-    moonmapPng(source.name, pngOut, width);
+    rungPng(source.name, pngOut, width, `node tools/gen-moonmaps.mjs ${source.name.replace(/(-v\d+)?-\d+k$/, '')}`);
+    return;
+  }
+  if (source.kind === 'tiles-rung') {
+    rungPng(source.name, pngOut, width, `node tools/gen-tiles.mjs ${source.job}`);
     return;
   }
   await levelToPng(source.job, pngOut, width);
@@ -442,31 +443,56 @@ function checkContainer(out, want) {
   return buf;
 }
 
-for (const name of wanted) {
-  const job = JOBS[name];
-  const out = path.join(TEX, job.out);
-  const before = existsSync(out) ? createHash('sha256').update(readFileSync(out)).digest('hex') : null;
-  const work = mkdtempSync(path.join(tmpdir(), `ktx2-${name}-`));
-  const png = path.join(work, `${name}.png`);
-  const t0 = Date.now();
-  const width = TIER_WIDTH[job.tier];
-  console.log(`== ${name} -> ${job.out} (${width}x${width / 2})`);
-  try {
-    await sourcePng(job.source, png, width);
-    console.log('  source PNG:', (statSync(png).size / 1e6).toFixed(1), 'MB');
-    const tEncode = Date.now();
-    encode(png, out, job.mode ?? 'uastc', job.rdo ?? DEFAULT_RDO_LAMBDA, job.rdoDict ?? DEFAULT_RDO_DICT);
-    const buf = checkContainer(out, width);
-    const after = createHash('sha256').update(buf).digest('hex');
-    console.log(
-      `  wrote ${job.out} ${(buf.length / 1e6).toFixed(1)} MB` +
-      ` as ${job.mode ?? 'uastc'}${(job.mode ?? 'uastc') === 'uastc' ? ` rdo ${job.rdo ?? DEFAULT_RDO_LAMBDA}` : ''}` +
-      ` (encode ${((Date.now() - tEncode) / 1000).toFixed(0)} s, job ${((Date.now() - t0) / 1000).toFixed(0)} s)`,
-    );
-    console.log(`  sha256 ${after}${before === null ? ' (new)' : before === after ? ' (unchanged)' : ` (was ${before})`}`);
-    if (keepPng) console.log(`  kept ${png}`);
-  } finally {
-    if (!keepPng) rmSync(work, { recursive: true, force: true });
+/** The run, when this file is the command. Imported (by a test) it only
+ *  lends its functions: no job runs and the working directory stays put. */
+async function main() {
+  // gen-tiles resolves its own paths against the working directory, and this
+  // tool borrows its job table.
+  process.chdir(repo);
+  const args = process.argv.slice(2);
+  const keepPng = args.includes('--keep-png');
+  const wanted = args.includes('--all') ? Object.keys(JOBS) : args.filter((a) => !a.startsWith('--'));
+  if (wanted.length === 0) {
+    console.error(`usage: node tools/gen-ktx2.mjs <job...> | --all  [--keep-png] [--cache=dir]\njobs: ${Object.keys(JOBS).join(', ')}`);
+    process.exit(2);
   }
+  for (const name of wanted) {
+    if (!JOBS[name]) {
+      console.error(`unknown job ${name}; known: ${Object.keys(JOBS).join(', ')}`);
+      process.exit(2);
+    }
+  }
+
+  for (const name of wanted) {
+    const job = JOBS[name];
+    const out = path.join(TEX, job.out);
+    const before = existsSync(out) ? createHash('sha256').update(readFileSync(out)).digest('hex') : null;
+    const work = mkdtempSync(path.join(tmpdir(), `ktx2-${name}-`));
+    const png = path.join(work, `${name}.png`);
+    const t0 = Date.now();
+    const width = TIER_WIDTH[job.tier];
+    console.log(`== ${name} -> ${job.out} (${width}x${width / 2})`);
+    try {
+      await sourcePng(job.source, png, width);
+      console.log('  source PNG:', (statSync(png).size / 1e6).toFixed(1), 'MB');
+      const tEncode = Date.now();
+      encode(png, out, job.mode ?? 'uastc', job.rdo ?? DEFAULT_RDO_LAMBDA, job.rdoDict ?? DEFAULT_RDO_DICT);
+      const buf = checkContainer(out, width);
+      const after = createHash('sha256').update(buf).digest('hex');
+      console.log(
+        `  wrote ${job.out} ${(buf.length / 1e6).toFixed(1)} MB` +
+        ` as ${job.mode ?? 'uastc'}${(job.mode ?? 'uastc') === 'uastc' ? ` rdo ${job.rdo ?? DEFAULT_RDO_LAMBDA}` : ''}` +
+        ` (encode ${((Date.now() - tEncode) / 1000).toFixed(0)} s, job ${((Date.now() - t0) / 1000).toFixed(0)} s)`,
+      );
+      console.log(`  sha256 ${after}${before === null ? ' (new)' : before === after ? ' (unchanged)' : ` (was ${before})`}`);
+      if (keepPng) console.log(`  kept ${png}`);
+    } finally {
+      if (!keepPng) rmSync(work, { recursive: true, force: true });
+    }
+  }
+  await browser?.close();
 }
-await browser?.close();
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

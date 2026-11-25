@@ -229,17 +229,18 @@
     "url": "https://planetarymaps.usgs.gov/mosaic/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m.tif",
     "product_page": "https://astrogeology.usgs.gov/search/map/mercury_messenger_mdis_basemap_bdr_mosaic_global_166m",
     "used_by": [
-      "gen-tiles mercury (its finest level, from which the coarser levels are averaged down)"
-    ]
+      "gen-tiles mercury: its 64K level, the 32K and 16K levels averaged down from it, and from the 16K the boot map mercury.v2.webp and the 4K and 8K rungs (zoom/rungs/mercury-v2-chain-{4k,8k}.png, encoded by gen-ktx2 mercury4k and mercury8k)"
+    ],
+    "notes": "Re-based 2026-11-25: the rows past 80 N and 81.25 S are read as the edge row and the caps filled once in the 64K from mercury-v2-8k.png (scaled 0.9628 north and 0.9516 south in linear light to the ground beside them). Level gain 1.786675 (gen-moonmaps' curve; solved so the boot map keeps the old one's cos-latitude Rec. 709 mean in linear light, 0.23616115, whose encoded mean is 129.74); the old maps were levelled at 1.849244 on encoded averages. The new boot map measures 0.236194 (+0.014 %), encoded 130.32. Against it in linear light: 4K -0.11 %, 8K -0.08 %, 16K -0.17 %, 64K -0.29 % (lanczos3's clipped undershoot adds light on each average down); the old ladder had the 4K at +4.32 % and the 8K at +5.33 %. Wire: mercury.v2.webp 664,632 bytes (was 651,108), 4k/mercury.v2.ktx2 1,729,826 (was 1,736,194), 8k/mercury.v2.ktx2 6,876,782 (was 6,882,530), ETC1S as before. 16K tiles (q85): 32 tiles, 44.5 MB, every tile within 0.23 % of the 8K rung in linear light."
   },
   "mercury-v2-8k.png": {
     "sha256": "0ac3786c7ada1255d74a029abde7bdeb9570deefcd52b52e3a3ba55fd7a4d031",
     "bytes": 57491895,
     "width": 8192,
     "height": 4096,
-    "product": "Mercury's filled 8K rung as gen-moonmaps writes it (.moon-data-cache/zoom/rungs/, the picture 8k/mercury.v2.ktx2 is encoded from): the MESSENGER 665 m reduction levelled at gain 1.849244, its caps past 80 N and 81.25 S filled with matched grain",
+    "product": "Mercury's filled 8K rung as gen-moonmaps cut it before the re-base (.moon-data-cache/zoom/rungs/; 8k/mercury.v2.ktx2 was encoded from it until 2026-11-25): the MESSENGER 665 m reduction levelled at gain 1.849244, its caps past 80 N and 81.25 S filled with matched grain. Never overwritten: it is an input now",
     "used_by": [
-      "gen-tiles mercury (the polar caps of its 64K level, enlarged and feathered into the measured ground)"
+      "gen-tiles mercury (the texture of the polar caps of its 64K level, scaled to the ground beside each and feathered into it)"
     ]
   }
 }

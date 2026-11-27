@@ -130,6 +130,7 @@ html.retro #top-bar h1::before {
 
 /* Buttons: navy in a white frame, yellow type; lit, yellow with black type. */
 html.retro .act-btn, html.retro .planetarium-icon-btn, html.retro .tp-now, html.retro .menu-seg-btn,
+html.retro .ship-card,
 html.retro .map-close, html.retro .shud-chip, html.retro .shud-trackpill, html.retro #historic-reopen {
   background: #001177 !important;
   border: var(--ui-px) solid #ffffff !important;
@@ -137,8 +138,8 @@ html.retro .map-close, html.retro .shud-chip, html.retro .shud-trackpill, html.r
   color: #ffdd22 !important;
 }
 html.retro .act-btn:hover, html.retro .planetarium-icon-btn:hover, html.retro .tp-now:hover,
-html.retro .menu-seg-btn:hover, html.retro .map-close:hover { background: #2244cc !important; }
-html.retro .act-btn.on, html.retro .act-btn.active, html.retro .menu-seg-btn.on {
+html.retro .menu-seg-btn:hover, html.retro .ship-card:hover, html.retro .map-close:hover { background: #2244cc !important; }
+html.retro .act-btn.on, html.retro .act-btn.active, html.retro .menu-seg-btn.on, html.retro .ship-card.on {
   background: #ffdd22 !important; color: #000000 !important; text-shadow: none;
 }
 html.retro .act-btn .act-glyph, html.retro .act-btn.on .act-glyph { color: inherit !important; opacity: 1; }
@@ -182,6 +183,7 @@ html.retro #planetarium-btn-map::before { background-image: var(--rt-icon-map); 
 html.retro .menu-tier[data-open="credits"]::before { background-image: var(--rt-icon-credits); }
 html.retro .menu-tier[data-open="graphics"]::before { background-image: var(--rt-icon-graphics); }
 html.retro .menu-tier[data-open="display"]::before { background-image: var(--rt-icon-display); }
+html.retro .menu-tier[data-open="ship"]::before { background-image: var(--rt-icon-ship); }
 html.retro .settings-row:has(#settings-ship-toggle) .settings-label::before { background-image: var(--rt-icon-ship); }
 html.retro .settings-row:has(#settings-constellations-toggle) .settings-label::before { background-image: var(--rt-icon-stars); }
 html.retro .settings-row:has(#settings-labels-toggle) .settings-label::before { background-image: var(--rt-icon-labels); }
